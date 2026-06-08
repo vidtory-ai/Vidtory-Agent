@@ -1,7 +1,7 @@
 ---
 name: vidtory-creative-workflow
 description: Design and execute complete multi-modal creative workflows combining scriptwriting, image design, animation (i2v), and voiceovers.
-always: true
+always: false
 ---
 
 # Vidtory Creative Workflows

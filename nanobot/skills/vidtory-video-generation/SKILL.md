@@ -1,7 +1,7 @@
 ---
 name: vidtory-video-generation
 description: Generate cinematic video clips from text prompts or reference images using Vidtory's Veo AI video generation model.
-always: true
+always: false
 ---
 
 # Vidtory Video Generation
