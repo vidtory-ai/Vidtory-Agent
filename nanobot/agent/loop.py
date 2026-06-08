@@ -230,11 +230,16 @@ class AgentLoop:
         self.web_config = _tc.web
         self.exec_config = _tc.exec
         self._image_generation_provider_configs = dict(image_generation_provider_configs or {})
-        if (
-            image_generation_provider_config is not None
-            and "openrouter" not in self._image_generation_provider_configs
-        ):
-            self._image_generation_provider_configs["openrouter"] = image_generation_provider_config
+        if image_generation_provider_config is not None:
+            # Use the configured provider name as the key; fall back to "openrouter" for
+            # backward compatibility with callers that pass a legacy single-provider config.
+            _legacy_provider_name = getattr(
+                getattr(_tc, "image_generation", None), "provider", None
+            ) or "openrouter"
+            if _legacy_provider_name not in self._image_generation_provider_configs:
+                self._image_generation_provider_configs[_legacy_provider_name] = (
+                    image_generation_provider_config
+                )
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         self._start_time = time.time()
@@ -589,6 +594,10 @@ class AgentLoop:
         pending_summary: str | None,
     ) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
+        cli_lines = cli_app_utils.runtime_lines(msg, self.context.workspace)
+        customer_lines = self._build_customer_context_lines(msg)
+        all_runtime_lines = cli_lines + customer_lines
+
         return self.context.build_messages(
             history=history,
             current_message=image_generation_prompt(msg.content, msg.metadata),
@@ -597,8 +606,34 @@ class AgentLoop:
             chat_id=self._runtime_chat_id(msg),
             sender_id=msg.sender_id,
             session_summary=pending_summary,
-            session_metadata=session.metadata, current_runtime_lines=cli_app_utils.runtime_lines(msg, self.context.workspace),
+            session_metadata=session.metadata,
+            current_runtime_lines=all_runtime_lines,
         )
+
+    @staticmethod
+    def _build_customer_context_lines(msg: InboundMessage) -> list[str]:
+        """Extract customer profile from message metadata and return LLM-visible context lines.
+
+        Also sets the ``telegram_customer_profile`` contextvar so tools like
+        generate_image/generate_video can access brand data for prompt optimization.
+        """
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        profile = metadata.get("customer_profile")
+        if not isinstance(profile, dict):
+            return []
+
+        # Set contextvar so creative tools can read brand data
+        try:
+            from nanobot.utils.context_vars import telegram_customer_profile
+            telegram_customer_profile.set(profile)
+        except Exception:
+            pass
+
+        try:
+            from nanobot.utils.customer_context import format_customer_context_lines
+            return format_customer_context_lines(profile)
+        except Exception:
+            return []
 
     async def _dispatch_command_inline(
         self,

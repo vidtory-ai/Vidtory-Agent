@@ -461,7 +461,7 @@ class TelegramChannel(BaseChannel):
         # Start polling (this runs until stopped)
         await self._app.updater.start_polling(
             allowed_updates=allowed_updates,
-            drop_pending_updates=False,  # Process pending messages on startup
+            drop_pending_updates=True,  # Prevent Conflict errors on restart
             error_callback=self._on_polling_error,
         )
 
@@ -1291,15 +1291,25 @@ class TelegramChannel(BaseChannel):
         session_key: str | None = None,
         is_dm: bool = False,
     ) -> None:
+        metadata = dict(metadata or {})
+
         if getattr(self.config, "require_user_api_key", False):
             key = self.keystore.get_key(sender_id)
             user_workspace = str(get_workspace_path() / "telegram_users" / chat_id)
 
-            metadata = dict(metadata or {})
             metadata["user_api_key"] = key or ""
             metadata["user_workspace"] = user_workspace
 
             Path(user_workspace).mkdir(parents=True, exist_ok=True)
+
+        # Load customer profile and inject into metadata for brand-aware context
+        try:
+            from nanobot.utils.customer_context import load_customer_profile
+            customer_profile = load_customer_profile(sender_id)
+            if customer_profile:
+                metadata["customer_profile"] = customer_profile
+        except Exception:
+            pass  # Non-critical: never block the message if profile load fails
 
         await super()._handle_message(
             sender_id=sender_id,

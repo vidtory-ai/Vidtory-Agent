@@ -110,6 +110,14 @@ class VideoGenerationTool(Tool):
         )
 
     def _resolve_reference_image(self, value: str) -> str:
+        """Resolve a reference image path or URL.
+
+        HTTP(S) URLs (e.g. Vidtory CDN) are returned as-is.
+        Local paths are resolved to absolute paths.
+        """
+        # Remote URL — pass through directly, no local file resolution needed
+        if value.startswith(("http://", "https://")):
+            return value
         raw_path = Path(value).expanduser()
         path = raw_path if raw_path.is_absolute() else self.workspace / raw_path
         try:

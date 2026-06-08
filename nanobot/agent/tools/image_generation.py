@@ -25,6 +25,7 @@ from nanobot.utils.artifacts import (
     ArtifactError,
     generated_image_tool_result,
     store_generated_image_artifact,
+    store_remote_image_artifact,
 )
 from nanobot.utils.helpers import detect_image_mime
 
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
 
 class ImageGenerationToolConfig(Base):
     """Image generation tool configuration."""
-    enabled: bool = False
+    enabled: bool = True
     provider: str = "vidtory"
     model: str = "gemini-3.1-flash-image-preview"
     default_aspect_ratio: str = "1:1"
@@ -50,14 +51,17 @@ class ImageGenerationToolConfig(Base):
             min_length=1,
         ),
         reference_images=ArraySchema(
-            StringSchema("Local path of an existing image artifact or user-provided image to use as an edit reference."),
-            description="Optional local image paths. Use generated artifact paths for iterative edits.",
+            StringSchema("Local path of an existing image artifact or user-provided image to use as a reference/edit base (maps to refImageUrl for first, startImages for rest)."),
+            description="Optional local image paths for reference or starting frames. The first becomes refImageUrl, remaining become startImages.",
+        ),
+        style_image_url=StringSchema(
+            "Optional URL or local path of a style reference image to apply stylistic transfer (styleImageUrl).",
         ),
         aspect_ratio=StringSchema(
-            "Optional output aspect ratio, e.g. 1:1, 16:9, 9:16, 4:3.",
+            "Optional output aspect ratio, e.g. 1:1, 16:9, 9:16, 4:3, 3:4.",
         ),
         image_size=StringSchema(
-            "Optional output size hint supported by the configured provider, e.g. 1K, 2K, 4K, or 1024x1024.",
+            "Optional output resolution: 1K, 2K, or 4K.",
         ),
         count=IntegerSchema(
             description="Number of images to generate in this turn.",
@@ -99,8 +103,9 @@ class ImageGenerationTool(Tool):
         self.workspace = Path(workspace).expanduser()
         self.config = config
         self.provider_configs = dict(provider_configs or {})
-        if provider_config is not None and "openrouter" not in self.provider_configs:
-            self.provider_configs["openrouter"] = provider_config
+        # BUG FIX: was hardcoding "openrouter" — now uses the actual provider name
+        if provider_config is not None and self.config.provider not in self.provider_configs:
+            self.provider_configs[self.config.provider] = provider_config
 
     @property
     def name(self) -> str:
@@ -133,6 +138,15 @@ class ImageGenerationTool(Tool):
         return cls(**kwargs)
 
     def _resolve_reference_image(self, value: str) -> str:
+        """Resolve a reference image path or URL.
+
+        HTTP(S) URLs (e.g. Vidtory CDN) are returned as-is.
+        Local paths are validated and resolved to absolute paths.
+        """
+        # Remote URL — pass through directly
+        if value.startswith(("http://", "https://")):
+            return value
+
         raw_path = Path(value).expanduser()
         path = raw_path if raw_path.is_absolute() else self.workspace / raw_path
         try:
@@ -161,6 +175,7 @@ class ImageGenerationTool(Tool):
         self,
         prompt: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
         count: int | None = None,
@@ -177,21 +192,40 @@ class ImageGenerationTool(Tool):
                 f"({self.config.max_images_per_turn})"
             )
 
+        # Auto-apply customer brand guidelines to prompt
+        optimized_prompt = self._enhance_prompt_with_brand(prompt)
+        # Auto-apply customer channel's default aspect ratio if not specified
+        resolved_ar = aspect_ratio or self._customer_aspect_ratio() or self.config.default_aspect_ratio
+
         try:
             refs = self._resolve_reference_images(reference_images)
             artifacts: list[dict[str, Any]] = []
             while len(artifacts) < requested:
                 response = await client.generate(
-                    prompt=prompt,
+                    prompt=optimized_prompt,
                     model=self.config.model,
                     reference_images=refs,
-                    aspect_ratio=aspect_ratio or self.config.default_aspect_ratio,
+                    style_image_url=style_image_url,
+                    aspect_ratio=resolved_ar,
                     image_size=image_size or self.config.default_image_size,
                 )
                 for image_data_url in response.images:
                     artifact = store_generated_image_artifact(
                         image_data_url,
-                        prompt=prompt,
+                        prompt=optimized_prompt,
+                        model=self.config.model,
+                        source_images=refs,
+                        save_dir=self.config.save_dir,
+                        provider=self.config.provider,
+                    )
+                    artifacts.append(artifact)
+                    if len(artifacts) >= requested:
+                        break
+                # Handle remote URLs (e.g. Vidtory CDN) — no download needed
+                for remote_url in (response.image_urls or []):
+                    artifact = store_remote_image_artifact(
+                        remote_url,
+                        prompt=optimized_prompt,
                         model=self.config.model,
                         source_images=refs,
                         save_dir=self.config.save_dir,
@@ -203,6 +237,42 @@ class ImageGenerationTool(Tool):
             return generated_image_tool_result(artifacts)
         except (ArtifactError, ImageGenerationError, OSError) as exc:
             return f"Error: {exc}"
+
+    def _enhance_prompt_with_brand(self, prompt: str) -> str:
+        """Auto-append brand suffix from customer profile (non-destructive).
+
+        Only appends if the user's profile has brand guidelines configured
+        AND the prompt doesn't already contain brand keywords.
+        """
+        try:
+            from nanobot.utils.context_vars import telegram_customer_profile
+            from nanobot.utils.customer_context import build_prompt_brand_suffix
+            profile = telegram_customer_profile.get()
+            if not profile:
+                return prompt
+            suffix = build_prompt_brand_suffix(profile)
+            if not suffix:
+                return prompt
+            # Don't double-append if keywords already present
+            brand = profile.get("brand") or {}
+            keywords = brand.get("moodKeywords") or []
+            if any(kw.lower() in prompt.lower() for kw in keywords if kw):
+                return prompt
+            return f"{prompt}, {suffix}"
+        except Exception:
+            return prompt
+
+    def _customer_aspect_ratio(self) -> str | None:
+        """Return customer's default aspect ratio based on their primary content channel."""
+        try:
+            from nanobot.utils.context_vars import telegram_customer_profile
+            from nanobot.utils.customer_context import get_default_aspect_ratio_for_channel
+            profile = telegram_customer_profile.get()
+            if not profile:
+                return None
+            return get_default_aspect_ratio_for_channel(profile)
+        except Exception:
+            return None
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

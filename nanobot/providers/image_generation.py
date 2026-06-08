@@ -49,11 +49,22 @@ class ImageGenerationError(RuntimeError):
 
 @dataclass(frozen=True)
 class GeneratedImageResponse:
-    """Images and optional text returned by the provider."""
+    """Images and optional text returned by the provider.
+
+    ``images`` holds base64 data URLs (``data:image/...;base64,...``).
+    ``image_urls`` holds remote HTTP(S) URLs that can be sent directly
+    without downloading, e.g. from Vidtory's CDN.
+    """
 
     images: list[str]
     content: str
     raw: dict[str, Any]
+    image_urls: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        # dataclass frozen=True; bypass via object.__setattr__
+        if self.image_urls is None:
+            object.__setattr__(self, "image_urls", [])
 
 
 def _read_image_b64(path: str | Path) -> tuple[str, str]:
@@ -215,12 +226,20 @@ class ImageGenerationProvider(ABC):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse: ...
 
-    def _require_images(self, images: list[str], data: dict[str, Any]) -> None:
-        if images:
+    def _require_images(
+        self,
+        images: list[str],
+        data: dict[str, Any],
+        *,
+        image_urls: list[str] | None = None,
+    ) -> None:
+        """Raise if neither base64 images nor remote image_urls were returned."""
+        if images or (image_urls):
             return
         provider_error = data.get("error") if isinstance(data, dict) else None
         label = self.provider_name
@@ -261,6 +280,7 @@ class OpenRouterImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -353,6 +373,7 @@ class AIHubMixImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -528,6 +549,7 @@ class OllamaImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -607,6 +629,7 @@ class GeminiImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -828,6 +851,7 @@ class MiniMaxImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -961,6 +985,7 @@ class OpenAIImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -1067,6 +1092,7 @@ class CodexImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -1358,6 +1384,7 @@ class StepFunImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -1482,6 +1509,7 @@ class ZhipuImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -1605,6 +1633,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -1630,12 +1659,26 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         }
 
         # Reference images mapping
+        # Vidtory API accepts both HTTP(S) URLs and base64 data URLs.
         refs = list(reference_images or [])
         if refs:
-            # Send the first one as refImageUrl
-            body["refImageUrl"] = image_path_to_data_url(refs[0])
+            first_ref = refs[0]
+            body["refImageUrl"] = (
+                first_ref if first_ref.startswith(("http://", "https://"))
+                else image_path_to_data_url(first_ref)
+            )
             if len(refs) > 1:
-                body["startImages"] = [image_path_to_data_url(r) for r in refs[1:]]
+                body["startImages"] = [
+                    r if r.startswith(("http://", "https://")) else image_path_to_data_url(r)
+                    for r in refs[1:]
+                ]
+
+        # Style reference image
+        if style_image_url:
+            if style_image_url.startswith(("http://", "https://", "data:")):
+                body["styleImageUrl"] = style_image_url
+            else:
+                body["styleImageUrl"] = image_path_to_data_url(style_image_url)
 
         body.update(self.extra_body)
 
@@ -1692,11 +1735,12 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
                     result_url = result.get("url")
                     if not result_url:
                         raise ImageGenerationError("Vidtory job completed but did not return a result URL")
-                    
-                    # Download the generated image and return it
-                    image_data_url = await _download_image_data_url(client, result_url)
+
+                    # Return the CDN URL directly — no local download needed.
+                    # Telegram Bot API and other channels accept HTTP(S) URLs directly.
                     return GeneratedImageResponse(
-                        images=[image_data_url],
+                        images=[],
+                        image_urls=[result_url],
                         content="",
                         raw=status_payload,
                     )

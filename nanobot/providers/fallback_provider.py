@@ -52,6 +52,16 @@ _FALLBACK_ERROR_TOKENS = (
     "insufficient_balance",
     "balance",
     "out of credits",
+    # Token / context-window limit errors (e.g. OpenRouter 402)
+    "prompt tokens limit exceeded",
+    "tokens limit exceeded",
+    "token limit exceeded",
+    "context length exceeded",
+    "context_length_exceeded",
+    "maximum context length",
+    "reduce the length",
+    "input is too long",
+    "prompt is too long",
 )
 
 
@@ -260,6 +270,9 @@ class FallbackProvider(LLMProvider):
 
         if status in {400, 401, 403, 404, 422}:
             return False
+        # 402 Payment Required from OpenRouter = token/credit limit → try fallback
+        if status == 402:
+            return True
         if kind in _NON_FALLBACK_ERROR_KINDS:
             return False
         if any(token in value for value in (kind, error_type, code) for token in _NON_FALLBACK_ERROR_KINDS):

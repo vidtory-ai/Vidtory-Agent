@@ -11,6 +11,7 @@ x-common-config: &common-config
   security_opt:
     - apparmor=unconfined
     - seccomp=unconfined
+  user: root
 
 services:
   vidtoryagent-gateway:

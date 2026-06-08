@@ -216,4 +216,14 @@ class ContextBuilder:
 
         if not images:
             return text
-        return images + [{"type": "text", "text": text}]
+
+        # Prepend the image placeholders so the LLM knows the local path of each uploaded image.
+        from nanobot.utils.helpers import image_placeholder_text
+        placeholders = "\n".join(
+            image_placeholder_text(block["_meta"]["path"])
+            for block in images
+            if block.get("_meta", {}).get("path")
+        )
+        text_with_paths = f"{placeholders}\n\n{text}" if placeholders else text
+
+        return images + [{"type": "text", "text": text_with_paths}]

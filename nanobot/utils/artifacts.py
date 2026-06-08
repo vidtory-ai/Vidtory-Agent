@@ -73,7 +73,7 @@ def store_generated_image_artifact(
     model: str,
     source_images: list[str] | None = None,
     save_dir: str = "generated",
-    provider: str = "openrouter",
+    provider: str = "vidtory",
     created_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Persist a generated image and sidecar metadata under the media root."""
@@ -93,6 +93,47 @@ def store_generated_image_artifact(
         "id": artifact_id,
         "path": str(image_path),
         "mime": mime,
+        "prompt": prompt,
+        "model": model,
+        "provider": provider,
+        "source_images": list(source_images or []),
+        "created_at": now.isoformat(),
+    }
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return metadata
+
+
+def store_remote_image_artifact(
+    remote_url: str,
+    *,
+    prompt: str,
+    model: str,
+    source_images: list[str] | None = None,
+    save_dir: str = "generated",
+    provider: str = "vidtory",
+    created_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Record a remote image URL as an artifact without downloading it.
+
+    The ``path`` field is set to the remote URL so that channels that support
+    HTTP(S) URLs (e.g. Telegram Bot API) can send the image directly from the
+    CDN without copying it through the agent machine.
+    """
+    now = created_at or datetime.now().astimezone()
+    artifact_id = f"img_{uuid.uuid4().hex[:12]}"
+
+    # Store sidecar metadata so the agent can reference this artifact later.
+    day_dir = ensure_dir(_artifact_root(save_dir) / now.strftime("%Y-%m-%d"))
+    metadata_path = day_dir / f"{artifact_id}.json"
+
+    metadata: dict[str, Any] = {
+        "id": artifact_id,
+        "path": remote_url,          # Remote URL — no local file written
+        "remote_url": remote_url,
+        "mime": "image/jpeg",        # Assume JPEG; channels use URL anyway
         "prompt": prompt,
         "model": model,
         "provider": provider,

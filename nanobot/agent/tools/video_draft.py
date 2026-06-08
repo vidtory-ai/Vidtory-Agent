@@ -3,7 +3,6 @@
 import os
 import json
 import shutil
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -12,18 +11,26 @@ from loguru import logger
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.schema import (
     ArraySchema,
-    IntegerSchema,
     NumberSchema,
     ObjectSchema,
     StringSchema,
     tool_parameters_schema,
 )
 
-# Vendored library
-from nanobot.vendors.VectCutAPI import pyJianYingDraft as draft
-from nanobot.vendors.VectCutAPI.pyJianYingDraft import trange, Clip_settings
-
 VENDORS_DIR = Path(__file__).resolve().parent.parent.parent / "vendors" / "VectCutAPI"
+
+
+def _load_draft_lib():
+    """Lazy-load pyJianYingDraft to avoid module-level import crash."""
+    try:
+        from nanobot.vendors.VectCutAPI import pyJianYingDraft as _draft
+        from nanobot.vendors.VectCutAPI.pyJianYingDraft import trange as _trange, Clip_settings as _Clip_settings
+        return _draft, _trange, _Clip_settings
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise ImportError(
+            f"pyJianYingDraft library is not available: {exc}. "
+            "Please ensure the VectCutAPI vendor package is correctly installed."
+        ) from exc
 
 
 @tool_parameters(
@@ -84,22 +91,24 @@ class CapCutDraftTool(Tool):
     def description(self) -> str:
         return "Create a CapCut/JianYing video draft from local video and audio files."
 
-    def _get_drafts_dir(self, ctx: Any) -> Path:
-        """Get the directory where drafts should be saved."""
-        workspace = Path(ctx.workspace).expanduser().resolve()
-        drafts_dir = workspace / "drafts"
-        drafts_dir.mkdir(parents=True, exist_ok=True)
-        return drafts_dir
-
-    async def execute(self, draft_name: str, videos: list[dict] = None, audios: list[dict] = None, texts: list[dict] = None, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        draft_name: str,
+        videos: list[dict] | None = None,
+        audios: list[dict] | None = None,
+        texts: list[dict] | None = None,
+        **kwargs: Any,
+    ) -> str:
         try:
-            # Check context
-            if not hasattr(self, "ctx"):
-                # In nanobot, Tool.execute usually relies on context.
-                # If not passed, we can't reliably get workspace. We'll use a fallback.
-                workspace = Path(os.getcwd()) / "drafts"
+            draft, trange, Clip_settings = _load_draft_lib()
+            # Resolve workspace: Tool subclasses store workspace on self.workspace.
+            # Fall back to cwd/drafts when running outside the standard nanobot context.
+            if hasattr(self, "workspace") and self.workspace:
+                workspace = Path(self.workspace).expanduser().resolve() / "drafts"
+                workspace.mkdir(parents=True, exist_ok=True)
             else:
-                workspace = self._get_drafts_dir(self.ctx)
+                workspace = Path(os.getcwd()) / "drafts"
+                workspace.mkdir(parents=True, exist_ok=True)
                 
             draft_id = draft_name.replace(" ", "_").lower()
             draft_dir = workspace / draft_id

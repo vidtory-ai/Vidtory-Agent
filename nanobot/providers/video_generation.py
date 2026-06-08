@@ -70,13 +70,25 @@ class VidtoryVideoGenerationClient:
         }
 
         # Reference images
+        # Vidtory API accepts both HTTP(S) URLs and base64 data URLs in refImageUrl.
+        # Pass remote URLs through directly; only read local files as base64.
         from nanobot.providers.image_generation import image_path_to_data_url
         refs = list(reference_images or [])
         if refs:
-            body["refImageUrl"] = image_path_to_data_url(refs[0])
+            first_ref = refs[0]
+            if first_ref.startswith(("http://", "https://")):
+                body["refImageUrl"] = first_ref   # CDN URL → pass directly
+            else:
+                body["refImageUrl"] = image_path_to_data_url(first_ref)  # local file → base64
             body["mode"] = mode or "i2v"  # Default to image-to-video if reference image is present
             if len(refs) > 1:
-                body["startImages"] = [image_path_to_data_url(r) for r in refs[1:]]
+                extras = []
+                for r in refs[1:]:
+                    if r.startswith(("http://", "https://")):
+                        extras.append(r)
+                    else:
+                        extras.append(image_path_to_data_url(r))
+                body["startImages"] = extras
 
         body.update(self.extra_body)
 
