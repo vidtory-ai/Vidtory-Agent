@@ -142,3 +142,19 @@ DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ```
+
+---
+
+## VectCutAPI and pyJianYingDraft (Apache License 2.0)
+
+- **Source**: https://github.com/sun-guannan/VectCutAPI
+- **Bundled**: `nanobot/vendors/VectCutAPI/`
+
+```
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+   (Please refer to the full text in nanobot/vendors/VectCutAPI/LICENSE or the standard Apache License 2.0 text)
+```
