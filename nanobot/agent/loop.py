@@ -614,15 +614,47 @@ class AgentLoop:
     def _build_customer_context_lines(msg: InboundMessage) -> list[str]:
         """Extract customer profile from message metadata and return LLM-visible context lines.
 
+        Injects three sets of context lines into every LLM turn:
+        1. **Onboarding Gate** — onboarding_status so agent knows to trigger flow
+        2. **Vidtory Knowledge** — global professional creative standards
+        3. **Customer Knowledge** — per-user brand guidelines, channels, preferences
+
         Also sets the ``telegram_customer_profile`` contextvar so tools like
         generate_image/generate_video can access brand data for prompt optimization.
         """
+        lines: list[str] = []
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+
+        # ── Onboarding Gate — tell LLM the user's onboarding state ──────────
+        # This is the reliable trigger: LLM reads this line instead of file-checking.
+        onboarding_status = metadata.get("onboarding_status", "")
+        if onboarding_status == "none":
+            lines.append(
+                "Onboarding Status: NEW_USER — No profile found. "
+                "Trigger the vidtory-onboarding skill immediately before doing anything else."
+            )
+        elif onboarding_status == "minimal":
+            lines.append(
+                "Onboarding Status: MINIMAL — User has a basic profile. "
+                "After 5-10 successful interactions, gently suggest completing full onboarding."
+            )
+        # "completed" → no special line needed
+
+        # ── Vidtory Knowledge — global professional creative standards ────────
+        try:
+            from nanobot.utils.vidtory_knowledge import get_system_knowledge_block
+            vidtory_block = get_system_knowledge_block()
+            if vidtory_block:
+                lines.append(vidtory_block)
+        except Exception:
+            pass  # Non-critical
+
+        # ── Customer Knowledge — per-user brand & channel preferences ─────────
         profile = metadata.get("customer_profile")
         if not isinstance(profile, dict):
-            return []
+            return lines
 
-        # Set contextvar so creative tools can read brand data
+        # Set contextvar so creative tools (generate_image, generate_video) can read brand data
         try:
             from nanobot.utils.context_vars import telegram_customer_profile
             telegram_customer_profile.set(profile)
@@ -631,9 +663,12 @@ class AgentLoop:
 
         try:
             from nanobot.utils.customer_context import format_customer_context_lines
-            return format_customer_context_lines(profile)
+            customer_lines = format_customer_context_lines(profile)
+            lines.extend(customer_lines)
         except Exception:
-            return []
+            pass
+
+        return lines
 
     async def _dispatch_command_inline(
         self,

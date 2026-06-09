@@ -1302,10 +1302,19 @@ class TelegramChannel(BaseChannel):
 
             Path(user_workspace).mkdir(parents=True, exist_ok=True)
 
-        # Load customer profile and inject into metadata for brand-aware context
+        # Load customer profile and inject into metadata for brand-aware context.
+        # Also inject onboarding_status so the LLM can trigger the right flow
+        # without having to read files itself.
         try:
-            from nanobot.utils.customer_context import load_customer_profile
-            customer_profile = load_customer_profile(sender_id)
+            from nanobot.utils.customer_profile import (
+                get_onboarding_status,
+                load_profile,
+            )
+            uid = sender_id.split("|")[0].strip()
+            onboarding_status = get_onboarding_status(uid)
+            metadata["onboarding_status"] = onboarding_status  # 'none'|'minimal'|'completed'
+
+            customer_profile = load_profile(uid)
             if customer_profile:
                 metadata["customer_profile"] = customer_profile
         except Exception:

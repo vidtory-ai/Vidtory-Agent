@@ -38,12 +38,29 @@ After sending output:
 
 ## Feedback Storage
 
-Append to `~/.vidtoryagent/customers/{telegram_user_id}/feedback.jsonl`:
+**Sử dụng module Python `nanobot.utils.customer_profile`** (KHÔNG dùng write_file trực tiếp).
 
+Agent không gọi trực tiếp được Python module — thay vào đó dùng `exec` tool:
+
+```python
+import sys, json
+sys.path.insert(0, 'C:/Users/vidto/Documents/Vidtory-Agent')
+from nanobot.utils.customer_profile import update_learning
+update_learning(
+    user_id="{telegram_user_id}",
+    rating="approved",      # hoặc "rejected"
+    prompt="{original_prompt}",
+    feedback_text="{comment}",
+    generation_id="{gen_id}",
+)
+print("OK")
+```
+
+**Feedback entry format** (tự động ghi vào `feedback.jsonl`):
 ```json
 {
   "timestamp": "2026-06-08T11:30:00Z",
-  "generationId": "abc-123",
+  "generationId": "gen-1234567890",
   "contentType": "image",
   "originalPrompt": "tạo ảnh áo dài",
   "enhancedPrompt": "Vietnamese Ao Dai dress...",
@@ -59,14 +76,15 @@ Append to `~/.vidtoryagent/customers/{telegram_user_id}/feedback.jsonl`:
 - Remember feedback from earlier in the conversation
 - Apply corrections to subsequent generations in the same session
 
-### Medium-term (per customer):
-- After ≥ 2 similar complaints → Add to `commonFeedback` in profile
-- Auto-apply these adjustments to ALL future prompts for this customer
-- After ≥ 5 approvals of a specific style → Mark as "preferred"
+### Medium-term — Auto-update profile (SILENT, không thông báo user):
+- ≥ 2 identical complaints → `update_learning()` tự thêm vào `commonFeedback`
+- ≥ 2 identical visual complaints → tự thêm vào `avoidList` trong profile
+- ≥ 3 approvals of same style prompt → add to `bestPerformingPrompts`
+- Tất cả cập nhật **âm thầm** — không thông báo cho user
 
-### Long-term (global):
-- If ≥ 5 different customers give same feedback → Flag for review
-- Admin can update Vidtory Knowledge templates based on patterns
+### Long-term (global patterns):
+- ≥ 5 khách khác nhau phàn nàn giống nhau → Flag cho admin review
+- Admin cập nhật Vidtory Knowledge templates dựa trên patterns
 
 ## Proactive Improvement
 

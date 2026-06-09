@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from loguru import logger
 from pydantic import Field
 
 from nanobot.agent.tools.base import Tool, tool_parameters
@@ -27,7 +28,16 @@ from nanobot.utils.artifacts import (
     store_generated_image_artifact,
     store_remote_image_artifact,
 )
+from nanobot.utils.context_vars import telegram_customer_profile
+from nanobot.utils.customer_context import (
+    build_prompt_brand_suffix,
+    get_default_aspect_ratio_for_channel,
+)
 from nanobot.utils.helpers import detect_image_mime
+from nanobot.utils.vidtory_knowledge import (
+    build_professional_prompt_suffix,
+    detect_content_type,
+)
 
 if TYPE_CHECKING:
     from nanobot.config.schema import ProviderConfig
@@ -192,10 +202,9 @@ class ImageGenerationTool(Tool):
                 f"({self.config.max_images_per_turn})"
             )
 
-        # Auto-apply customer brand guidelines to prompt
-        optimized_prompt = self._enhance_prompt_with_brand(prompt)
-        # Auto-apply customer channel's default aspect ratio if not specified
-        resolved_ar = aspect_ratio or self._customer_aspect_ratio() or self.config.default_aspect_ratio
+        # Apply Vidtory professional standards + customer brand guidelines
+        optimized_prompt, customer_ar = self._apply_customer_context(prompt)
+        resolved_ar = aspect_ratio or customer_ar or self.config.default_aspect_ratio
 
         try:
             refs = self._resolve_reference_images(reference_images)
@@ -238,41 +247,67 @@ class ImageGenerationTool(Tool):
         except (ArtifactError, ImageGenerationError, OSError) as exc:
             return f"Error: {exc}"
 
-    def _enhance_prompt_with_brand(self, prompt: str) -> str:
-        """Auto-append brand suffix from customer profile (non-destructive).
+    def _apply_customer_context(self, prompt: str) -> tuple[str, str | None]:
+        """Apply customer brand guidelines and Vidtory professional standards to the prompt.
 
-        Only appends if the user's profile has brand guidelines configured
-        AND the prompt doesn't already contain brand keywords.
+        This is the central prompt enrichment pipeline:
+        1. Auto-detect content type from prompt
+        2. Apply Vidtory professional photography style for that content type
+        3. Apply customer brand guidelines (style, mood keywords, colors)
+        4. Derive customer's preferred aspect ratio from their primary channel
+
+        Returns:
+            Tuple of (enriched_prompt, aspect_ratio_or_None).
+            The enriched prompt is non-destructive — original intent is always preserved.
         """
+        enriched = prompt
+        aspect_ratio: str | None = None
+
+        # ── Step 1: Vidtory professional prompt enhancement ──────────────────
         try:
-            from nanobot.utils.context_vars import telegram_customer_profile
-            from nanobot.utils.customer_context import build_prompt_brand_suffix
-            profile = telegram_customer_profile.get()
-            if not profile:
-                return prompt
-            suffix = build_prompt_brand_suffix(profile)
-            if not suffix:
-                return prompt
-            # Don't double-append if keywords already present
-            brand = profile.get("brand") or {}
-            keywords = brand.get("moodKeywords") or []
-            if any(kw.lower() in prompt.lower() for kw in keywords if kw):
-                return prompt
-            return f"{prompt}, {suffix}"
+            content_type = detect_content_type(prompt)
+            pro_suffix = build_professional_prompt_suffix(prompt, content_type=content_type)
+            if pro_suffix:
+                enriched = f"{enriched}, {pro_suffix}"
+                logger.debug(
+                    "Vidtory professional enhancement applied (content_type={}): +{} chars",
+                    content_type or "auto",
+                    len(pro_suffix),
+                )
         except Exception:
-            return prompt
+            logger.warning("Vidtory knowledge enhancement failed — using original prompt")
+
+        # ── Step 2: Customer brand guidelines ────────────────────────────────
+        try:
+            profile = telegram_customer_profile.get()
+            if profile:
+                brand_suffix = build_prompt_brand_suffix(profile)
+                if brand_suffix:
+                    # Guard: don't double-append if brand keywords already present
+                    brand = profile.get("brand") or {}
+                    keywords = brand.get("moodKeywords") or []
+                    already_present = any(
+                        kw.lower() in enriched.lower() for kw in keywords if kw
+                    )
+                    if not already_present:
+                        enriched = f"{enriched}, {brand_suffix}"
+                        logger.debug("Customer brand guidelines applied")
+
+                # ── Step 3: Customer channel aspect ratio ─────────────────────
+                aspect_ratio = get_default_aspect_ratio_for_channel(profile)
+        except Exception:
+            logger.warning("Customer context enhancement failed — using defaults")
+
+        return enriched, aspect_ratio
+
+    # Keep backward-compatible shims for any external callers.
+    def _enhance_prompt_with_brand(self, prompt: str) -> str:
+        enriched, _ = self._apply_customer_context(prompt)
+        return enriched
 
     def _customer_aspect_ratio(self) -> str | None:
-        """Return customer's default aspect ratio based on their primary content channel."""
-        try:
-            from nanobot.utils.context_vars import telegram_customer_profile
-            from nanobot.utils.customer_context import get_default_aspect_ratio_for_channel
-            profile = telegram_customer_profile.get()
-            if not profile:
-                return None
-            return get_default_aspect_ratio_for_channel(profile)
-        except Exception:
-            return None
+        _, aspect_ratio = self._apply_customer_context("")
+        return aspect_ratio
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

@@ -1,85 +1,239 @@
 ---
 name: vidtory-onboarding
-description: Manages onboarding flow for new customers.
+description: Manages onboarding flow for new and returning customers. Triggered automatically when Onboarding Status is NEW_USER.
+always: false
 ---
 
 # Customer Onboarding Flow
 
-When a NEW customer messages for the first time (no customer profile found), guide them through onboarding.
+Kích hoạt khi Runtime Context chứa: `Onboarding Status: NEW_USER`
 
-## Detection
+---
 
-A customer is "new" if no file exists at `~/.vidtoryagent/customers/{telegram_user_id}/profile.json`.
+## Quick Start vs Full Onboarding
 
-## Onboarding Steps
+### Quick Start (khách nói "dùng ngay", "skip", hoặc vội):
+1. Hỏi 2 câu duy nhất: Tên thương hiệu + Ngành
+2. Lưu minimal profile (xem Profile Storage bên dưới)
+3. Tiến hành phục vụ ngay
 
-### Step 1: WELCOME
+### Full Onboarding (khách có thời gian, muốn setup đầy đủ):
+Đi qua 7 bước bên dưới. Mỗi message tối đa 3 câu hỏi.
+
+---
+
+## Step 1: WELCOME
+
 ```
-🎬 Xin chào! Tôi là Vidtory AI — trợ lý sáng tạo thông minh của bạn.
+🎬 Xin chào! Tôi là Vidtory AI — trợ lý sáng tạo AI cho thương hiệu của bạn.
 
-Tôi có thể tạo ảnh, video, audio chuyên nghiệp cho thương hiệu của bạn, ngay trên Telegram.
+Tôi có thể tạo ảnh, video, audio chuyên nghiệp ngay trên Telegram — không cần designer, không cần phần mềm.
 
-🎯 Để phục vụ tốt nhất, hãy dành 2-3 phút trả lời vài câu hỏi nhé!
+🎯 Để phục vụ tốt nhất, mình cần biết thêm về thương hiệu của bạn. Chỉ mất 3-5 phút thôi!
 
-Hoặc gõ "dùng ngay" nếu muốn bỏ qua.
+Gõ "dùng ngay" nếu muốn bỏ qua và bắt đầu luôn.
 ```
 
-### Step 2: BUSINESS INFO
-Ask:
-1. Tên thương hiệu / công ty?
-2. Lĩnh vực? (Fashion, F&B, Beauty, Tech, Real Estate, Education, Other)
+---
 
-### Step 3: BRAND VISUAL
-Ask:
-1. Phong cách? (Minimalist, Luxury, Playful, Corporate, Natural)
-2. Màu sắc chủ đạo? (hoặc gửi logo để phân tích)
+## Step 2: API KEY SETUP (QUAN TRỌNG — làm TRƯỚC)
 
-### Step 4: BRAND ASSETS
-Request:
-- Logo (bắt buộc)
-- 2-3 ảnh sản phẩm mẫu (khuyến khích)
-- Ảnh phong cách tham khảo (tùy chọn)
+```
+🔑 Trước tiên, bạn cần cấu hình API key Vidtory để tôi có thể tạo ảnh cho bạn.
 
-Upload received images via the `exec` tool (Python httpx to POST /media/upload) and save returned URLs to profile.
+Nếu đã có API key, gõ lệnh:
+/apikey YOUR_VIDTORY_API_KEY
 
-### Step 5: TARGET AUDIENCE
-Ask:
-1. Giới tính khách hàng? (Nữ / Nam / Cả hai)
-2. Độ tuổi? (18-25 / 25-35 / 35-50 / 50+)
-3. Phân khúc? (Phổ thông / Trung cấp / Cao cấp)
+Chưa có? Liên hệ Vidtory tại: https://vidtory.net để đăng ký tài khoản.
 
-### Step 6: CONTENT GOALS
-Ask: Kênh phân phối chính? (Instagram, TikTok, Facebook, Website, Zalo, Print)
+(Sau khi set xong, nhắn lại để mình tiếp tục nhé!)
+```
 
-### Step 7: DEMO + COMPLETE
-1. Summarize the profile
-2. Generate a demo image using their brand guidelines
-3. Ask for approval
-4. Save profile to `~/.vidtoryagent/customers/{telegram_user_id}/profile.json`
+Sau khi user xác nhận đã set key → tiếp tục Step 3.
 
-## Skip Onboarding
+---
 
-If customer says "dùng ngay", "skip", or similar:
-1. Ask only: Tên thương hiệu + Ngành
-2. Save minimal profile with `onboarding.status = "minimal"`
-3. After 5-10 interactions, suggest completing full onboarding
+## Step 3: BUSINESS INFO
+
+Hỏi:
+1. **Tên thương hiệu / công ty** của bạn là gì?
+2. **Lĩnh vực** hoạt động:
+   ```
+   1️⃣ Thời trang & Phụ kiện
+   2️⃣ Thực phẩm & Đồ uống
+   3️⃣ Mỹ phẩm & Làm đẹp
+   4️⃣ Công nghệ & SaaS
+   5️⃣ Bất động sản
+   6️⃣ Giáo dục & Khóa học
+   7️⃣ Dịch vụ chuyên nghiệp (B2B)
+   8️⃣ Khác
+   ```
+
+---
+
+## Step 4: BRAND STYLE GALLERY
+
+Gửi các ảnh mẫu từ Vidtory CDN để user chọn phong cách:
+
+```
+Chọn phong cách nào gần nhất với thương hiệu bạn? 👇
+```
+
+**Gửi 5 ảnh mẫu lần lượt với caption:**
+
+| # | Caption | CDN URL |
+|---|---------|---------|
+| 1️⃣ | **Tối giản sang trọng** — Nền trắng tinh, ánh sáng studio soft, bố cục minimal. Phù hợp: mỹ phẩm, thời trang cao cấp, tech | `https://cdn.vidtory.net/samples/style-minimalist-luxury.jpg` |
+| 2️⃣ | **Sống động tươi trẻ** — Màu sắc pop, năng lượng cao, Gen-Z aesthetic. Phù hợp: F&B, lifestyle, thời trang trẻ | `https://cdn.vidtory.net/samples/style-vibrant-youthful.jpg` |
+| 3️⃣ | **Dark & Moody cao cấp** — Tông tối, ánh sáng kịch tính, luxury feeling. Phù hợp: nước hoa, rượu, fashion luxury | `https://cdn.vidtory.net/samples/style-dark-moody.jpg` |
+| 4️⃣ | **Natural & Authentic** — Ánh sáng tự nhiên, warm tones, lifestyle thật. Phù hợp: F&B organic, wellness, lifestyle | `https://cdn.vidtory.net/samples/style-natural-authentic.jpg` |
+| 5️⃣ | **Corporate chuyên nghiệp** — Clean, trustworthy, B2B-ready. Phù hợp: SaaS, tài chính, giáo dục, dịch vụ | `https://cdn.vidtory.net/samples/style-corporate-professional.jpg` |
+
+Sau khi user chọn, map sang brand.style:
+- 1️⃣ → `luxury`
+- 2️⃣ → `playful`
+- 3️⃣ → `luxury` + moodKeywords: ["dark", "moody", "dramatic"]
+- 4️⃣ → `natural`
+- 5️⃣ → `corporate`
+
+---
+
+## Step 5: BRAND COLORS
+
+```
+🎨 Màu sắc chủ đạo của thương hiệu?
+
+Gửi mã HEX (ví dụ: #1A2B3C) hoặc mô tả:
+- "xanh navy + trắng"
+- "đen + vàng gold"
+- "hồng pastel + kem"
+
+Hoặc gửi ảnh logo để tôi tự phân tích màu!
+```
+
+Nếu user gửi logo → Mô tả màu từ logo và confirm với user.
+
+---
+
+## Step 6: TARGET AUDIENCE
+
+Hỏi (chọn, không điền):
+```
+👥 Khách hàng mục tiêu:
+
+Giới tính: 1️⃣ Nữ  2️⃣ Nam  3️⃣ Cả hai
+
+Độ tuổi: 1️⃣ 18-25  2️⃣ 25-35  3️⃣ 35-50  4️⃣ 50+
+
+Phân khúc: 1️⃣ Phổ thông  2️⃣ Trung cấp  3️⃣ Cao cấp/Premium
+```
+
+---
+
+## Step 7: CONTENT CHANNELS
+
+```
+📱 Kênh phân phối chính (chọn nhiều):
+1️⃣ Instagram  2️⃣ TikTok  3️⃣ Facebook
+4️⃣ Website    5️⃣ Zalo    6️⃣ YouTube
+7️⃣ In ấn (catalogue, banner, poster)
+```
+
+Map channels → defaultFormats:
+- Instagram → `{"instagram_feed": {"aspectRatio": "1:1"}, "instagram_story": {"aspectRatio": "9:16"}}`
+- TikTok → `{"tiktok": {"aspectRatio": "9:16"}}`
+- YouTube → `{"youtube": {"aspectRatio": "16:9"}}`
+- Website → `{"website": {"aspectRatio": "16:9"}}`
+
+---
+
+## Step 8: DEMO + COMPLETE
+
+1. Tóm tắt profile đã thu thập
+2. Generate 1 ảnh demo với brand guidelines vừa thiết lập
+3. Hỏi approval: "Profile này ổn chưa? Ảnh demo thấy thế nào?"
+4. Save profile (xem Profile Storage bên dưới)
+
+```
+✅ Setup hoàn tất! Từ giờ mọi ảnh tôi tạo đều sẽ theo đúng phong cách của [Brand Name].
+
+Thử ngay — bạn muốn tạo ảnh gì đầu tiên? 🎨
+```
+
+---
 
 ## Profile Storage
 
-Save to: `~/.vidtoryagent/customers/{telegram_user_id}/profile.json`
+**Lưu vào:** `~/.vidtoryagent/customers/{telegram_user_id}/profile.json`
 
-Schema: See implementation plan Section 4.4 for full JSON schema.
+**Schema đầy đủ:**
+```json
+{
+  "telegramUserId": "string",
+  "telegramUsername": "string",
 
-## B2B Account Binding
+  "onboarding": {
+    "status": "completed",
+    "completedAt": "ISO datetime",
+    "currentStep": "completed"
+  },
 
-During onboarding, ask if they have an existing Vidtory account:
-- If YES: Ask for email → Use to look up their merchant via B2B API
-- If NO: Offer to create one via `POST /auth/signup`
+  "business": {
+    "name": "string",
+    "industry": "fashion|food-beverage|beauty|tech|real-estate|education|services|other",
+    "description": "string"
+  },
 
-Save the resulting API key or credentials in the customer profile.
+  "brand": {
+    "style": "minimalist|luxury|playful|corporate|natural",
+    "moodKeywords": ["string"],
+    "colorPalette": {
+      "primary": "#hex",
+      "secondary": "#hex",
+      "accent": "#hex"
+    },
+    "logoUrl": "string (cloud URL, nếu có)",
+    "photographyStyle": "string",
+    "avoidList": ["string"]
+  },
+
+  "audience": {
+    "gender": "female|male|all",
+    "ageRange": "18-25|25-35|35-50|50+",
+    "segment": "mass|mid|premium"
+  },
+
+  "contentChannels": {
+    "primary": ["instagram", "tiktok", "facebook", "website", "zalo", "youtube", "print"],
+    "defaultFormats": {
+      "instagram_feed": {"aspectRatio": "1:1"},
+      "instagram_story": {"aspectRatio": "9:16"},
+      "website": {"aspectRatio": "16:9"}
+    }
+  },
+
+  "preferences": {
+    "communicationLanguage": "vi",
+    "autoApplyBrandGuidelines": true
+  },
+
+  "learningData": {
+    "totalGenerations": 0,
+    "approvedCount": 0,
+    "rejectedCount": 0,
+    "commonFeedback": [],
+    "bestPerformingPrompts": []
+  }
+}
+```
+
+**⚠️ KHÔNG lưu apiKey vào profile.json** — key được quản lý bởi TelegramKeyStore qua `/apikey`.
+
+---
 
 ## Rules
-- Never ask more than 3 questions per message
-- Always provide suggested options (numbered list)
-- If customer says "tuỳ bạn" or "gì cũng được", use smart defaults
-- Be warm, professional, and encouraging throughout
+
+- Không hỏi quá 3 câu per message
+- Luôn cung cấp options numbered (không để user điền trống)
+- "tuỳ bạn" / "gì cũng được" → dùng smart defaults theo ngành
+- Warm, encouraging, professional throughout
