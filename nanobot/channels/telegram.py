@@ -1451,8 +1451,9 @@ class TelegramChannel(BaseChannel):
                         "  /setbrand industry tech",
                         "  /setlogo — để thay đổi logo",
                     ])
+                    # Enable web preview when logo exists so Telegram shows the image inline
                     await message.reply_text("\n".join(lines), parse_mode="Markdown",
-                                            disable_web_page_preview=True)
+                                            disable_web_page_preview=not bool(logo))
             except Exception as e:
                 self.logger.warning("Failed to load brand profile: {}", e)
                 await message.reply_text(
@@ -1923,6 +1924,22 @@ class TelegramChannel(BaseChannel):
             buf["media"].extend(media_paths)
             if key not in self._media_group_tasks:
                 self._media_group_tasks[key] = asyncio.create_task(self._flush_media_group(key))
+            return
+
+        # Guard: When user sends photo/document without any text or caption,
+        # ask what they want to do instead of auto-generating content.
+        has_media = bool(media_paths)
+        has_text = bool(message.text or message.caption)
+        is_reply = reply is not None
+        if has_media and not has_text and not is_reply:
+            await message.reply_text(
+                "📷 *Ảnh đã nhận!*\n\n"
+                "Bạn muốn tôi làm gì với ảnh này?\n\n"
+                "• Reply ảnh + gõ `/setlogo` — đặt làm logo\n"
+                "• Reply ảnh + mô tả yêu cầu — tạo ảnh/video\n"
+                "• Reply ảnh + `/removewm` — xoá watermark",
+                parse_mode="Markdown",
+            )
             return
 
         # Start typing indicator before processing
