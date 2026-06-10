@@ -3,7 +3,7 @@ x-common-config: &common-config
     context: .
     dockerfile: Dockerfile
   volumes:
-    - ~/.vidtoryagent:/home/vidtoryagent/.vidtoryagent
+    - "${VIDTORY_DATA_DIR:-C:/Users/vidto/.vidtoryagent}:/home/vidtoryagent/.vidtoryagent"
   cap_drop:
     - ALL
   cap_add:
@@ -12,33 +12,47 @@ x-common-config: &common-config
     - apparmor=unconfined
     - seccomp=unconfined
   user: root
+  environment:
+    - PYTHONIOENCODING=utf-8
+    - PYTHONUNBUFFERED=1
 
 services:
-  vidtoryagent-gateway:
-    container_name: vidtoryagent-gateway
+  # ── Telegram Bot (main service) ──────────────────────────────────────────
+  vidtoryagent-telegram:
+    container_name: vidtoryagent-telegram
     <<: *common-config
+    # "gateway" command starts all enabled channels (Telegram, etc.)
     command: ["gateway"]
     restart: unless-stopped
     ports:
-      - 18790:18790
-      - 8765:8765
+      - "18790:18790"
+      - "8765:8765"
+    healthcheck:
+      test: ["CMD-SHELL", "vidtoryagent status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     deploy:
       resources:
         limits:
-          cpus: "1"
+          cpus: "2"
           memory: 1G
         reservations:
           cpus: "0.25"
           memory: 256M
 
+  # ── OpenAI-compatible API server (optional) ──────────────────────────────
   vidtoryagent-api:
     container_name: vidtoryagent-api
     <<: *common-config
     command:
       ["serve", "--host", "0.0.0.0", "-w", "/home/vidtoryagent/.vidtoryagent/api-workspace"]
     restart: unless-stopped
+    profiles:
+      - api
     ports:
-      - 127.0.0.1:8900:8900
+      - "127.0.0.1:8900:8900"
     deploy:
       resources:
         limits:
@@ -48,6 +62,7 @@ services:
           cpus: "0.25"
           memory: 256M
 
+  # ── CLI (on-demand, not started by default) ──────────────────────────────
   vidtoryagent-cli:
     <<: *common-config
     profiles:

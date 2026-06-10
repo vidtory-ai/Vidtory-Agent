@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
-# Install Node.js 20 for the WhatsApp bridge
+# Install system dependencies
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl ca-certificates gnupg git bubblewrap openssh-client && \
     mkdir -p /etc/apt/keyrings && \
@@ -14,14 +14,13 @@ RUN apt-get update && \
 
 WORKDIR /app
 
-# Install Python dependencies first (cached layer). Hatch reads the custom build
-# hook from hatch_build.py even for this metadata-only install.
+# Install Python dependencies first (cached layer)
 COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES.md hatch_build.py ./
 RUN mkdir -p nanobot bridge && touch nanobot/__init__.py && \
     uv pip install --system --no-cache . && \
     rm -rf nanobot bridge
 
-# Install bridge npm dependencies first to cache them.
+# Install bridge npm dependencies
 COPY bridge/package.json bridge/tsconfig.json /app/bridge/
 WORKDIR /app/bridge
 RUN git config --global --add url."https://github.com/".insteadOf ssh://git@github.com/ && \
@@ -40,8 +39,7 @@ WORKDIR /app/bridge
 RUN npm run build
 WORKDIR /app
 
-
-# Create non-root user and config directory
+# Create non-root user and directories
 RUN useradd -m -u 1000 -s /bin/bash vidtoryagent && \
     mkdir -p /home/vidtoryagent/.vidtoryagent && \
     chown -R vidtoryagent:vidtoryagent /home/vidtoryagent /app
@@ -51,6 +49,10 @@ RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/ent
 
 USER vidtoryagent
 ENV HOME=/home/vidtoryagent
+# Ensure Python prints UTF-8 (emojis in migration output on all platforms)
+ENV PYTHONIOENCODING=utf-8
+# SQLite WAL mode works best with this
+ENV PYTHONUNBUFFERED=1
 
 # Gateway health endpoint and optional WebUI/WebSocket channel ports
 EXPOSE 18790 8765
