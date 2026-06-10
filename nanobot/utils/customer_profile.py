@@ -1,52 +1,37 @@
 """Customer Profile Manager for Vidtory-Agent.
 
 This module is the **authoritative** code layer for all customer profile operations.
-It replaces ad-hoc ``read_file``/``write_file`` LLM tool calls with reliable,
-schema-validated Python functions.
+All data is persisted in SQLite via ``nanobot.db.customer_db`` — no JSON files.
 
-Public API
+Public API (unchanged from file-based version)
 ----------
 - :func:`profile_exists` — check before triggering onboarding
 - :func:`load_profile` — load + validate, with schema migration
-- :func:`save_profile` — atomic write with backup
+- :func:`save_profile` — atomic write (DB upsert)
 - :func:`get_onboarding_status` — returns current onboarding state
 - :func:`get_profile_completeness` — 0-100 score for input validation
 - :func:`append_feedback` — append-only feedback log
 - :func:`record_generation` — log generation + update counters
 - :func:`update_learning` — process feedback, auto-update profile if pattern emerges
+- :func:`create_minimal_profile` — quick-start profile for new users
 """
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
+
 # ---------------------------------------------------------------------------
-# Paths
+# DB accessor (lazy to avoid circular imports at module load)
 # ---------------------------------------------------------------------------
 
-def _customer_dir(user_id: str) -> Path:
-    """Return ~/.vidtoryagent/customers/{user_id}/."""
-    from nanobot.config.paths import get_data_dir
-    uid = user_id.split("|")[0].strip()
-    return get_data_dir().parent / "customers" / uid
-
-
-def _profile_path(user_id: str) -> Path:
-    return _customer_dir(user_id) / "profile.json"
-
-
-def _feedback_path(user_id: str) -> Path:
-    return _customer_dir(user_id) / "feedback.jsonl"
-
-
-def _history_path(user_id: str) -> Path:
-    return _customer_dir(user_id) / "generation-history.jsonl"
+def _db():
+    from nanobot.db.customer_db import get_db
+    return get_db()
 
 
 # ---------------------------------------------------------------------------
@@ -54,15 +39,8 @@ def _history_path(user_id: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def profile_exists(user_id: str) -> bool:
-    """Return True if a profile.json exists and is valid JSON for this user."""
-    path = _profile_path(user_id)
-    if not path.is_file():
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return isinstance(data, dict)
-    except Exception:
-        return False
+    """Return True if a profile exists for this user."""
+    return _db().profile_exists(user_id)
 
 
 def get_onboarding_status(user_id: str) -> str:
@@ -79,15 +57,10 @@ def load_profile(user_id: str) -> dict[str, Any] | None:
     """Load and validate a customer profile.
 
     Performs lightweight schema migration (adds missing top-level keys).
-    Returns ``None`` if the file does not exist or cannot be parsed.
+    Returns ``None`` if no profile found.
     """
-    path = _profile_path(user_id)
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        logger.warning("Failed to parse customer profile for {}: {}", user_id, exc)
+    data = _db().load_profile(user_id)
+    if data is None:
         return None
 
     if not isinstance(data, dict):
@@ -103,7 +76,7 @@ def load_profile(user_id: str) -> dict[str, Any] | None:
         "bestPerformingPrompts": [],
     })
 
-    # Remove sensitive key from profile — API key is managed by TelegramKeyStore
+    # Remove sensitive key from profile — API key is managed by DB api_keys table
     data.pop("apiKey", None)
 
     return data
@@ -114,32 +87,11 @@ def load_profile(user_id: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 def save_profile(user_id: str, profile: dict[str, Any]) -> bool:
-    """Atomically write a customer profile.
+    """Atomically save a customer profile to the database.
 
-    Creates the customer directory if needed. Makes a ``.bak`` backup of any
-    existing profile before overwriting. Returns True on success.
+    Returns True on success.
     """
-    path = _profile_path(user_id)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Backup existing file before overwriting
-        if path.is_file():
-            path.replace(path.with_suffix(".json.bak"))
-
-        # Remove API key before saving (security)
-        clean = {k: v for k, v in profile.items() if k != "apiKey"}
-
-        # Write to temp file first, then rename (atomic on same FS)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
-
-        logger.debug("Saved customer profile for {}", user_id)
-        return True
-    except Exception as exc:
-        logger.error("Failed to save customer profile for {}: {}", user_id, exc)
-        return False
+    return _db().save_profile(user_id, profile)
 
 
 def create_minimal_profile(
@@ -242,34 +194,25 @@ def append_feedback(
     content_type: str = "image",
     original_prompt: str = "",
     enhanced_prompt: str = "",
-    rating: str,  # "approved" | "rejected"
+    rating: str,
     comment: str = "",
     adjustments: str = "",
 ) -> bool:
-    """Append a feedback entry to the customer's feedback.jsonl log.
+    """Append a feedback entry to the database.
 
     This is append-only — entries are never deleted, providing a complete
     audit trail.
     """
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "generationId": generation_id or f"gen-{int(time.time())}",
-        "contentType": content_type,
-        "originalPrompt": original_prompt,
-        "enhancedPrompt": enhanced_prompt,
-        "rating": rating,
-        "comment": comment,
-        "adjustments": adjustments,
-    }
-    path = _feedback_path(user_id)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        return True
-    except Exception as exc:
-        logger.error("Failed to append feedback for {}: {}", user_id, exc)
-        return False
+    return _db().append_feedback(
+        user_id,
+        generation_id=generation_id or f"gen-{int(time.time())}",
+        content_type=content_type,
+        original_prompt=original_prompt,
+        enhanced_prompt=enhanced_prompt,
+        rating=rating,
+        comment=comment,
+        adjustments=adjustments,
+    )
 
 
 def record_generation(
@@ -285,25 +228,15 @@ def record_generation(
 
     Returns a generation ID that can be used later to record feedback.
     """
-    gen_id = f"gen-{int(time.time())}"
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "generationId": gen_id,
-        "contentType": content_type,
-        "originalPrompt": prompt,
-        "enhancedPrompt": enhanced_prompt,
-        "model": model,
-        "resultUrl": result_url,
-    }
-    path = _history_path(user_id)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception as exc:
-        logger.warning("Failed to log generation history for {}: {}", user_id, exc)
-
-    # Increment counter
+    gen_id = _db().record_generation(
+        user_id,
+        content_type=content_type,
+        prompt=prompt,
+        enhanced_prompt=enhanced_prompt,
+        model=model,
+        result_url=result_url,
+    )
+    # Increment counter in profile learningData
     _increment_counter(user_id, "totalGenerations")
     return gen_id
 
@@ -319,9 +252,9 @@ def update_learning(
     """Process feedback and silently update the customer profile if a pattern emerges.
 
     Learning rules (silent auto-update):
-    - APPROVED: increment approvedCount. If prompt score ≥ 3 approvals, add to bestPerformingPrompts.
-    - REJECTED: increment rejectedCount. If same feedback appears ≥ 2 times → add to commonFeedback.
-    - REJECTED with specific complaint → analyze and potentially update avoidList.
+    - APPROVED: increment approvedCount. If prompt score >= 3 approvals, add to bestPerformingPrompts.
+    - REJECTED: increment rejectedCount. If same feedback appears >= 2 times -> add to commonFeedback.
+    - REJECTED with specific complaint -> analyze and potentially update avoidList.
     """
     profile = load_profile(user_id)
     if not profile:
@@ -339,27 +272,37 @@ def update_learning(
     changed = False
 
     if rating == "approved":
+        # Always reload learning data fresh to avoid stale read-then-write
+        fresh = load_profile(user_id)
+        learning = fresh.get("learningData", learning) if fresh else learning
         learning["approvedCount"] = learning.get("approvedCount", 0) + 1
+        profile["learningData"] = learning
         # Track best performing prompt
         if prompt:
             best = learning.setdefault("bestPerformingPrompts", [])
-            # Count how many times this prompt (or similar) was approved
             similar = [p for p in best if isinstance(p, str) and p[:50] == prompt[:50]]
             if not similar and len(best) < 10:
                 best.append(prompt[:200])
                 changed = True
+        if not changed:
+            # Still need to save the incremented counter
+            changed = True
         logger.debug("Learning: approved recorded for {}", user_id)
 
     elif rating == "rejected":
+        # Always reload learning data fresh to avoid stale read-then-write
+        fresh = load_profile(user_id)
+        learning = fresh.get("learningData", learning) if fresh else learning
         learning["rejectedCount"] = learning.get("rejectedCount", 0) + 1
+        profile["learningData"] = learning
+        changed = True  # always save the incremented counter
 
         if feedback_text:
-            # Count occurrences of this feedback in recent history
-            occurrence_count = _count_feedback_occurrences(user_id, feedback_text)
+            occurrence_count = _db().count_feedback_occurrences(user_id, feedback_text)
 
             common = learning.setdefault("commonFeedback", [])
 
-            # ≥ 2 same complaints → add to commonFeedback (silent auto-update)
+            # >= 2 same complaints -> add to commonFeedback (silent auto-update)
             if occurrence_count >= 2:
                 normalized = feedback_text.strip().lower()[:100]
                 existing = [str(f).lower()[:100] for f in common]
@@ -367,7 +310,7 @@ def update_learning(
                     common.append(feedback_text.strip()[:100])
                     changed = True
                     logger.info(
-                        "Learning: pattern '{}' detected ≥2x for {} — added to commonFeedback",
+                        "Learning: pattern '{}' detected >=2x for {} — added to commonFeedback",
                         normalized[:40], user_id,
                     )
 
@@ -410,28 +353,6 @@ def _increment_counter(user_id: str, field: str) -> None:
     learning = profile.setdefault("learningData", {})
     learning[field] = learning.get(field, 0) + 1
     save_profile(user_id, profile)
-
-
-def _count_feedback_occurrences(user_id: str, feedback_text: str) -> int:
-    """Count how many times similar feedback has been logged in feedback.jsonl."""
-    path = _feedback_path(user_id)
-    if not path.is_file():
-        return 1  # This is the first occurrence
-
-    needle = feedback_text.strip().lower()[:60]
-    count = 0
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            try:
-                entry = json.loads(line)
-                comment = str(entry.get("comment", "")).strip().lower()[:60]
-                if comment and comment == needle:
-                    count += 1
-            except Exception:
-                continue
-    except Exception:
-        pass
-    return max(count, 1)
 
 
 def _extract_avoid_keywords(feedback_text: str) -> list[str]:
