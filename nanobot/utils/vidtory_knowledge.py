@@ -106,6 +106,32 @@ _PHOTOGRAPHY_STYLES: dict[str, str] = {
         "technology product photography, dark gradient background, neon accent lighting, "
         "reflection on surface, futuristic atmosphere, Verge/TechCrunch editorial quality"
     ),
+    # Jewelry & Watches
+    "jewelry": (
+        "luxury jewelry photography, macro detail on gemstones, reflective dark surface or "
+        "white marble, single soft key light with subtle rim, specular highlights on metal, "
+        "Cartier/Tiffany catalog standard, ultra-sharp 8K"
+    ),
+    # Candle & Home Decor
+    "candle_decor": (
+        "candle and home decor photography, warm candlelight glow with soft bokeh, "
+        "rustic or minimal props, cozy lifestyle mood, warm amber tones, editorial quality"
+    ),
+    # Kids & Baby
+    "kids_product": (
+        "children's product photography, bright cheerful colors, playful props and soft background, "
+        "natural soft window light, clean safe aesthetic, warm inviting mood"
+    ),
+    # Fitness & Sport
+    "fitness": (
+        "fitness product photography, clean white or gym background, dramatic side lighting, "
+        "muscular confidence aesthetic, bold saturated colors, health editorial quality"
+    ),
+    # Pet
+    "pet": (
+        "pet photography, soft natural window light, adorable candid expression, "
+        "clean minimal background, warm and playful mood, sharp eye focus"
+    ),
 }
 
 # ── Platform-specific output specifications ──────────────────────────────────
@@ -173,6 +199,13 @@ _CONTENT_TYPE_TO_STYLE: dict[str, str] = {
     "tech": "tech_product",
     "lookbook": "fashion_lookbook",
     "packshot": "product_packshot",
+    # New categories
+    "jewelry": "jewelry",
+    "candle": "candle_decor",
+    "kids": "kids_product",
+    "fitness": "fitness",
+    "pet": "pet",
+    "real_estate": "real_estate",
 }
 
 # ── Universal quality suffixes always appended ───────────────────────────────
@@ -183,20 +216,77 @@ _UNIVERSAL_QUALITY_SUFFIX = (
 
 # ── Content type keyword detection ───────────────────────────────────────────
 _CONTENT_TYPE_KEYWORDS: dict[str, list[str]] = {
-    "food": ["food", "dish", "meal", "cuisine", "plate", "restaurant", "dessert",
-             "ăn", "món", "thức ăn", "bánh", "cơm", "phở"],
-    "beverage": ["drink", "coffee", "tea", "juice", "cocktail", "wine", "beer",
-                 "boba", "smoothie", "cà phê", "nước", "đồ uống"],
-    "cosmetic": ["cosmetic", "makeup", "skincare", "cream", "serum", "lipstick",
-                 "perfume", "mỹ phẩm", "kem", "son"],
-    "fashion": ["fashion", "clothing", "outfit", "dress", "shoes", "bag", "luxury",
-                "quần", "áo", "giày", "túi", "thời trang"],
-    "portrait": ["portrait", "person", "model", "headshot", "người", "chân dung"],
-    "interior": ["interior", "room", "living room", "office", "phòng", "nội thất"],
-    "tech": ["phone", "laptop", "device", "gadget", "tech", "electronic",
-             "điện thoại", "máy tính"],
-    "product": ["product", "item", "object", "sản phẩm"],
+    "food": [
+        "food", "dish", "meal", "cuisine", "plate", "restaurant", "dessert",
+        "snack", "cake", "bread", "noodle", "rice", "salad", "soup",
+        "ăn", "món", "thức ăn", "bánh", "cơm", "phở", "bún", "hủ tiếu",
+        "bữa", "nhà hàng", "quán ăn", "ẩm thực", "đồ ăn", "thực phẩm",
+    ],
+    "beverage": [
+        "drink", "coffee", "tea", "juice", "cocktail", "wine", "beer",
+        "boba", "smoothie", "latte", "espresso", "bubble tea", "matcha",
+        "cà phê", "nước", "đồ uống", "trà", "sinh tố", "nước ép", "sữa",
+        "trà sữa", "thức uống", "nước giải khát",
+    ],
+    "cosmetic": [
+        "cosmetic", "makeup", "skincare", "cream", "serum", "lipstick",
+        "perfume", "mascara", "foundation", "blush", "eyeshadow", "toner",
+        "mỹ phẩm", "kem", "son", "nước hoa", "phấn", "chăm sóc da",
+        "dưỡng da", "sữa rửa mặt", "trang điểm", "làm đẹp", "beauty",
+    ],
+    "fashion": [
+        "fashion", "clothing", "outfit", "dress", "shoes", "bag", "luxury",
+        "shirt", "pants", "jacket", "jeans", "sneaker", "heel", "handbag",
+        "quần", "áo", "giày", "túi", "thời trang", "váy", "đầm", "áo khoác",
+        "phụ kiện", "trang phục", "mặc", "style", "ootd", "lookbook",
+    ],
+    "portrait": [
+        "portrait", "person", "model", "headshot", "face", "selfie",
+        "người", "chân dung", "khuôn mặt", "nhân vật", "con người",
+    ],
+    "interior": [
+        "interior", "room", "living room", "office", "bedroom", "kitchen",
+        "furniture", "sofa", "desk", "decor",
+        "phòng", "nội thất", "phòng khách", "phòng ngủ", "bàn ghế", "trang trí",
+        "phòng làm việc", "không gian sống",
+    ],
+    "real_estate": [
+        "house", "apartment", "villa", "building", "property", "real estate",
+        "nhà", "căn hộ", "biệt thự", "bất động sản", "căn nhà", "tòa nhà",
+    ],
+    "tech": [
+        "phone", "laptop", "device", "gadget", "tech", "electronic",
+        "tablet", "smartwatch", "headphone", "camera", "speaker",
+        "điện thoại", "máy tính", "thiết bị", "công nghệ", "điện tử",
+        "tai nghe", "đồng hồ thông minh",
+    ],
+    "jewelry": [
+        "jewelry", "ring", "necklace", "bracelet", "earring", "diamond",
+        "gold", "silver", "gemstone", "watch",
+        "trang sức", "nhẫn", "vòng cổ", "vòng tay", "bông tai", "kim cương",
+        "đồng hồ", "dây chuyền",
+    ],
+    "candle": [
+        "candle", "home decor", "scented", "wax", "aromatherapy", "diffuser",
+        "nến", "nến thơm", "tinh dầu", "trang trí nhà", "decor nhà",
+    ],
+    "kids": [
+        "kids", "baby", "toy", "children", "infant", "toddler", "nursery",
+        "trẻ em", "em bé", "đồ chơi", "trẻ con", "sơ sinh", "mẹ và bé",
+    ],
+    "fitness": [
+        "fitness", "gym", "sport", "workout", "yoga", "protein", "supplement",
+        "thể dục", "thể hình", "tập gym", "thể thao", "yoga", "chạy bộ",
+    ],
+    "pet": [
+        "pet", "dog", "cat", "animal", "puppy", "kitten",
+        "thú cưng", "chó", "mèo", "vật nuôi",
+    ],
+    "product": [
+        "product", "item", "object", "sản phẩm", "hàng hóa", "mặt hàng",
+    ],
 }
+
 
 
 # ---------------------------------------------------------------------------
