@@ -38,6 +38,16 @@ def load_customer_profile(telegram_user_id: str) -> dict[str, Any] | None:
     if not uid.isdigit():
         return None
 
+    # Primary: load from SQLite DB (current architecture)
+    try:
+        from nanobot.utils.customer_profile import load_profile
+        profile = load_profile(uid)
+        if profile is not None:
+            return profile
+    except Exception:
+        pass
+
+    # Legacy fallback: try JSON file (migration may not have run)
     profile_path = _get_customer_dir() / uid / "profile.json"
     if not profile_path.is_file():
         return None
@@ -125,6 +135,11 @@ def format_customer_context_lines(profile: dict[str, Any]) -> list[str]:
     if common_feedback:
         lines.append(f"Customer Feedback Preferences: {'; '.join(str(f) for f in common_feedback[:5])}")
 
+    # Logo URL (if available)
+    logo_url = (brand.get("logoUrl") or "").strip()
+    if logo_url:
+        lines.append(f"Brand Logo: {logo_url}")
+
     return lines
 
 
@@ -163,7 +178,14 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
 
     if not parts:
         return ""
-    return ", ".join(parts) + avoid_str
+    suffix = ", ".join(parts) + avoid_str
+
+    # Note about logo availability (LLM can decide to incorporate)
+    logo_url = (brand.get("logoUrl") or "").strip()
+    if logo_url:
+        suffix += f", brand has logo available"
+
+    return suffix
 
 
 def get_default_aspect_ratio_for_channel(

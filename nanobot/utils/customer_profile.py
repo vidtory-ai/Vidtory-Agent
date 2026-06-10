@@ -18,11 +18,15 @@ Public API (unchanged from file-based version)
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
+
+# Configurable feedback pattern threshold (default: 2 same complaints → auto-update)
+FEEDBACK_PATTERN_THRESHOLD = int(os.environ.get("VIDTORY_FEEDBACK_THRESHOLD", "2"))
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +55,25 @@ def get_onboarding_status(user_id: str) -> str:
     if not profile:
         return "none"
     return (profile.get("onboarding") or {}).get("status", "none")
+
+
+def get_logo_url(user_id: str) -> str:
+    """Return the logo URL for this user, or empty string."""
+    return _db().get_logo_url(user_id)
+
+
+def set_logo_url(user_id: str, url: str) -> bool:
+    """Set or update the logo URL for this user.
+
+    Updates both the indexed DB column and brand.logoUrl in profile_json.
+    Returns True on success.
+    """
+    return _db().set_logo_url(user_id, url)
+
+
+def clear_logo(user_id: str) -> bool:
+    """Remove the logo URL for this user."""
+    return _db().set_logo_url(user_id, "")
 
 
 def load_profile(user_id: str) -> dict[str, Any] | None:
@@ -119,6 +142,7 @@ def create_minimal_profile(
             "moodKeywords": [],
             "colorPalette": {},
             "photographyStyle": "",
+            "logoUrl": "",
             "avoidList": [],
         },
         "audience": {"gender": "all", "ageRange": "", "segment": "mid"},
@@ -302,8 +326,8 @@ def update_learning(
 
             common = learning.setdefault("commonFeedback", [])
 
-            # >= 2 same complaints -> add to commonFeedback (silent auto-update)
-            if occurrence_count >= 2:
+            # >= FEEDBACK_PATTERN_THRESHOLD same complaints -> add to commonFeedback (silent auto-update)
+            if occurrence_count >= FEEDBACK_PATTERN_THRESHOLD:
                 normalized = feedback_text.strip().lower()[:100]
                 existing = [str(f).lower()[:100] for f in common]
                 if normalized not in existing and len(common) < 10:

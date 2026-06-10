@@ -26,7 +26,7 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 # Schema version — increment when adding tables/columns
 # ---------------------------------------------------------------------------
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _DDL = """
 PRAGMA journal_mode=WAL;
@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS customer_profiles (
     industry        TEXT NOT NULL DEFAULT '',
     brand_style     TEXT NOT NULL DEFAULT '',
     onboarding_status TEXT NOT NULL DEFAULT 'none',
+    logo_url        TEXT NOT NULL DEFAULT '',
     profile_json    TEXT NOT NULL,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
@@ -94,6 +95,11 @@ CREATE INDEX IF NOT EXISTS idx_gen_history_user ON generation_history(user_id);
 _V2_MIGRATION = """
 -- V2: Add merchant_id column to customer_profiles
 ALTER TABLE customer_profiles ADD COLUMN merchant_id TEXT NOT NULL DEFAULT '';
+"""
+
+_V3_MIGRATION = """
+-- V3: Add logo_url column to customer_profiles
+ALTER TABLE customer_profiles ADD COLUMN logo_url TEXT NOT NULL DEFAULT '';
 """
 
 
@@ -186,6 +192,14 @@ class CustomerDatabase:
                 if "duplicate column" not in str(e).lower():
                     logger.warning("V2 migration skipped: {}", e)
 
+        if current_version < 3:
+            try:
+                conn.execute(_V3_MIGRATION.strip())
+                logger.info("Applied DB migration v3: added logo_url column")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    logger.warning("V3 migration skipped: {}", e)
+
         if current_version < _SCHEMA_VERSION:
             conn.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
@@ -277,6 +291,7 @@ class CustomerDatabase:
         industry = str(business.get("industry") or "")
         brand = profile.get("brand") or {}
         brand_style = str(brand.get("style") or "")
+        logo_url = str(brand.get("logoUrl") or "")
         onboarding = profile.get("onboarding") or {}
         onboarding_status = str(onboarding.get("status") or "none")
         merchant_id = str(profile.get("merchantId") or "")
@@ -293,20 +308,21 @@ class CustomerDatabase:
                     """
                     INSERT INTO customer_profiles
                         (user_id, username, business_name, industry, brand_style,
-                         onboarding_status, merchant_id, profile_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         logo_url, onboarding_status, merchant_id, profile_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(user_id) DO UPDATE SET
                         username         = excluded.username,
                         business_name    = excluded.business_name,
                         industry         = excluded.industry,
                         brand_style      = excluded.brand_style,
+                        logo_url         = excluded.logo_url,
                         onboarding_status = excluded.onboarding_status,
                         merchant_id      = excluded.merchant_id,
                         profile_json     = excluded.profile_json,
                         updated_at       = excluded.updated_at
                     """,
                     (uid, username, business_name, industry, brand_style,
-                     onboarding_status, merchant_id, profile_json, now, now),
+                     logo_url, onboarding_status, merchant_id, profile_json, now, now),
                 )
             logger.debug("Profile saved for user {}", uid)
             return True
@@ -322,6 +338,38 @@ class CustomerDatabase:
                 "SELECT 1 FROM customer_profiles WHERE user_id = ?", (uid,)
             ).fetchone()
         return row is not None
+
+    def get_logo_url(self, user_id: str) -> str:
+        """Return the logo URL for *user_id*, or empty string."""
+        uid = user_id.split("|")[0].strip()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT logo_url FROM customer_profiles WHERE user_id = ?", (uid,)
+            ).fetchone()
+        return row["logo_url"] if row else ""
+
+    def set_logo_url(self, user_id: str, url: str) -> bool:
+        """Update the logo URL for *user_id*. Also updates brand.logoUrl in profile_json."""
+        uid = user_id.split("|")[0].strip()
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            # First update the indexed column
+            with self._tx() as conn:
+                conn.execute(
+                    "UPDATE customer_profiles SET logo_url = ?, updated_at = ? WHERE user_id = ?",
+                    (url, now, uid),
+                )
+            # Then update the JSON blob
+            profile = self.load_profile(uid)
+            if profile:
+                brand = profile.setdefault("brand", {})
+                brand["logoUrl"] = url
+                self.save_profile(uid, profile)
+            logger.debug("Logo URL updated for user {}", uid)
+            return True
+        except Exception as exc:
+            logger.error("Failed to set logo URL for {}: {}", uid, exc)
+            return False
 
     def delete_profile(self, user_id: str) -> None:
         """Delete profile and all related data for *user_id*."""
@@ -339,7 +387,7 @@ class CustomerDatabase:
             rows = conn.execute(
                 """
                 SELECT user_id, username, business_name, industry,
-                       onboarding_status, updated_at
+                       logo_url, onboarding_status, updated_at
                 FROM customer_profiles
                 ORDER BY updated_at DESC
                 """
