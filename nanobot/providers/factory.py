@@ -51,6 +51,10 @@ def _make_provider_core(
         exempt = spec and (spec.is_oauth or spec.is_local or spec.is_direct)
         if needs_key and not exempt:
             raise ValueError(f"No API key configured for provider '{provider_name}'.")
+    elif backend == "vidtory":
+        # Vidtory key may not be in config — it's injected per-user at runtime via Telegram.
+        # Validation is deferred to request time inside VidtoryLLMProvider.
+        pass
 
     if backend == "openai_codex":
         from nanobot.providers.openai_codex_provider import OpenAICodexProvider
@@ -87,6 +91,19 @@ def _make_provider_core(
             region=getattr(p, "region", None) if p else None,
             profile=getattr(p, "profile", None) if p else None,
             extra_body=p.extra_body if p else None,
+        )
+    elif backend == "vidtory":
+        from nanobot.providers.vidtory_llm_provider import VidtoryLLMProvider, _DEFAULT_WORKER_ID
+
+        # Allow overriding workerId via providers.vidtory.extra_body.workerId in config
+        extra_body = (p.extra_body or {}) if p else {}
+        worker_id = extra_body.get("workerId", _DEFAULT_WORKER_ID)
+
+        provider = VidtoryLLMProvider(
+            api_key=p.api_key if p else None,
+            api_base=config.get_api_base(model, preset=resolved),
+            default_model=model,
+            worker_id=worker_id,
         )
     else:
         from nanobot.providers.openai_compat_provider import OpenAICompatProvider

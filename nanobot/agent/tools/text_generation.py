@@ -89,8 +89,8 @@ class TextGenerationTool(Tool):
         )
 
     def _provider_client(self) -> VidtoryTextGenerationClient:
-        from nanobot.utils.context_vars import telegram_user_api_key
-        user_key = telegram_user_api_key.get()
+        from nanobot.utils.context_vars import telegram_vidtory_api_key
+        user_key = telegram_vidtory_api_key.get()
         api_key = user_key or (self.provider_config.api_key if self.provider_config else None)
         api_base = self.provider_config.api_base if self.provider_config else None
         return VidtoryTextGenerationClient(

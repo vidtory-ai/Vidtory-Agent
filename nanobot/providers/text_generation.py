@@ -56,6 +56,7 @@ class VidtoryTextGenerationClient:
 
         body: dict[str, Any] = {
             "prompt": prompt,
+            "workerId": "worker-mini-veo3-ultra1",
             "modelId": model_id or "gemini-3-flash-preview",
         }
 
@@ -113,14 +114,24 @@ class VidtoryTextGenerationClient:
                 status = status_data.get("status")
                 if status == "COMPLETED":
                     result = status_data.get("result") or {}
-                    # Text result may be in result.text or result.content
+                    # result.text is returned directly (primary path confirmed via API test)
                     text_out = (
                         result.get("text")
                         or result.get("content")
                         or result.get("output")
                         or ""
                     )
-                    return GeneratedTextResponse(text=str(text_out), raw=status_payload)
+                    # Fallback: if no inline text, try downloading from URL
+                    if not text_out:
+                        result_url = result.get("url")
+                        if result_url and result_url.startswith("http"):
+                            try:
+                                url_resp = await client.get(result_url)
+                                if url_resp.status_code == 200:
+                                    text_out = url_resp.text
+                            except Exception:
+                                pass
+                    return GeneratedTextResponse(text=str(text_out).strip(), raw=status_payload)
                 elif status == "FAILED":
                     err_msg = status_data.get("error") or "Job failed"
                     raise TextGenerationError(f"Vidtory job execution failed: {err_msg}")

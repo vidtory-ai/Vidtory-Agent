@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -17,17 +18,16 @@ from nanobot.providers.audio_generation import (
     AudioGenerationError,
     VidtoryAudioGenerationClient,
 )
-from nanobot.utils.artifacts import store_generated_audio_artifact
+
 
 class AudioGenerationToolConfig(Base):
     """Audio generation tool configuration."""
     enabled: bool = True
     provider: str = "vidtory"
     model: str = "eleven_v3"
-    default_voice_id: str = "eZ248pfac00g3092s7h8"  # Default ElevenLabs voice
+    default_voice_id: str = "eZ248pfac00g3092s7h8"
     default_speed: float = 1.0
     default_language: str = "vi"
-    save_dir: str = "generated"
 
 
 @tool_parameters(
@@ -51,7 +51,7 @@ class AudioGenerationToolConfig(Base):
     )
 )
 class AudioGenerationTool(Tool):
-    """Generate persistent audio speech artifacts through the Vidtory audio provider."""
+    """Generate voice/speech audio (TTS) via Vidtory API. Returns a CDN audio URL."""
 
     config_key = "audio_generation"
 
@@ -92,12 +92,12 @@ class AudioGenerationTool(Tool):
     def description(self) -> str:
         return (
             "Generate high-quality voice/speech audio (TTS) from a text script using Vidtory's AI voice models. "
-            "Returns audio metadata including artifact IDs and local file paths. Deliver to user via the message tool."
+            "Returns a CDN audio URL. Deliver to user via the message tool."
         )
 
     def _provider_client(self) -> VidtoryAudioGenerationClient:
-        from nanobot.utils.context_vars import telegram_user_api_key
-        user_key = telegram_user_api_key.get()
+        from nanobot.utils.context_vars import telegram_vidtory_api_key
+        user_key = telegram_vidtory_api_key.get()
         api_key = user_key or (self.provider_config.api_key if self.provider_config else None)
         api_base = self.provider_config.api_base if self.provider_config else None
         return VidtoryAudioGenerationClient(
@@ -116,30 +116,23 @@ class AudioGenerationTool(Tool):
         client = self._provider_client()
 
         try:
-            effective_voice = voice_id or self.config.default_voice_id
             response = await client.generate(
                 prompt=prompt,
                 model_id=self.config.model,
-                voice_id=effective_voice,
+                voice_id=voice_id or self.config.default_voice_id,
                 speed=speed or self.config.default_speed,
                 language_code=language_code or self.config.default_language,
             )
 
-            # Store audio as artifact
-            artifact = store_generated_audio_artifact(
-                response.audio_bytes,
-                prompt=prompt,
-                model=self.config.model,
-                voice_id=effective_voice,
-                save_dir=self.config.save_dir,
-            )
+            # Return CDN URL directly — no local storage
+            if not response.audio_url:
+                return "Error: Audio generation did not return a URL"
 
-            import json
             return json.dumps(
                 {
-                    "artifacts": [artifact],
+                    "audio_url": response.audio_url,
                     "next_step": (
-                        "Call the message tool with this audio artifact path in the media parameter "
+                        "Call the message tool with this URL in the media parameter "
                         "to deliver the audio clip to the user."
                     ),
                 },

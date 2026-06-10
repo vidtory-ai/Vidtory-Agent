@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -16,20 +17,18 @@ from nanobot.providers.watermark_removal import (
     WatermarkRemovalError,
     VidtoryWatermarkRemovalClient,
 )
-from nanobot.utils.artifacts import store_generated_image_artifact
 
 
 class WatermarkRemovalToolConfig(Base):
     """Watermark removal tool configuration."""
     enabled: bool = True
     provider: str = "vidtory"
-    save_dir: str = "generated"
 
 
 @tool_parameters(
     tool_parameters_schema(
         image_path=StringSchema(
-            "Local path of the image to remove watermark from. Must be an existing file artifact.",
+            "Local path of the image to remove watermark from. Must be an existing file.",
             min_length=1,
         ),
         remove_text=BooleanSchema(
@@ -41,7 +40,7 @@ class WatermarkRemovalToolConfig(Base):
 )
 class WatermarkRemovalTool(Tool):
     """Remove watermarks from images using Vidtory's AI dewatermarking API.
-    Supports JPEG, PNG, and WEBP images. Returns a clean version of the image as an artifact.
+    Returns a CDN URL of the clean image. Deliver to user via the message tool.
     """
 
     config_key = "watermark_removal"
@@ -83,13 +82,13 @@ class WatermarkRemovalTool(Tool):
     def description(self) -> str:
         return (
             "Remove watermarks from images using Vidtory's AI dewatermarking API. "
-            "Upload a local image and get a clean version back as an artifact. "
+            "Upload a local image and get a CDN URL of the clean version back. "
             "Deliver result to user via the message tool."
         )
 
     def _provider_client(self) -> VidtoryWatermarkRemovalClient:
-        from nanobot.utils.context_vars import telegram_user_api_key
-        user_key = telegram_user_api_key.get()
+        from nanobot.utils.context_vars import telegram_vidtory_api_key
+        user_key = telegram_vidtory_api_key.get()
         api_key = user_key or (self.provider_config.api_key if self.provider_config else None)
         api_base = self.provider_config.api_base if self.provider_config else None
         return VidtoryWatermarkRemovalClient(
@@ -112,7 +111,6 @@ class WatermarkRemovalTool(Tool):
         remove_text: bool = False,
         **kwargs: Any,
     ) -> str:
-        import json
         client = self._provider_client()
 
         try:
@@ -122,22 +120,12 @@ class WatermarkRemovalTool(Tool):
                 remove_text=remove_text,
             )
 
-            # Store cleaned image as artifact
-            artifact = store_generated_image_artifact(
-                response.image_data_url,
-                prompt=f"watermark_removed:{Path(image_path).name}",
-                model="dewatermark",
-                source_images=[resolved_path],
-                save_dir=self.config.save_dir,
-                provider="vidtory",
-            )
-
+            # Return CDN URL directly — no local storage
             return json.dumps(
                 {
-                    "artifacts": [artifact],
-                    "mask_base": response.mask_base,
+                    "image_url": response.image_url,
                     "next_step": (
-                        "Call the message tool with this artifact path in the media parameter "
+                        "Call the message tool with this URL in the media parameter "
                         "to deliver the clean image to the user."
                     ),
                 },

@@ -1641,6 +1641,68 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         if not self.api_key:
             raise ImageGenerationError(self.missing_key_message)
 
+        refs = list(reference_images or [])
+
+        # When multiple reference images are provided, send ALL of them equally
+        # via startImages so Vidtory forwards every image into Gemini's
+        # contents[0].parts as separate inlineData entries — no primary/secondary
+        # distinction at the Gemini level.
+        if len(refs) > 1:
+            logger.info(
+                "Vidtory: {} reference images — sending all via startImages (equal weight)",
+                len(refs),
+            )
+            return await self._generate_single(
+                prompt=prompt,
+                model=model,
+                ref_image=None,
+                extra_images=refs,
+                style_image_url=style_image_url,
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+            )
+
+        # Single image (or no image) path
+        ref = refs[0] if refs else None
+        return await self._generate_single(
+            prompt=prompt,
+            model=model,
+            ref_image=ref,
+            extra_images=[],
+            style_image_url=style_image_url,
+            aspect_ratio=aspect_ratio,
+            image_size=image_size,
+        )
+
+    def _image_to_ref_value(self, image_ref: str) -> str:
+        """Convert an image path or URL to a value suitable for Vidtory refImageUrl."""
+        if image_ref.startswith(("http://", "https://", "data:")):
+            return image_ref
+        return image_path_to_data_url(image_ref)
+
+    async def _generate_single(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        ref_image: str | None,
+        extra_images: list[str],
+        style_image_url: str | None,
+        aspect_ratio: str | None,
+        image_size: str | None,
+    ) -> GeneratedImageResponse:
+        """Submit a single Vidtory image generation job and poll until completion.
+
+        ``ref_image``    → ``refImageUrl``  (single primary reference, used for 1-image flow)
+        ``extra_images`` → ``startImages``  (array of images forwarded equally into Gemini parts)
+        ``style_image_url`` → ``styleImageUrl``  (optional style-transfer reference)
+
+        For multi-image requests, pass all images via ``extra_images`` so that
+        Vidtory forwards every one into Gemini's contents[0].parts as separate
+        ``inlineData`` entries with equal weight.
+        """
+        import time
+
         # Aspect ratio mapping
         ar_map = {
             "1:1": "IMAGE_ASPECT_RATIO_SQUARE",
@@ -1658,27 +1720,25 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
             "resolution": image_size or "1K",
         }
 
-        # Reference images mapping
-        # Vidtory API accepts both HTTP(S) URLs and base64 data URLs.
-        refs = list(reference_images or [])
-        if refs:
-            first_ref = refs[0]
-            body["refImageUrl"] = (
-                first_ref if first_ref.startswith(("http://", "https://"))
-                else image_path_to_data_url(first_ref)
-            )
-            if len(refs) > 1:
-                body["startImages"] = [
-                    r if r.startswith(("http://", "https://")) else image_path_to_data_url(r)
-                    for r in refs[1:]
-                ]
+        # Single reference image → refImageUrl
+        if ref_image:
+            body["refImageUrl"] = self._image_to_ref_value(ref_image)
 
-        # Style reference image
+        # Multiple reference images → startImages array
+        # Vidtory forwards every entry into Gemini contents[0].parts as inlineData,
+        # giving all images equal weight in the generation context.
+        if extra_images:
+            body["startImages"] = [
+                self._image_to_ref_value(r) for r in extra_images
+            ]
+            logger.info(
+                "Vidtory: {} image(s) forwarded equally via startImages",
+                len(extra_images),
+            )
+
+        # Style reference image (optional, separate semantic from content images)
         if style_image_url:
-            if style_image_url.startswith(("http://", "https://", "data:")):
-                body["styleImageUrl"] = style_image_url
-            else:
-                body["styleImageUrl"] = image_path_to_data_url(style_image_url)
+            body["styleImageUrl"] = self._image_to_ref_value(style_image_url)
 
         body.update(self.extra_body)
 

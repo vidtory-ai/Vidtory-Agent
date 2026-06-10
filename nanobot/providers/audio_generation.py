@@ -7,14 +7,17 @@ import time
 from typing import Any
 import httpx
 
+
 class AudioGenerationError(RuntimeError):
     """Raised when the audio generation provider cannot return audio."""
 
+
 class GeneratedAudioResponse:
     """Audio returned by the provider."""
-    def __init__(self, audio_bytes: bytes, raw: dict[str, Any]):
-        self.audio_bytes = audio_bytes
+    def __init__(self, audio_url: str, raw: dict[str, Any]):
+        self.audio_url = audio_url   # CDN URL — no local download
         self.raw = raw
+
 
 class VidtoryAudioGenerationClient:
     """Async client for Vidtory B2B Audio Generation."""
@@ -55,7 +58,7 @@ class VidtoryAudioGenerationClient:
 
         body: dict[str, Any] = {
             "prompt": prompt,
-            "voiceId": voice_id or "eZ248pfac00g3092s7h8",  # Default ElevenLabs voice
+            "voiceId": voice_id or "eZ248pfac00g3092s7h8",
             "speed": speed or 1.0,
             "languageCode": language_code or "vi",
             "modelId": model_id or "eleven_v3",
@@ -72,7 +75,6 @@ class VidtoryAudioGenerationClient:
         url = f"{self.api_base}/generative-core/audio"
         client = self._client or httpx.AsyncClient(timeout=self.timeout)
         try:
-            # Initiate job
             response = await client.post(url, headers=headers, json=body)
             try:
                 response.raise_for_status()
@@ -115,12 +117,10 @@ class VidtoryAudioGenerationClient:
                     result_url = result.get("url")
                     if not result_url:
                         raise AudioGenerationError("Vidtory job completed but did not return a result URL")
-                    
-                    # Download the audio bytes
-                    audio_resp = await client.get(result_url)
-                    audio_resp.raise_for_status()
+
+                    # Return CDN URL directly — no local download
                     return GeneratedAudioResponse(
-                        audio_bytes=audio_resp.content,
+                        audio_url=result_url,
                         raw=status_payload,
                     )
                 elif status == "FAILED":

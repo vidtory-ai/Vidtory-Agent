@@ -74,10 +74,10 @@ async def test_vidtory_image_generation() -> None:
         image_size="1K",
     )
 
-    assert len(res.images) == 1
-    assert res.images[0].startswith("data:image/png;base64,")
+    assert len(res.image_urls) == 1
+    assert res.image_urls[0] == "https://cdn/img.png"
     
-    assert len(fake.calls) == 3
+    assert len(fake.calls) == 2
     init_call = fake.calls[0]
     assert init_call["method"] == "POST"
     assert init_call["url"] == "https://bapi.vidtory.net/generative-core/image"

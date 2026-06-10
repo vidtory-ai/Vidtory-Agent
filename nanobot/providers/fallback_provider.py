@@ -268,8 +268,20 @@ class FallbackProvider(LLMProvider):
         code = (response.error_code or "").lower()
         text = (response.content or "").lower()
 
-        if status in {400, 401, 403, 404, 422}:
+        if status in {401, 403, 404, 422}:
             return False
+        # 400 Bad Request is generally non-fallbackable (invalid request parameters, etc.),
+        # EXCEPT when it is a token limit or rate limit error disguised as a 400
+        # (e.g. Groq TPM limits or context window limits).
+        if status == 400:
+            has_fallback_token = any(
+                token in value
+                for value in (kind, error_type, code, text)
+                for token in _FALLBACK_ERROR_TOKENS
+            )
+            if not has_fallback_token:
+                return False
+
         # 402 Payment Required from OpenRouter = token/credit limit → try fallback
         if status == 402:
             return True
@@ -284,3 +296,4 @@ class FallbackProvider(LLMProvider):
         if kind in _FALLBACK_ERROR_KINDS:
             return True
         return any(token in value for value in (kind, error_type, code, text) for token in _FALLBACK_ERROR_TOKENS)
+

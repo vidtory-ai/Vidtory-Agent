@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,7 @@ from nanobot.providers.video_generation import (
     VideoGenerationError,
     VidtoryVideoGenerationClient,
 )
-from nanobot.utils.artifacts import store_generated_video_artifact
+
 
 class VideoGenerationToolConfig(Base):
     """Video generation tool configuration."""
@@ -27,7 +28,6 @@ class VideoGenerationToolConfig(Base):
     model: str = "veo-3.1-fast-generate-001"
     default_aspect_ratio: str = "16:9"
     default_duration: int = 8
-    save_dir: str = "generated"
 
 
 @tool_parameters(
@@ -37,8 +37,8 @@ class VideoGenerationToolConfig(Base):
             min_length=1,
         ),
         reference_images=ArraySchema(
-            StringSchema("Local path of an existing image artifact or user-provided image to use as a starting frame / reference image."),
-            description="Optional local image paths. When provided, automatically switches model to Image-to-Video (i2v) mode.",
+            StringSchema("CDN URL or local path of an image to use as a starting frame / reference."),
+            description="Optional image URLs or paths. When provided, automatically switches model to Image-to-Video (i2v) mode.",
         ),
         aspect_ratio=StringSchema(
             "Optional output aspect ratio: 16:9, 9:16.",
@@ -55,7 +55,7 @@ class VideoGenerationToolConfig(Base):
     )
 )
 class VideoGenerationTool(Tool):
-    """Generate persistent video artifacts through the Vidtory video provider."""
+    """Generate videos from text prompts or starting image frames via Vidtory API."""
 
     config_key = "video_generation"
 
@@ -95,13 +95,13 @@ class VideoGenerationTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Generate cinematic videos from text prompts or starting image frames and save them as persistent artifacts. "
-            "Returns video metadata including artifact IDs and local file paths. Deliver to user via the message tool."
+            "Generate cinematic videos from text prompts or starting image frames via Vidtory API. "
+            "Returns a CDN video URL. Deliver to user via the message tool."
         )
 
     def _provider_client(self) -> VidtoryVideoGenerationClient:
-        from nanobot.utils.context_vars import telegram_user_api_key
-        user_key = telegram_user_api_key.get()
+        from nanobot.utils.context_vars import telegram_vidtory_api_key
+        user_key = telegram_vidtory_api_key.get()
         api_key = user_key or (self.provider_config.api_key if self.provider_config else None)
         api_base = self.provider_config.api_base if self.provider_config else None
         return VidtoryVideoGenerationClient(
@@ -115,7 +115,6 @@ class VideoGenerationTool(Tool):
         HTTP(S) URLs (e.g. Vidtory CDN) are returned as-is.
         Local paths are resolved to absolute paths.
         """
-        # Remote URL — pass through directly, no local file resolution needed
         if value.startswith(("http://", "https://")):
             return value
         raw_path = Path(value).expanduser()
@@ -153,21 +152,16 @@ class VideoGenerationTool(Tool):
                 mode=mode,
             )
 
-            # Store video as artifact
-            artifact = store_generated_video_artifact(
-                response.video_bytes,
-                prompt=prompt,
-                model=self.config.model,
-                source_images=refs,
-                save_dir=self.config.save_dir,
-            )
+            # Return CDN URL directly — no local storage
+            video_url = response.video_url
+            if not video_url:
+                return "Error: Video generation did not return a URL"
 
-            import json
             return json.dumps(
                 {
-                    "artifacts": [artifact],
+                    "video_url": video_url,
                     "next_step": (
-                        "Call the message tool with this video artifact path in the media parameter "
+                        "Call the message tool with this URL in the media parameter "
                         "to deliver the video to the user."
                     ),
                 },

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 from typing import Any
 import httpx
@@ -16,19 +15,14 @@ class WatermarkRemovalError(RuntimeError):
 
 class WatermarkRemovalResponse:
     """Result of watermark removal."""
-    def __init__(self, image_data_url: str, mask_base: str | None, raw: dict[str, Any]):
-        self.image_data_url = image_data_url
-        self.mask_base = mask_base  # For iterative refinement
+    def __init__(self, image_url: str, mask_base: str | None, raw: dict[str, Any]):
+        self.image_url = image_url   # CDN URL — no local download
+        self.mask_base = mask_base
         self.raw = raw
 
 
 class VidtoryWatermarkRemovalClient:
-    """Async client for Vidtory B2B Remove Watermark via /generative-core/image/remove-watermark.
-
-    Supports:
-    - Initial watermark removal by uploading image file
-    - Optional refinement with previous generationHistoryId, maskBase, and maskBrush
-    """
+    """Async client for Vidtory B2B Remove Watermark via /generative-core/image/remove-watermark."""
 
     provider_name = "vidtory"
     missing_key_message = (
@@ -79,7 +73,6 @@ class VidtoryWatermarkRemovalClient:
         url = f"{self.api_base}/generative-core/image/remove-watermark"
         client = self._client or httpx.AsyncClient(timeout=self.timeout)
         try:
-            # Build multipart form
             files: dict[str, Any] = {
                 "file": (p.name, image_bytes, mime),
             }
@@ -106,9 +99,6 @@ class VidtoryWatermarkRemovalClient:
                 raise WatermarkRemovalError(f"Vidtory remove-watermark failed: {payload.get('message')}")
 
             result_data = payload.get("data") or {}
-
-            # The API returns COMPLETED immediately for this endpoint
-            # Extract media URL from result
             media = result_data.get("media") or {}
             result_url = (
                 media.get("url")
@@ -120,16 +110,9 @@ class VidtoryWatermarkRemovalClient:
             if not result_url:
                 raise WatermarkRemovalError("Vidtory remove-watermark did not return an image URL")
 
-            # Download the cleaned image
-            img_resp = await client.get(result_url)
-            img_resp.raise_for_status()
-            raw_out = img_resp.content
-            out_mime = detect_image_mime(raw_out) or "image/png"
-            encoded = base64.b64encode(raw_out).decode("ascii")
-            image_data_url = f"data:{out_mime};base64,{encoded}"
-
+            # Return CDN URL directly — no local download
             return WatermarkRemovalResponse(
-                image_data_url=image_data_url,
+                image_url=result_url,
                 mask_base=mask_base_out,
                 raw=payload,
             )

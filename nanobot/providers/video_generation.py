@@ -12,8 +12,9 @@ class VideoGenerationError(RuntimeError):
 
 class GeneratedVideoResponse:
     """Video returned by the provider."""
-    def __init__(self, video_bytes: bytes, raw: dict[str, Any]):
+    def __init__(self, video_bytes: bytes, raw: dict[str, Any], video_url: str = ""):
         self.video_bytes = video_bytes
+        self.video_url = video_url  # CDN URL if available (preferred for delivery)
         self.raw = raw
 
 class VidtoryVideoGenerationClient:
@@ -144,12 +145,12 @@ class VidtoryVideoGenerationClient:
                     result_url = result.get("url")
                     if not result_url:
                         raise VideoGenerationError("Vidtory job completed but did not return a result URL")
-                    
-                    # Download the video bytes
-                    video_resp = await client.get(result_url)
-                    video_resp.raise_for_status()
+
+                    # Return the CDN URL directly — avoids large binary download.
+                    # Telegram Bot API accepts HTTP(S) URLs directly for video.
                     return GeneratedVideoResponse(
-                        video_bytes=video_resp.content,
+                        video_bytes=b"",
+                        video_url=result_url,
                         raw=status_payload,
                     )
                 elif status == "FAILED":

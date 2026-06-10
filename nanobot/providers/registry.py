@@ -516,13 +516,14 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         backend="openai_compat",
         default_api_base="https://qianfan.baidubce.com/v2"
     ),
-    # Vidtory AI
+    # Vidtory AI — uses native job-polling text API (not OpenAI-compat)
     ProviderSpec(
         name="vidtory",
-        keywords=("vidtory",),
+        keywords=("vidtory", "gemini-3-flash", "gemini-3", "zen"),
         env_key="VIDTORY_API_KEY",
         display_name="Vidtory AI",
-        backend="openai_compat",
+        backend="vidtory",
+        detect_by_key_prefix="vidtory_",
         default_api_base="https://bapi.vidtory.net",
     ),
 )

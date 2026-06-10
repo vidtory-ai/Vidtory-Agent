@@ -2,31 +2,29 @@
 
 from __future__ import annotations
 
+import json
+from contextvars import ContextVar
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from loguru import logger
 from pydantic import Field
 
 from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.agent.tools.schema import (
     ArraySchema,
     IntegerSchema,
     StringSchema,
     tool_parameters_schema,
 )
+from nanobot.bus.events import OutboundMessage
 from nanobot.config.paths import get_media_dir
 from nanobot.config.schema import Base
 from nanobot.providers.image_generation import (
     ImageGenerationError,
     ImageGenerationProvider,
     get_image_gen_provider,
-)
-from nanobot.utils.artifacts import (
-    ArtifactError,
-    generated_image_tool_result,
-    store_generated_image_artifact,
-    store_remote_image_artifact,
 )
 from nanobot.utils.context_vars import telegram_customer_profile
 from nanobot.utils.customer_context import (
@@ -41,6 +39,11 @@ from nanobot.utils.vidtory_knowledge import (
 
 if TYPE_CHECKING:
     from nanobot.config.schema import ProviderConfig
+
+# Module-level ContextVar so there is exactly one per process (not one per tool instance)
+_image_gen_request_ctx: ContextVar[RequestContext | None] = ContextVar(
+    "image_gen_request_context", default=None
+)
 
 
 class ImageGenerationToolConfig(Base):
@@ -61,8 +64,13 @@ class ImageGenerationToolConfig(Base):
             min_length=1,
         ),
         reference_images=ArraySchema(
-            StringSchema("Local path of an existing image artifact or user-provided image to use as a reference/edit base (maps to refImageUrl for first, startImages for rest)."),
-            description="Optional local image paths for reference or starting frames. The first becomes refImageUrl, remaining become startImages.",
+            StringSchema("Local path of a user-provided image or existing generated artifact to use as reference. IMPORTANT: When the user sends multiple images (e.g. 2 photos), include ALL image paths here — do NOT omit any."),
+            description=(
+                "CRITICAL: When the user uploads or provides multiple images, you MUST include ALL image paths in this list. "
+                "Example: if user sends 2 images at paths ['/path/img1.jpg', '/path/img2.jpg'], pass both paths here. "
+                "The first image becomes the primary reference (refImageUrl), all remaining images are sent as additional context (startImages). "
+                "Never omit any user-provided image — the model needs all images to fulfill requests like combining, merging, or referencing multiple subjects."
+            ),
         ),
         style_image_url=StringSchema(
             "Optional URL or local path of a style reference image to apply stylistic transfer (styleImageUrl).",
@@ -81,7 +89,7 @@ class ImageGenerationToolConfig(Base):
         required=["prompt"],
     )
 )
-class ImageGenerationTool(Tool):
+class ImageGenerationTool(Tool, ContextAware):
     """Generate persistent image artifacts through the configured image provider."""
 
     config_key = "image_generation"
@@ -96,10 +104,12 @@ class ImageGenerationTool(Tool):
 
     @classmethod
     def create(cls, ctx: Any) -> Tool:
+        send_callback = ctx.bus.publish_outbound if ctx.bus else None
         return cls(
             workspace=ctx.workspace,
             config=ctx.config.image_generation,
             provider_configs=ctx.image_generation_provider_configs,
+            send_callback=send_callback,
         )
 
     def __init__(
@@ -109,6 +119,7 @@ class ImageGenerationTool(Tool):
         config: ImageGenerationToolConfig,
         provider_config: ProviderConfig | None = None,
         provider_configs: dict[str, ProviderConfig] | None = None,
+        send_callback: Callable[[OutboundMessage], Awaitable[None]] | None = None,
     ) -> None:
         self.workspace = Path(workspace).expanduser()
         self.config = config
@@ -116,25 +127,32 @@ class ImageGenerationTool(Tool):
         # BUG FIX: was hardcoding "openrouter" — now uses the actual provider name
         if provider_config is not None and self.config.provider not in self.provider_configs:
             self.provider_configs[self.config.provider] = provider_config
+        self._send_callback = send_callback
 
     @property
     def name(self) -> str:
         return "generate_image"
 
+    def set_context(self, ctx: RequestContext) -> None:
+        """Receive the current request context (channel, chat_id, metadata)."""
+        _image_gen_request_ctx.set(ctx)
+
     @property
     def description(self) -> str:
         return (
             "Generate or edit images and store them as persistent artifacts. "
-            "Returns artifact ids and local paths. For edits, pass prior generated image paths "
-            "or user image paths as reference_images."
+            "Returns artifact ids and local paths. "
+            "IMPORTANT: When the user provides multiple images (uploads 2+ photos), you MUST pass ALL image paths "
+            "into reference_images — the provider needs every image to correctly combine or reference them. "
+            "Never call this tool with only 1 image when the user sent 2 or more."
         )
 
     def _provider_config(self) -> ProviderConfig | None:
         return self.provider_configs.get(self.config.provider)
 
     def _provider_client(self) -> ImageGenerationProvider | None:
-        from nanobot.utils.context_vars import telegram_user_api_key
-        user_key = telegram_user_api_key.get()
+        from nanobot.utils.context_vars import telegram_vidtory_api_key
+        user_key = telegram_vidtory_api_key.get()
         provider = self._provider_config()
         cls = get_image_gen_provider(self.config.provider)
         if cls is None:
@@ -208,8 +226,8 @@ class ImageGenerationTool(Tool):
 
         try:
             refs = self._resolve_reference_images(reference_images)
-            artifacts: list[dict[str, Any]] = []
-            while len(artifacts) < requested:
+            image_urls: list[str] = []
+            while len(image_urls) < requested:
                 response = await client.generate(
                     prompt=optimized_prompt,
                     model=self.config.model,
@@ -218,34 +236,79 @@ class ImageGenerationTool(Tool):
                     aspect_ratio=resolved_ar,
                     image_size=image_size or self.config.default_image_size,
                 )
+                # Collect remote CDN URLs directly — no local storage
+                for url in (response.image_urls or []):
+                    image_urls.append(url)
+                    if len(image_urls) >= requested:
+                        break
+                # base64 images (non-Vidtory providers): still need to decode to send
                 for image_data_url in response.images:
-                    artifact = store_generated_image_artifact(
-                        image_data_url,
-                        prompt=optimized_prompt,
-                        model=self.config.model,
-                        source_images=refs,
-                        save_dir=self.config.save_dir,
-                        provider=self.config.provider,
-                    )
-                    artifacts.append(artifact)
-                    if len(artifacts) >= requested:
+                    image_urls.append(image_data_url)
+                    if len(image_urls) >= requested:
                         break
-                # Handle remote URLs (e.g. Vidtory CDN) — no download needed
-                for remote_url in (response.image_urls or []):
-                    artifact = store_remote_image_artifact(
-                        remote_url,
-                        prompt=optimized_prompt,
-                        model=self.config.model,
-                        source_images=refs,
-                        save_dir=self.config.save_dir,
-                        provider=self.config.provider,
+
+            # Auto-send images directly via bus so LLM doesn't need to call message tool
+            ctx = _image_gen_request_ctx.get()
+            if ctx and self._send_callback and image_urls:
+                try:
+                    outbound = OutboundMessage(
+                        channel=ctx.channel,
+                        chat_id=ctx.chat_id,
+                        content="",
+                        media=image_urls,
+                        metadata=dict(ctx.metadata or {}),
                     )
-                    artifacts.append(artifact)
-                    if len(artifacts) >= requested:
-                        break
-            return generated_image_tool_result(artifacts)
-        except (ArtifactError, ImageGenerationError, OSError) as exc:
+                    await self._send_callback(outbound)
+                    logger.info(
+                        "ImageGenerationTool: auto-sent {} image(s) to {}:{}",
+                        len(image_urls), ctx.channel, ctx.chat_id,
+                    )
+                    return json.dumps(
+                        {"status": "sent", "count": len(image_urls)},
+                        ensure_ascii=False,
+                    )
+                except Exception as send_exc:
+                    logger.warning("ImageGenerationTool: auto-send failed: {}", send_exc)
+                    # Fall through to returning URLs for LLM to deliver manually
+
+            return json.dumps(
+                {
+                    "image_urls": image_urls,
+                    "next_step": (
+                        "Call the message tool with these URLs in the media parameter "
+                        "to deliver the images to the user."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        except (ImageGenerationError, OSError) as exc:
             return f"Error: {exc}"
+
+    # Technical keywords that indicate the user's prompt is already professionally written.
+    # When found, skip auto-enhancement to avoid injecting irrelevant content-type styles.
+    _DETAILED_PROMPT_KEYWORDS = {
+        "cinematic", "composition", "poster", "illustration", "render", "studio",
+        "lighting", "bokeh", "depth of field", "editorial", "photorealistic",
+        "high detail", "commercial quality", "professional", "high resolution",
+        "sharp focus", "4k", "8k", "hdr", "color grade", "blender", "octane",
+        "ghép", "kết hợp", "hòa quyện", "bố cục", "ánh sáng", "chuyên nghiệp",
+        "poster", "minh họa", "concept", "banner", "logo",
+    }
+
+    def _is_detailed_prompt(self, prompt: str) -> bool:
+        """Return True if the prompt is already detailed enough to skip auto-enhancement.
+
+        A prompt is considered detailed if:
+        - It contains >= 30 words (user put effort into it), OR
+        - It contains technical/professional photography/art keywords.
+        This prevents injecting unrelated content-type styles (e.g. 'beverage photography')
+        into prompts about nature scenes or illustration work.
+        """
+        word_count = len(prompt.split())
+        if word_count >= 30:
+            return True
+        prompt_lower = prompt.lower()
+        return any(kw in prompt_lower for kw in self._DETAILED_PROMPT_KEYWORDS)
 
     def _apply_customer_context(self, prompt: str) -> tuple[str, str | None]:
         """Apply customer brand guidelines and Vidtory professional standards to the prompt.
@@ -253,6 +316,7 @@ class ImageGenerationTool(Tool):
         This is the central prompt enrichment pipeline:
         1. Auto-detect content type from prompt
         2. Apply Vidtory professional photography style for that content type
+           (SKIPPED when prompt is already detailed to avoid injecting irrelevant styles)
         3. Apply customer brand guidelines (style, mood keywords, colors)
         4. Derive customer's preferred aspect ratio from their primary channel
 
@@ -264,18 +328,27 @@ class ImageGenerationTool(Tool):
         aspect_ratio: str | None = None
 
         # ── Step 1: Vidtory professional prompt enhancement ──────────────────
-        try:
-            content_type = detect_content_type(prompt)
-            pro_suffix = build_professional_prompt_suffix(prompt, content_type=content_type)
-            if pro_suffix:
-                enriched = f"{enriched}, {pro_suffix}"
-                logger.debug(
-                    "Vidtory professional enhancement applied (content_type={}): +{} chars",
-                    content_type or "auto",
-                    len(pro_suffix),
-                )
-        except Exception:
-            logger.warning("Vidtory knowledge enhancement failed — using original prompt")
+        # Skip when the user has already written a detailed/professional prompt
+        # to avoid injecting irrelevant content-type keywords (e.g. 'beverage
+        # photography' into a nature/illustration prompt).
+        if not self._is_detailed_prompt(prompt):
+            try:
+                content_type = detect_content_type(prompt)
+                pro_suffix = build_professional_prompt_suffix(prompt, content_type=content_type)
+                if pro_suffix:
+                    enriched = f"{enriched}, {pro_suffix}"
+                    logger.debug(
+                        "Vidtory professional enhancement applied (content_type={}): +{} chars",
+                        content_type or "auto",
+                        len(pro_suffix),
+                    )
+            except Exception:
+                logger.warning("Vidtory knowledge enhancement failed — using original prompt")
+        else:
+            logger.debug(
+                "Prompt auto-enhancement skipped: prompt is already detailed ({} words)",
+                len(prompt.split()),
+            )
 
         # ── Step 2: Customer brand guidelines ────────────────────────────────
         try:
