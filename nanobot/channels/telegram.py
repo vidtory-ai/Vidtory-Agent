@@ -226,44 +226,59 @@ class _StreamBuf:
 
 
 class TelegramKeyStore:
-    """Secure local file storage mapping sender_ids to their configured API keys."""
+    """Secure SQLite-backed storage mapping sender_ids to their configured API keys.
+
+    Falls back to importing the legacy JSON file on first use if the DB is empty,
+    providing automatic migration without any manual intervention.
+    """
 
     def __init__(self) -> None:
-        self.path = get_data_dir() / "telegram_keys.json"
-        self._keys: dict[str, str] = {}
-        self._load()
+        self._migrated = False
 
-    def _load(self) -> None:
-        if self.path.exists():
-            try:
-                import json
-                with open(self.path, "r", encoding="utf-8") as f:
-                    self._keys = json.load(f)
-            except Exception:
-                self._keys = {}
+    def _db(self):
+        from nanobot.db.customer_db import get_db
+        return get_db()
 
-    def _save(self) -> None:
+    def _ensure_migrated(self) -> None:
+        """One-time import of legacy telegram_keys.json into SQLite (if needed)."""
+        if self._migrated:
+            return
+        self._migrated = True
         try:
+            from nanobot.config.paths import get_data_dir
+            legacy_path = get_data_dir() / "telegram_keys.json"
+            if not legacy_path.exists():
+                return
+            # Only migrate if DB is empty
+            if self._db().get_all_api_keys():
+                return
             import json
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self._keys, f, indent=2)
+            with open(legacy_path, encoding="utf-8") as f:
+                keys: dict = json.load(f)
+            count = 0
+            for uid, key in keys.items():
+                if uid and key:
+                    self._db().set_api_key(uid, key)
+                    count += 1
+            if count:
+                import logging
+                logging.getLogger(__name__).info(
+                    "Migrated %d API keys from telegram_keys.json to SQLite", count
+                )
         except Exception:
-            pass
+            pass  # Non-critical — never block startup
 
     def get_key(self, sender_id: str) -> str | None:
-        sid = sender_id.split("|")[0]
-        return self._keys.get(sid)
+        self._ensure_migrated()
+        return self._db().get_api_key(sender_id)
 
     def set_key(self, sender_id: str, key: str) -> None:
-        sid = sender_id.split("|")[0]
-        self._keys[sid] = key
-        self._save()
+        self._ensure_migrated()
+        self._db().set_api_key(sender_id, key)
 
     def remove_key(self, sender_id: str) -> None:
-        sid = sender_id.split("|")[0]
-        if sid in self._keys:
-            del self._keys[sid]
-            self._save()
+        self._ensure_migrated()
+        self._db().remove_api_key(sender_id)
 
 
 class TelegramConfig(Base):
@@ -298,18 +313,16 @@ class TelegramChannel(BaseChannel):
     # Commands registered with Telegram's command menu
     BOT_COMMANDS = [
         BotCommand("start", "Start the bot"),
+        BotCommand("apikey", "Set your Vidtory API key"),
+        BotCommand("mykey", "View your current API key (masked)"),
+        BotCommand("credits", "Check your remaining Vidtory credits"),
+        BotCommand("profile", "View or reset your brand profile"),
         BotCommand("new", "Start a new conversation"),
+        BotCommand("clear", "Delete all your data and API key"),
         BotCommand("stop", "Stop the current task"),
-        BotCommand("restart", "Restart the bot"),
-        BotCommand("status", "Show bot status"),
-        BotCommand("history", "Show recent conversation messages"),
-        BotCommand("goal", "Start a sustained objective (long-running task)"),
-        BotCommand("pairing", "Manage DM pairing (approve/deny/list)"),
-        BotCommand("model", "Switch runtime model preset"),
-        BotCommand("dream", "Run Dream memory consolidation now"),
-        BotCommand("dream_log", "Show the latest Dream memory change"),
-        BotCommand("dream_restore", "Restore Dream memory to an earlier version"),
-        BotCommand("help", "Show available commands"),
+        BotCommand("status", "Show bot status and model info"),
+        BotCommand("model", "Switch AI model preset"),
+        BotCommand("help", "List all available commands"),
     ]
 
     # Regex for slash commands routed to AgentLoop via ``_forward_command``.
@@ -420,6 +433,13 @@ class TelegramChannel(BaseChannel):
             )
         )
         self._app.add_handler(MessageHandler(filters.Regex(r"^/help(?:@\w+)?$"), self._on_help))
+        # API key management commands (multi-user mode)
+        self._app.add_handler(
+            MessageHandler(
+                filters.Regex(r"^/(apikey|mykey|clear|credits|profile)(?:@\w+)?(?:\s+.*)?$"),
+                self._on_api_key_management,
+            )
+        )
 
         # Add message handler for text, photos, video, voice, documents, and locations
         self._app.add_handler(
@@ -491,8 +511,15 @@ class TelegramChannel(BaseChannel):
 
     @staticmethod
     def _get_media_type(path: str) -> str:
-        """Guess media type from file extension."""
-        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+        """Guess media type from file extension.
+
+        Strips URL query params/fragments before extracting extension so that
+        CDN URLs like https://cdn.vidtory.net/vid.mp4?token=xxx are detected
+        correctly as video instead of document.
+        """
+        # Strip query string and fragment for URL-based paths
+        clean = path.split("?")[0].split("#")[0]
+        ext = clean.rsplit(".", 1)[-1].lower() if "." in clean else ""
         if ext in ("jpg", "jpeg", "png", "gif", "webp"):
             return "photo"
         if ext in ("mp4", "mov", "avi", "mkv", "webm", "3gp"):
@@ -844,8 +871,33 @@ class TelegramChannel(BaseChannel):
             return
 
         user = update.effective_user
-        if not self.is_allowed(self._sender_id(user)):
+        sender_id = self._sender_id(user)
+        if not self.is_allowed(sender_id):
             return
+
+        # When multi-user API key mode is enabled, guide new users to set up their key.
+        if getattr(self.config, "require_user_api_key", False):
+            key = self.keystore.get_key(sender_id)
+            if not key:
+                await update.message.reply_text(
+                    f"👋 *Xin chào {user.first_name}!* Chào mừng bạn đến với Vidtory AI.\n\n"
+                    "Để bắt đầu sử dụng bot, bạn cần cung cấp *Vidtory API Key* của mình.\n\n"
+                    "🔑 *Cách lấy API Key:*\n"
+                    "1. Truy cập: https://app.vidtory.net/settings/api\n"
+                    "2. Tạo hoặc copy API Key có sẵn\n"
+                    "3. Gửi lệnh: `/apikey YOUR_API_KEY`\n\n"
+                    "_Bạn chỉ cần cài đặt một lần duy nhất._",
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
+                )
+                return
+            await update.message.reply_text(
+                f"👋 Xin chào lại, *{user.first_name}*! Bot đang sẵn sàng.\n"
+                "Gõ /help để xem danh sách lệnh.",
+                parse_mode="Markdown",
+            )
+            return
+
         await update.message.reply_text(
             f"👋 Hi {user.first_name}! I'm nanobot.\n\n"
             "Send me a message and I'll respond!\n"
@@ -856,8 +908,22 @@ class TelegramChannel(BaseChannel):
         """Handle /help command for allowed users only."""
         if not update.message or not update.effective_user:
             return
-        if not self.is_allowed(self._sender_id(update.effective_user)):
+        user = update.effective_user
+        sender_id = self._sender_id(user)
+        if not self.is_allowed(sender_id):
             return
+
+        # When multi-user mode is on and user has no key yet, remind them to set it up.
+        if getattr(self.config, "require_user_api_key", False):
+            if not self.keystore.get_key(sender_id):
+                await update.message.reply_text(
+                    "❌ Bạn chưa cấu hình API Key.\n"
+                    "Hãy dùng lệnh:\n`/apikey YOUR_API_KEY`\n\n"
+                    "Để bắt đầu sử dụng bot.",
+                    parse_mode="Markdown",
+                )
+                return
+
         await update.message.reply_text(build_help_text())
 
     @staticmethod
@@ -1041,14 +1107,53 @@ class TelegramChannel(BaseChannel):
         if len(self._message_threads) > 1000:
             self._message_threads.pop(next(iter(self._message_threads)))
 
+    @staticmethod
+    def _looks_like_api_key(text: str) -> bool:
+        """Return True if text looks like a bare Vidtory API key (not a slash command)."""
+        stripped = text.strip()
+        # A Vidtory API key starts with 'vidtory_' and contains only hex/alphanumeric chars.
+        # Accept any token that matches the known prefix pattern.
+        return bool(re.fullmatch(r'vidtory_[a-fA-F0-9]{64,}', stripped))
+
+    async def _on_api_key_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Dedicated handler for /apikey, /mykey, /clear, /credits, /profile commands."""
+        if not update.effective_user:
+            return
+        if not self.is_allowed(self._sender_id(update.effective_user)):
+            return
+
+        # Always attempt to handle key-management commands.
+        # _handle_api_key_commands returns False when require_user_api_key=False,
+        # which means we should forward these commands to the agent bus instead
+        # so the LLM can reply with a helpful message.
+        handled = await self._handle_api_key_commands(update)
+        if not handled:
+            # require_user_api_key is off — route the command through the bus
+            # so the LLM can respond (e.g. explain what /apikey does).
+            message = update.message
+            if not message:
+                return
+            user = update.effective_user
+            sender_id = self._sender_id(user)
+            self._remember_thread_context(message)
+            content = (message.text or "").strip()
+            self._start_typing(str(message.chat_id))
+            await self._add_reaction(str(message.chat_id), message.message_id, self.config.react_emoji)
+            await self._handle_message(
+                sender_id=sender_id,
+                chat_id=str(message.chat_id),
+                content=content,
+                metadata=self._build_message_metadata(message, user),
+                session_key=self._derive_topic_session_key(message),
+                is_dm=message.chat.type == "private",
+            )
+
     async def _handle_api_key_commands(self, update: Update) -> bool:
         """Handle multi-user API key registration/management commands.
 
         Returns True if a command was handled and no further processing is needed.
+        /profile is always handled regardless of require_user_api_key setting.
         """
-        if not getattr(self.config, "require_user_api_key", False):
-            return False
-
         message = update.message
         if not message or not message.text:
             return False
@@ -1065,21 +1170,75 @@ class TelegramChannel(BaseChannel):
         sender_id = self._sender_id(user)
         chat_id = str(message.chat_id)
 
+        # /profile is always available — does not require require_user_api_key
+        if cmd == "/profile":
+            try:
+                from nanobot.utils.customer_profile import load_profile
+                uid = sender_id.split("|")[0].strip()
+                profile = load_profile(uid)
+                if not profile:
+                    await message.reply_text(
+                        "📋 *Chưa có brand profile.*\n\n"
+                        "Bắt đầu trò chuyện và tôi sẽ hướng dẫn bạn thiết lập, "
+                        "hoặc nói *\"dùng ngay\"* để bỏ qua onboarding.",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    biz = profile.get("business") or {}
+                    brand = profile.get("brand") or {}
+                    onboarding = profile.get("onboarding") or {}
+                    status_map = {
+                        "minimal": "Cơ bản ✅",
+                        "completed": "Hoàn chỉnh ✅",
+                        "in_progress": "Đang thiết lập 🔄",
+                    }
+                    status = status_map.get(onboarding.get("status", ""), onboarding.get("status", "—"))
+                    name = biz.get("name") or "—"
+                    industry = biz.get("industry") or "—"
+                    style = brand.get("style") or "—"
+                    colors = brand.get("colorPalette") or {}
+                    primary_color = colors.get("primary") or "—"
+                    mood = ", ".join(brand.get("moodKeywords") or []) or "—"
+                    avoid = ", ".join(brand.get("avoidList") or []) or "—"
+                    lines = [
+                        "📋 *Brand Profile của bạn*",
+                        "",
+                        f"🏢 *Tên:* {name}",
+                        f"🏭 *Ngành:* {industry}",
+                        f"🎨 *Phong cách:* {style}",
+                        f"✨ *Mood:* {mood}",
+                        f"🎨 *Màu chủ đạo:* {primary_color}",
+                        f"🚫 *Tránh:* {avoid}",
+                        f"✅ *Onboarding:* {status}",
+                        "",
+                        "_Để reset profile, dùng_ `/clear` _rồi chat lại._",
+                    ]
+                    await message.reply_text("\n".join(lines), parse_mode="Markdown")
+            except Exception as e:
+                self.logger.warning("Failed to load customer profile: {}", e)
+                await message.reply_text(
+                    "⚠️ Không thể tải profile. Vui lòng thử lại sau.",
+                    parse_mode="Markdown"
+                )
+            return True
+
+        # All key-management commands are always handled — no flag restriction.
+
         if cmd == "/apikey":
             parts = text.split(None, 1)
             if len(parts) < 2:
                 await message.reply_text(
-                    "🔑 *To configure your API Key*, please use the format:\n"
+                    "🔑 *Cấu hình API Key* theo định dạng:\n"
                     "`/apikey YOUR_API_KEY`\n\n"
-                    "Note: This key will be stored securely and used only for your requests.",
+                    "Key sẽ được lưu bảo mật và chỉ dùng cho yêu cầu của bạn.",
                     parse_mode="Markdown"
                 )
                 return True
             key = parts[1].strip()
             self.keystore.set_key(sender_id, key)
             await message.reply_text(
-                "✅ *API Key configured successfully!*\n"
-                "You can now start chatting with the agent.",
+                "✅ *Cấu hình API Key thành công!*\n"
+                "Bạn có thể bắt đầu chat với bot ngay bây giờ.",
                 parse_mode="Markdown"
             )
             return True
@@ -1088,14 +1247,14 @@ class TelegramChannel(BaseChannel):
             key = self.keystore.get_key(sender_id)
             if not key:
                 await message.reply_text(
-                    "❌ You have *no API Key configured*.\n"
-                    "Please configure one using `/apikey <key>`.",
+                    "❌ Bạn *chưa cấu hình API Key*.\n"
+                    "Hãy dùng lệnh `/apikey YOUR_API_KEY` để cài đặt.",
                     parse_mode="Markdown"
                 )
             else:
                 masked = key[:6] + "..." + key[-4:] if len(key) > 10 else "..."
                 await message.reply_text(
-                    f"🔑 Your configured API Key: `{masked}`",
+                    f"🔑 API Key hiện tại của bạn: `{masked}`",
                     parse_mode="Markdown"
                 )
             return True
@@ -1119,13 +1278,81 @@ class TelegramChannel(BaseChannel):
                 shutil.rmtree(user_workspace, ignore_errors=True)
 
             await message.reply_text(
-                "🗑️ *All data cleared successfully!*\n"
-                "Your API key, conversation history, and workspace files have been deleted.",
+                "🗑️ *Đã xóa toàn bộ dữ liệu!*\n"
+                "API key, lịch sử hội thoại và workspace của bạn đã được xóa sạch.",
                 parse_mode="Markdown"
             )
             return True
 
+        elif cmd == "/credits":
+            key = self.keystore.get_key(sender_id)
+            if not key:
+                await message.reply_text(
+                    "❌ *Chưa cấu hình API Key.*\n"
+                    "Hãy cài đặt trước: `/apikey YOUR_VIDTORY_API_KEY`",
+                    parse_mode="Markdown"
+                )
+                return True
+            # Call Vidtory API to check credits/balance via /merchant/info
+            try:
+                import httpx
+                provider_config = None
+                with suppress(Exception):
+                    from nanobot.config.loader import load_config
+                    cfg = load_config()
+                    provider_config = (cfg.providers or {}).get("vidtory")
+                api_base = (
+                    getattr(provider_config, "api_base", None)
+                    or "https://bapi.vidtory.net"
+                )
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.get(
+                        f"{api_base}/merchant/info",
+                        headers={"x-api-key": key},
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json().get("data", {})
+                        balance = data.get("balance", {})
+                        current = balance.get("currentBalance", "?")
+                        deposited = balance.get("totalDeposited", "?")
+                        spent = balance.get("totalSpent", "?")
+                        currency = balance.get("currency", "Credit")
+                        business = data.get("businessName", "")
+                        lines = [
+                            f"💳 *Tài khoản Vidtory*",
+                            f"",
+                            f"🏢 *{business}*" if business else "",
+                            f"",
+                            f"💰 *Credits còn lại:* `{current} {currency}`",
+                            f"📥 *Tổng nạp:* `{deposited}`",
+                            f"📤 *Đã dùng:* `{spent}`",
+                        ]
+                        await message.reply_text(
+                            "\n".join(l for l in lines if l is not None),
+                            parse_mode="Markdown"
+                        )
+                    elif resp.status_code == 401:
+                        await message.reply_text(
+                            "❌ *API Key không hợp lệ.*\nHãy cấu hình lại với `/apikey YOUR_KEY`.",
+                            parse_mode="Markdown"
+                        )
+                    else:
+                        await message.reply_text(
+                            f"⚠️ Không thể lấy thông tin tài khoản (HTTP {resp.status_code}).\n"
+                            "Thử lại sau hoặc kiểm tra tại https://vidtory.net",
+                            parse_mode="Markdown"
+                        )
+
+            except Exception as e:
+                self.logger.warning("Failed to fetch Vidtory credits: {}", e)
+                await message.reply_text(
+                    "⚠️ Không thể kết nối đến Vidtory API. Vui lòng thử lại sau.",
+                    parse_mode="Markdown"
+                )
+            return True
+
         return False
+
 
     async def _forward_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Forward slash commands to the bus for unified handling in AgentLoop."""
@@ -1142,12 +1369,13 @@ class TelegramChannel(BaseChannel):
                 return
             if not self.keystore.get_key(sender_id):
                 await message.reply_text(
-                    "👋 *Welcome to Vidtory-Agent!*\n\n"
-                    "To start using this bot, you must first configure your *Vidtory or Gemini API Key*.\n"
-                    "Please configure it using the following command:\n"
-                    "`/apikey YOUR_API_KEY`\n\n"
-                    "Once configured, you can chat with the bot freely. Use `/clear` at any time to delete all your data and key.",
-                    parse_mode="Markdown"
+                    "🔑 *Bạn chưa cấu hình Vidtory API Key.*\n\n"
+                    "Để sử dụng bot, vui lòng:\n"
+                    "1. Truy cập https://app.vidtory.net/settings/api\n"
+                    "2. Lấy API Key của bạn\n"
+                    "3. Gửi: `/apikey YOUR_API_KEY`",
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True,
                 )
                 return
 
@@ -1183,15 +1411,37 @@ class TelegramChannel(BaseChannel):
             return
 
         if getattr(self.config, "require_user_api_key", False):
-            if await self._handle_api_key_commands(update):
-                return
             if not self.keystore.get_key(sender_id):
+                if self._looks_like_api_key(raw_text := (message.text or "").strip()):
+                    self.keystore.set_key(sender_id, raw_text)
+                    await message.reply_text(
+                        "✅ *Đã lưu Vidtory API Key thành công!*\n"
+                        "Bạn có thể bắt đầu chat với bot ngay bây giờ.\n"
+                        "Gõ /help để xem danh sách lệnh.",
+                        parse_mode="Markdown"
+                    )
+                    return
+                else:
+                    await message.reply_text(
+                        "🔑 *Bạn chưa có Vidtory API Key.*\n\n"
+                        "*Cách lấy API Key:*\n"
+                        "1\u20e3 Truy cập: https://app.vidtory.net/settings/api\n"
+                        "2\u20e3 Đăng nhập và tạo/copy API Key\n"
+                        "3\u20e3 Gửi lệnh: `/apikey YOUR_API_KEY`\n\n"
+                        "_Chỉ cần thực hiện một lần duy nhất!_",
+                        parse_mode="Markdown",
+                        disable_web_page_preview=True,
+                    )
+                    return
+        else:
+            # Even when require_user_api_key=False, auto-detect and save bare
+            # Vidtory API keys so the user doesn't have to use /apikey explicitly.
+            raw_text = (message.text or "").strip()
+            if self._looks_like_api_key(raw_text):
+                self.keystore.set_key(sender_id, raw_text)
                 await message.reply_text(
-                    "👋 *Welcome to Vidtory-Agent!*\n\n"
-                    "To start using this bot, you must first configure your *Vidtory or Gemini API Key*.\n"
-                    "Please configure it using the following command:\n"
-                    "`/apikey YOUR_API_KEY`\n\n"
-                    "Once configured, you can chat with the bot freely. Use `/clear` at any time to delete all your data and key.",
+                    "✅ *Đã lưu Vidtory API Key thành công!*\n"
+                    "Bạn có thể bắt đầu tạo ảnh, video, âm thanh ngay bây giờ.",
                     parse_mode="Markdown"
                 )
                 return
@@ -1293,26 +1543,34 @@ class TelegramChannel(BaseChannel):
     ) -> None:
         metadata = dict(metadata or {})
 
-        if getattr(self.config, "require_user_api_key", False):
-            key = self.keystore.get_key(sender_id)
-            user_workspace = str(get_workspace_path() / "telegram_users" / chat_id)
-
-            metadata["user_api_key"] = key or ""
-            metadata["user_workspace"] = user_workspace
-
-            Path(user_workspace).mkdir(parents=True, exist_ok=True)
+        # Always inject keystore API key into metadata so Vidtory tools receive the
+        # merchant key regardless of require_user_api_key setting.
+        # user_workspace is also always set to a per-user directory.
+        key = self.keystore.get_key(sender_id)
+        user_workspace = str(get_workspace_path() / "telegram_users" / chat_id)
+        metadata["user_api_key"] = key or ""
+        metadata["user_workspace"] = user_workspace
+        Path(user_workspace).mkdir(parents=True, exist_ok=True)
 
         # Load customer profile and inject into metadata for brand-aware context.
-        # Also inject onboarding_status so the LLM can trigger the right flow
-        # without having to read files itself.
+        # For new users (status='none'), silently create a minimal profile so they
+        # can start working immediately — no onboarding questionnaire needed.
         try:
             from nanobot.utils.customer_profile import (
+                create_minimal_profile,
                 get_onboarding_status,
                 load_profile,
             )
             uid = sender_id.split("|")[0].strip()
             onboarding_status = get_onboarding_status(uid)
-            metadata["onboarding_status"] = onboarding_status  # 'none'|'minimal'|'completed'
+
+            # Auto-bootstrap new users with a minimal profile (silent)
+            if onboarding_status == "none":
+                username = metadata.get("username") or ""
+                create_minimal_profile(uid, username=username)
+                onboarding_status = "minimal"
+
+            metadata["onboarding_status"] = onboarding_status  # 'minimal'|'completed'
 
             customer_profile = load_profile(uid)
             if customer_profile:
@@ -1490,7 +1748,7 @@ class TelegramChannel(BaseChannel):
             return
         if getattr(self.config, "require_user_api_key", False):
             if not self.keystore.get_key(sender_id):
-                await query.answer("Please configure your API key first using /apikey", show_alert=True)
+                await query.answer("Vui lòng cấu hình API Key trước bằng lệnh /apikey", show_alert=True)
                 return
         button_label = query.data or ""
         await query.answer()
