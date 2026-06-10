@@ -317,6 +317,7 @@ class TelegramChannel(BaseChannel):
         BotCommand("mykey", "View your current API key (masked)"),
         BotCommand("credits", "Check your remaining Vidtory credits"),
         BotCommand("brand", "View your brand profile & logo"),
+        BotCommand("setbrand", "Update a brand field: /setbrand style luxury"),
         BotCommand("setlogo", "Set or change your brand logo"),
         BotCommand("profile", "View or reset your brand profile"),
         BotCommand("new", "Start a new conversation"),
@@ -438,7 +439,7 @@ class TelegramChannel(BaseChannel):
         # API key management commands (multi-user mode)
         self._app.add_handler(
             MessageHandler(
-                filters.Regex(r"^/(apikey|mykey|clear|credits|profile|brand|setlogo)(?:@\w+)?(?:\s+.*)?$"),
+                filters.Regex(r"^/(apikey|mykey|clear|credits|profile|brand|setbrand|setlogo)(?:@\w+)?(?:\s+.*)?$"),
                 self._on_api_key_management,
             )
         )
@@ -1433,6 +1434,7 @@ class TelegramChannel(BaseChannel):
                     lines.append("")
 
                     lines.extend([
+                        "",
                         "👥 *Đối tượng*",
                         f"  Giới tính: {aud_gender} | Tuổi: {aud_age} | Phân khúc: {aud_seg}",
                         "",
@@ -1441,8 +1443,13 @@ class TelegramChannel(BaseChannel):
                         f"📊 *Thống kê:* {total_gens} ảnh tạo | {approved} ✅ | {rejected} ❌",
                         f"✅ *Onboarding:* {status}",
                         "",
-                        "_Để thay đổi logo: /setlogo_",
-                        "_Để reset toàn bộ: /clear_",
+                        "━━━━━━━━━━━━━━",
+                        "*Thay đổi nhanh:*",
+                        "  /setbrand name PTIT",
+                        "  /setbrand style luxury",
+                        "  /setbrand mood sang trọng, hiện đại",
+                        "  /setbrand industry tech",
+                        "  /setlogo — để thay đổi logo",
                     ])
                     await message.reply_text("\n".join(lines), parse_mode="Markdown",
                                             disable_web_page_preview=True)
@@ -1450,6 +1457,107 @@ class TelegramChannel(BaseChannel):
                 self.logger.warning("Failed to load brand profile: {}", e)
                 await message.reply_text(
                     "⚠️ Không thể tải brand profile. Vui lòng thử lại sau.",
+                    parse_mode="Markdown"
+                )
+            return True
+
+        elif cmd == "/setbrand":
+            """Quick brand field updater: /setbrand <field> <value>"""
+            try:
+                from nanobot.utils.customer_profile import profile_exists
+                from nanobot.agent.tools.customer_profile_tool import UpdateCustomerProfileTool
+                from nanobot.utils.context_vars import telegram_customer_profile
+                from nanobot.db.customer_db import get_db as _get_db
+
+                uid = sender_id.split("|")[0].strip()
+
+                parts = text.split(None, 2)  # /setbrand <field> <value...>
+                if len(parts) < 3:
+                    await message.reply_text(
+                        "*Cách dùng /setbrand:*\n\n"
+                        "`/setbrand name TÊN THƯƠNG HIỆU`\n"
+                        "`/setbrand industry tech`\n"
+                        "`/setbrand style luxury`\n"
+                        "`/setbrand mood sang trọng, hiện đại`\n"
+                        "`/setbrand segment mid`\n"
+                        "`/setbrand age 18-35`\n"
+                        "`/setbrand channels facebook, instagram`\n\n"
+                        "_Sau khi thay đổi, gõ /brand để kiểm tra._",
+                        parse_mode="Markdown"
+                    )
+                    return True
+
+                field = parts[1].lower().strip()
+                value = parts[2].strip()
+
+                # Map field aliases → tool parameters
+                FIELD_MAP = {
+                    "name": "business_name",
+                    "ten": "business_name",
+                    "brand": "business_name",
+                    "industry": "industry",
+                    "nganh": "industry",
+                    "style": "brand_style",
+                    "phongcach": "brand_style",
+                    "mood": "mood_keywords",
+                    "cam_xuc": "mood_keywords",
+                    "photo": "photography_style",
+                    "segment": "segment",
+                    "phankhuc": "segment",
+                    "age": "age_range",
+                    "tuoi": "age_range",
+                    "gender": "target_gender",
+                    "gioitinh": "target_gender",
+                    "channels": "channels",
+                    "kenh": "channels",
+                }
+
+                tool_field = FIELD_MAP.get(field)
+                if not tool_field:
+                    valid = ", ".join(sorted(set(FIELD_MAP.keys())))
+                    await message.reply_text(
+                        f"❌ Field `{field}` không hợp lệ.\n\n"
+                        f"*Các field hợp lệ:* `{valid}`\n\n"
+                        "Ví dụ: `/setbrand style luxury`",
+                        parse_mode="Markdown"
+                    )
+                    return True
+
+                # Load current profile into ContextVar for the tool
+                db = _get_db()
+                profile = db.load_profile(uid)
+                if profile:
+                    telegram_customer_profile.set(profile)
+
+                # Parse value for list fields
+                list_fields = {"mood_keywords", "channels"}
+                kwargs: dict = {}
+                if tool_field in list_fields:
+                    # "sang trọng, hiện đại" → ["sang trọng", "hiện đại"]
+                    kwargs[tool_field] = [v.strip() for v in value.replace(";", ",").split(",") if v.strip()]
+                else:
+                    kwargs[tool_field] = value
+
+                tool = UpdateCustomerProfileTool()
+                result = await tool.execute(**kwargs)
+
+                # Read updated value to confirm
+                updated = db.load_profile(uid)
+                biz = updated.get("business", {}) if updated else {}
+                br = updated.get("brand", {}) if updated else {}
+
+                await message.reply_text(
+                    f"✅ *Brand đã được cập nhật!*\n\n"
+                    f"Field: `{field}` → `{value}`\n\n"
+                    f"*Hiện tại:* {biz.get('name', '—')} | {br.get('style', '—')} | {biz.get('industry', '—')}\n"
+                    "_Gõ /brand để xem đầy đủ._",
+                    parse_mode="Markdown"
+                )
+
+            except Exception as e:
+                self.logger.warning("Failed to handle /setbrand: {}", e)
+                await message.reply_text(
+                    "⚠️ Lỗi khi cập nhật brand. Vui lòng thử lại.",
                     parse_mode="Markdown"
                 )
             return True
@@ -1487,41 +1595,84 @@ class TelegramChannel(BaseChannel):
                     return True
 
                 # Case 1: URL provided as argument
+                # If already a Vidtory CDN URL → save directly (no re-upload needed).
+                # If external URL → upload to Vidtory CDN first to get a permanent URL,
+                # same as the product image generation flow.
                 if logo_url_arg and logo_url_arg.startswith(("http://", "https://")):
-                    if set_logo_url(uid, logo_url_arg):
+                    try:
+                        final_logo_url = logo_url_arg
+                        # Non-Vidtory URLs: upload to CDN for permanence
+                        if "vidtory" not in logo_url_arg.lower():
+                            api_key = self.keystore.get_key(sender_id)
+                            cdn_url = await self._upload_image_to_vidtory_cdn(
+                                logo_url_arg, api_key=api_key or "", user_id=uid
+                            )
+                            if not cdn_url:
+                                await message.reply_text(
+                                    "⚠️ Không thể upload logo lên hệ thống.\n"
+                                    "Vui lòng thử lại hoặc gửi trực tiếp file ảnh.",
+                                    parse_mode="Markdown"
+                                )
+                                return True
+                            final_logo_url = cdn_url
+
+                        if set_logo_url(uid, final_logo_url):
+                            await message.reply_text(
+                                "✅ *Logo đã được lưu lên hệ thống!*\n\n"
+                                f"🖼️ [Xem logo]({final_logo_url})\n\n"
+                                "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                                parse_mode="Markdown",
+                                disable_web_page_preview=True,
+                            )
+                        else:
+                            await message.reply_text(
+                                "⚠️ Không thể lưu logo. Vui lòng thử lại.",
+                                parse_mode="Markdown"
+                            )
+                    except Exception as e:
+                        self.logger.warning("Failed to upload logo from URL: {}", e)
                         await message.reply_text(
-                            "✅ *Logo đã được cập nhật!*\n\n"
-                            f"🖼️ [Xem logo]({logo_url_arg})\n\n"
-                            "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
-                            parse_mode="Markdown",
-                            disable_web_page_preview=True,
-                        )
-                    else:
-                        await message.reply_text(
-                            "⚠️ Không thể lưu logo. Vui lòng thử lại.",
+                            "⚠️ Lỗi khi xử lý logo URL. Vui lòng thử lại.",
                             parse_mode="Markdown"
                         )
                     return True
 
                 # Case 2: Reply to a photo
+                # Download photo bytes locally (same as _download_message_media flow),
+                # then upload to Vidtory CDN via /media/upload to get a permanent URL.
                 reply = getattr(message, "reply_to_message", None)
                 if reply and getattr(reply, "photo", None):
                     try:
                         photo = reply.photo[-1]  # Largest resolution
-                        file = await self._app.bot.get_file(photo.file_id)
-                        # Use Telegram file URL as the logo URL
-                        file_url = file.file_path
-                        if file_url and not file_url.startswith("http"):
-                            file_url = f"https://api.telegram.org/file/bot{self.config.token}/{file_url}"
-                        if file_url and set_logo_url(uid, file_url):
+                        tg_file = await self._app.bot.get_file(photo.file_id)
+                        # Download to local bytes — same pattern as product generation upload flow
+                        file_bytes = await tg_file.download_as_bytearray()
+                        if not file_bytes:
                             await message.reply_text(
-                                "✅ *Logo đã được lưu từ ảnh!*\n\n"
-                                "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                                "⚠️ Không thể tải ảnh từ Telegram. Vui lòng thử lại.",
                                 parse_mode="Markdown"
+                            )
+                            return True
+                        # Upload bytes to Vidtory CDN via POST /media/upload
+                        api_key = self.keystore.get_key(sender_id)
+                        cdn_url = await self._upload_logo_bytes_to_cdn(
+                            bytes(file_bytes),
+                            mime_type="image/jpeg",
+                            api_key=api_key or "",
+                            user_id=uid,
+                        )
+                        if cdn_url and set_logo_url(uid, cdn_url):
+                            await message.reply_text(
+                                "✅ *Logo đã được lưu lên hệ thống!*\n\n"
+                                f"🖼️ [Xem logo]({cdn_url})\n"
+                                "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                                parse_mode="Markdown",
+                                disable_web_page_preview=True,
                             )
                         else:
                             await message.reply_text(
-                                "⚠️ Không thể lưu logo từ ảnh. Vui lòng thử lại.",
+                                "⚠️ Không thể upload logo lên hệ thống.\n"
+                                "Vui lòng thử lại.",
                                 parse_mode="Markdown"
                             )
                     except Exception as e:
@@ -1532,23 +1683,38 @@ class TelegramChannel(BaseChannel):
                         )
                     return True
 
-                # Case 3: Photo sent with the command message
+                # Case 3: Photo sent directly with the /setlogo command
+                # Download to local bytes first, then upload to Vidtory CDN.
                 if getattr(message, "photo", None):
                     try:
                         photo = message.photo[-1]
-                        file = await self._app.bot.get_file(photo.file_id)
-                        file_url = file.file_path
-                        if file_url and not file_url.startswith("http"):
-                            file_url = f"https://api.telegram.org/file/bot{self.config.token}/{file_url}"
-                        if file_url and set_logo_url(uid, file_url):
+                        tg_file = await self._app.bot.get_file(photo.file_id)
+                        file_bytes = await tg_file.download_as_bytearray()
+                        if not file_bytes:
                             await message.reply_text(
-                                "✅ *Logo đã được lưu!*\n\n"
-                                "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                                "⚠️ Không thể tải ảnh từ Telegram. Vui lòng thử lại.",
                                 parse_mode="Markdown"
+                            )
+                            return True
+                        api_key = self.keystore.get_key(sender_id)
+                        cdn_url = await self._upload_logo_bytes_to_cdn(
+                            bytes(file_bytes),
+                            mime_type="image/jpeg",
+                            api_key=api_key or "",
+                            user_id=uid,
+                        )
+                        if cdn_url and set_logo_url(uid, cdn_url):
+                            await message.reply_text(
+                                "✅ *Logo đã được lưu lên hệ thống!*\n\n"
+                                f"🖼️ [Xem logo]({cdn_url})\n"
+                                "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                                parse_mode="Markdown",
+                                disable_web_page_preview=True,
                             )
                         else:
                             await message.reply_text(
-                                "⚠️ Không thể lưu logo. Vui lòng thử lại.",
+                                "⚠️ Không thể upload logo lên hệ thống.\n"
+                                "Vui lòng thử lại.",
                                 parse_mode="Markdown"
                             )
                     except Exception as e:
@@ -1811,6 +1977,14 @@ class TelegramChannel(BaseChannel):
                 create_minimal_profile(uid, username=username)
                 onboarding_status = "minimal"
 
+            # Auto-migrate legacy profile.json → SQLite if DB profile is empty.
+            # This is a one-time, lightweight operation per user — safe to call every turn.
+            try:
+                from nanobot.db.migrate_to_sqlite import migrate_profile_json_for_user
+                migrate_profile_json_for_user(uid)
+            except Exception:
+                pass  # Migration failure must never block message processing
+
             metadata["onboarding_status"] = onboarding_status  # 'minimal'|'completed'
 
             customer_profile = load_profile(uid)
@@ -1829,8 +2003,149 @@ class TelegramChannel(BaseChannel):
             is_dm=is_dm,
         )
 
+    async def _upload_image_to_vidtory_cdn(
+        self,
+        image_source: str,
+        *,
+        filename: str = "logo.png",
+        api_key: str = "",
+        user_id: str = "",
+    ) -> str | None:
+        """Upload a logo image to the Vidtory Media CDN via POST /media/upload.
+
+        Uses the official Vidtory SDK endpoint (MediaModule.upload) for a pure
+        file storage operation — no AI processing is applied to the image.
+
+        This replaces the previous workaround that used the
+        /generative-core/image/remove-watermark endpoint, which ran an AI model
+        on the uploaded logo and could inadvertently alter or degrade it.
+
+        Args:
+            image_source: A remote HTTP(S) URL or local file path of the logo.
+            filename: Suggested filename (mime type is auto-detected from content).
+            api_key: User's Vidtory API key. Falls back to system config key.
+            user_id: Telegram user ID (used as customer_id in CDN metadata).
+
+        Returns:
+            Permanent CDN URL string on success, or None on any failure.
+        """
+        # Resolve system API key from config (preferred — merchant key has upload rights)
+        effective_key = api_key
+        api_base = "https://bapi.vidtory.net"
+
+        try:
+            from nanobot.config.loader import load_config
+            cfg = load_config()
+            provider_cfg = (cfg.providers or {}).get("vidtory") if cfg.providers else None
+            if provider_cfg:
+                api_base = getattr(provider_cfg, "api_base", None) or api_base
+                sys_key = getattr(provider_cfg, "api_key", None) or ""
+                if sys_key:
+                    effective_key = sys_key
+        except Exception:
+            pass
+
+        if not effective_key:
+            self.logger.debug("setlogo CDN upload skipped: no API key available")
+            return None
+
+        try:
+            from nanobot.utils.logo_upload import upload_logo_to_cdn, LogoUploadError
+
+            cdn_url = await upload_logo_to_cdn(
+                image_source,
+                api_key=effective_key,
+                base_url=api_base,
+                customer_id=user_id or None,
+            )
+            self.logger.info("setlogo: logo uploaded to Vidtory CDN: {}", cdn_url)
+            return cdn_url
+
+        except Exception as exc:
+            self.logger.warning("setlogo CDN upload error: {}", exc)
+            return None
+
+    async def _upload_logo_bytes_to_cdn(
+        self,
+        image_bytes: bytes,
+        *,
+        mime_type: str = "image/jpeg",
+        api_key: str = "",
+        user_id: str = "",
+    ) -> str | None:
+        """Upload raw image bytes to Vidtory Media CDN.
+
+        This is the preferred method for Telegram photo uploads: the bot downloads
+        the photo bytes directly via Telegram Bot API (download_as_bytearray),
+        then uploads them here — same flow as when user images are sent for product
+        generation. This avoids any Telegram temporary URL entirely.
+
+        Args:
+            image_bytes: Raw image bytes downloaded from Telegram.
+            mime_type: MIME type of the image (auto-detected from magic bytes when possible).
+            api_key: User's Vidtory API key. Falls back to system config key.
+            user_id: Telegram user ID (used as customer_id in CDN metadata).
+
+        Returns:
+            Permanent Vidtory CDN URL on success, or None on any failure.
+        """
+        from nanobot.utils.helpers import detect_image_mime
+
+        # Auto-detect actual MIME type from magic bytes (important for PNG logos with alpha)
+        detected = detect_image_mime(image_bytes)
+        if detected:
+            mime_type = detected
+
+        ext_map = {
+            "image/png": "logo.png",
+            "image/jpeg": "logo.jpg",
+            "image/webp": "logo.webp",
+            "image/gif": "logo.gif",
+        }
+        filename = ext_map.get(mime_type, "logo.jpg")
+
+        # Resolve system API key
+        effective_key = api_key
+        api_base = "https://bapi.vidtory.net"
+
+        try:
+            from nanobot.config.loader import load_config
+            cfg = load_config()
+            provider_cfg = (cfg.providers or {}).get("vidtory") if cfg.providers else None
+            if provider_cfg:
+                api_base = getattr(provider_cfg, "api_base", None) or api_base
+                sys_key = getattr(provider_cfg, "api_key", None) or ""
+                if sys_key:
+                    effective_key = sys_key
+        except Exception:
+            pass
+
+        if not effective_key:
+            self.logger.debug("setlogo bytes upload skipped: no API key available")
+            return None
+
+        try:
+            from nanobot.utils.logo_upload import upload_logo_bytes_to_cdn
+
+            cdn_url = await upload_logo_bytes_to_cdn(
+                image_bytes,
+                file_name=filename,
+                mime_type=mime_type,
+                api_key=effective_key,
+                base_url=api_base,
+                customer_id=user_id or None,
+            )
+            self.logger.info("setlogo: logo bytes uploaded to Vidtory CDN: {}", cdn_url)
+            return cdn_url
+
+        except Exception as exc:
+            self.logger.warning("setlogo bytes upload error: {}", exc)
+            return None
+
     async def _flush_media_group(self, key: str) -> None:
+
         """Wait briefly, then forward buffered media-group as one turn."""
+
         try:
             await asyncio.sleep(0.6)
             if not (buf := self._media_group_buffers.pop(key, None)):

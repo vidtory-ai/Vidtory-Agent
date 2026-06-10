@@ -30,6 +30,7 @@ from nanobot.utils.context_vars import telegram_customer_profile
 from nanobot.utils.customer_context import (
     build_prompt_brand_suffix,
     get_default_aspect_ratio_for_channel,
+    get_customer_logo_url,
 )
 from nanobot.utils.helpers import detect_image_mime
 from nanobot.utils.vidtory_knowledge import (
@@ -223,14 +224,16 @@ class ImageGenerationTool(Tool, ContextAware):
             )
 
         # Apply Vidtory professional standards + customer brand guidelines
-        optimized_prompt, customer_ar = self._apply_customer_context(prompt)
+        optimized_prompt, customer_ar, logo_url = self._apply_customer_context(prompt)
         resolved_ar = aspect_ratio or customer_ar or self.config.default_aspect_ratio
 
         try:
             refs = self._resolve_reference_images(reference_images)
             image_urls: list[str] = []
             while len(image_urls) < requested:
-                response = await client.generate(
+                # Build generate() kwargs — pass logo_url only when the
+                # provider supports it (VidtoryImageGenerationClient).
+                gen_kwargs: dict[str, Any] = dict(
                     prompt=optimized_prompt,
                     model=self.config.model,
                     reference_images=refs,
@@ -238,6 +241,10 @@ class ImageGenerationTool(Tool, ContextAware):
                     aspect_ratio=resolved_ar,
                     image_size=image_size or self.config.default_image_size,
                 )
+                if logo_url and hasattr(client, "_resolve_logo_url"):
+                    gen_kwargs["logo_url"] = logo_url
+
+                response = await client.generate(**gen_kwargs)
                 # Collect remote CDN URLs directly — no local storage
                 for url in (response.image_urls or []):
                     image_urls.append(url)
@@ -312,7 +319,7 @@ class ImageGenerationTool(Tool, ContextAware):
         prompt_lower = prompt.lower()
         return any(kw in prompt_lower for kw in self._DETAILED_PROMPT_KEYWORDS)
 
-    def _apply_customer_context(self, prompt: str) -> tuple[str, str | None]:
+    def _apply_customer_context(self, prompt: str) -> tuple[str, str | None, str | None]:
         """Apply customer brand guidelines and Vidtory professional standards to the prompt.
 
         This is the central prompt enrichment pipeline:
@@ -321,13 +328,17 @@ class ImageGenerationTool(Tool, ContextAware):
            (SKIPPED when prompt is already detailed to avoid injecting irrelevant styles)
         3. Apply customer brand guidelines (style, mood keywords, colors)
         4. Derive customer's preferred aspect ratio from their primary channel
+        5. Extract brand logo URL (for logo-aware generation)
+        6. Inject logo preservation instruction when watermark-related keywords
+           are detected in the prompt (prevents AI from erasing the logo)
 
         Returns:
-            Tuple of (enriched_prompt, aspect_ratio_or_None).
+            Tuple of (enriched_prompt, aspect_ratio_or_None, logo_url_or_None).
             The enriched prompt is non-destructive — original intent is always preserved.
         """
         enriched = prompt
         aspect_ratio: str | None = None
+        logo_url: str | None = None
 
         # ── Step 1: Vidtory professional prompt enhancement ──────────────────
         # Skip when the user has already written a detailed/professional prompt
@@ -370,19 +381,53 @@ class ImageGenerationTool(Tool, ContextAware):
 
                 # ── Step 3: Customer channel aspect ratio ─────────────────────
                 aspect_ratio = get_default_aspect_ratio_for_channel(profile)
+
+                # ── Step 4: Brand logo URL ────────────────────────────────────
+                logo_url = get_customer_logo_url(profile)
+
+                # ── Step 5: Logo preservation guard ──────────────────────────
+                # When the user's prompt contains watermark-related keywords AND
+                # the customer has a brand logo, inject an explicit instruction
+                # telling the AI to KEEP the logo intact.  This prevents Gemini
+                # from erasing the logo while removing other watermark elements.
+                if logo_url and self._prompt_has_watermark_keywords(prompt):
+                    logo_guard = (
+                        "IMPORTANT: preserve the existing brand logo exactly as-is — "
+                        "do NOT erase, blur, or modify the brand logo"
+                    )
+                    enriched = f"{enriched}. {logo_guard}"
+                    logger.info(
+                        "Logo preservation guard injected into prompt "
+                        "(watermark keyword detected, customer has logo)"
+                    )
         except Exception:
             logger.warning("Customer context enhancement failed — using defaults")
 
-        return enriched, aspect_ratio
+        return enriched, aspect_ratio, logo_url
+
+    # Watermark / overlay keywords that may cause the AI to erase brand logos.
+    # When detected alongside a customer logo, a preservation instruction is
+    # injected to protect the logo from being mistakenly removed.
+    _WATERMARK_KEYWORDS = {
+        "watermark", "remove watermark", "xóa watermark", "xóa chữ",
+        "remove text", "clean up", "remove overlay", "remove logo",
+        "erase watermark", "xóa logo", "xóa nhãn", "bỏ watermark",
+    }
+
+    def _prompt_has_watermark_keywords(self, prompt: str) -> bool:
+        """Return True if the prompt contains watermark-related keywords."""
+        prompt_lower = prompt.lower()
+        return any(kw in prompt_lower for kw in self._WATERMARK_KEYWORDS)
 
     # Keep backward-compatible shims for any external callers.
     def _enhance_prompt_with_brand(self, prompt: str) -> str:
-        enriched, _ = self._apply_customer_context(prompt)
+        enriched, _, _logo = self._apply_customer_context(prompt)
         return enriched
 
     def _customer_aspect_ratio(self) -> str | None:
-        _, aspect_ratio = self._apply_customer_context("")
+        _, aspect_ratio, _logo = self._apply_customer_context("")
         return aspect_ratio
+
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:

@@ -1636,12 +1636,21 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
+        logo_url: str | None = None,
     ) -> GeneratedImageResponse:
         import time
         if not self.api_key:
             raise ImageGenerationError(self.missing_key_message)
 
         refs = list(reference_images or [])
+
+        # ── Logo handling ─────────────────────────────────────────────────
+        # If a logo URL is provided, ensure it is a stable CDN URL before use.
+        # Local paths and data URLs are pre-uploaded to the Vidtory Media CDN
+        # with preserveFormat=true so that PNG transparency is preserved.
+        # The CDN URL is then passed as ``logoUrl`` (not refImageUrl/startImages)
+        # so Gemini does NOT treat it as a subject to modify or erase.
+        resolved_logo_url = await self._resolve_logo_url(logo_url) if logo_url else None
 
         # When multiple reference images are provided, send ALL of them equally
         # via startImages so Vidtory forwards every image into Gemini's
@@ -1658,6 +1667,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
                 ref_image=None,
                 extra_images=refs,
                 style_image_url=style_image_url,
+                logo_url=resolved_logo_url,
                 aspect_ratio=aspect_ratio,
                 image_size=image_size,
             )
@@ -1670,6 +1680,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
             ref_image=ref,
             extra_images=[],
             style_image_url=style_image_url,
+            logo_url=resolved_logo_url,
             aspect_ratio=aspect_ratio,
             image_size=image_size,
         )
@@ -1680,6 +1691,50 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
             return image_ref
         return image_path_to_data_url(image_ref)
 
+    async def _resolve_logo_url(self, logo_source: str) -> str | None:
+        """Ensure a logo is available as a stable Vidtory CDN URL.
+
+        - Already-uploaded Vidtory CDN URLs are returned as-is (no re-upload).
+        - Local paths, ``data:`` URLs, and non-Vidtory remote URLs are uploaded
+          via POST /media/upload (Vidtory SDK) with ``preserveFormat=true`` so
+          that PNG alpha channel (transparent background) is preserved.
+
+        Returns the CDN URL on success, or None on failure (with a warning
+        logged so generation can continue without the logo overlay).
+        """
+        logo_source = (logo_source or "").strip()
+        if not logo_source:
+            return None
+
+        # Already a Vidtory CDN URL — use directly without re-uploading.
+        # Known Vidtory CDN domains: bapi.vidtory.net, b2b.vidtory.net,
+        # cdn.vidtory.net, assets.vidtory.net, etc.
+        if logo_source.startswith("https://") and "vidtory" in logo_source.lower():
+            logger.debug("Logo is already a Vidtory CDN URL — using directly: {}", logo_source)
+            return logo_source
+
+        # All other sources (local file, data URL, external HTTP URL) →
+        # upload to Vidtory Media CDN via POST /media/upload.
+        # The upload utility handles: data URLs, local paths, remote URLs,
+        # mime-type detection, preserveFormat=true, and retry on transient errors.
+        try:
+            from nanobot.utils.logo_upload import upload_logo_to_cdn
+
+            cdn_url = await upload_logo_to_cdn(
+                logo_source,
+                api_key=self.api_key or "",
+                base_url=self.api_base,
+            )
+            logger.info("Logo resolved to CDN URL: {}", cdn_url)
+            return cdn_url
+        except Exception as exc:
+            logger.warning(
+                "Logo pre-upload failed — generation will proceed without logo overlay: {}",
+                exc,
+            )
+            return None
+
+
     async def _generate_single(
         self,
         *,
@@ -1688,14 +1743,18 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         ref_image: str | None,
         extra_images: list[str],
         style_image_url: str | None,
+        logo_url: str | None = None,
         aspect_ratio: str | None,
         image_size: str | None,
     ) -> GeneratedImageResponse:
         """Submit a single Vidtory image generation job and poll until completion.
 
-        ``ref_image``    → ``refImageUrl``  (single primary reference, used for 1-image flow)
-        ``extra_images`` → ``startImages``  (array of images forwarded equally into Gemini parts)
-        ``style_image_url`` → ``styleImageUrl``  (optional style-transfer reference)
+        ``ref_image``        → ``refImageUrl``   (single primary content/subject reference)
+        ``extra_images``     → ``startImages``   (array of images forwarded equally into Gemini)
+        ``style_image_url``  → ``styleImageUrl`` (style-transfer reference, optional)
+        ``logo_url``         → ``logoUrl``        (brand logo as a separate protected asset;
+                                                   must be a pre-uploaded Vidtory CDN URL so
+                                                   the AI does NOT erase it as a watermark)
 
         For multi-image requests, pass all images via ``extra_images`` so that
         Vidtory forwards every one into Gemini's contents[0].parts as separate
@@ -1720,7 +1779,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
             "resolution": image_size or "1K",
         }
 
-        # Single reference image → refImageUrl
+        # Single reference image → refImageUrl (content/subject, not logo)
         if ref_image:
             body["refImageUrl"] = self._image_to_ref_value(ref_image)
 
@@ -1741,6 +1800,14 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         # Style reference image (optional, separate semantic from content images)
         if style_image_url:
             body["styleImageUrl"] = self._image_to_ref_value(style_image_url)
+
+        # Brand logo — passed as a SEPARATE protected field.
+        # This tells Vidtory/Gemini that the logo is a brand asset to PRESERVE,
+        # not a watermark to erase or a subject to modify.
+        # MUST be a Vidtory CDN URL (pre-uploaded via _resolve_logo_url).
+        if logo_url:
+            body["logoUrl"] = logo_url
+            logger.info("Vidtory: brand logo attached as protected asset → {}", logo_url)
 
         body.update(self.extra_body)
 
