@@ -247,7 +247,8 @@ class TestBuildUserContent:
         assert result[0]["type"] == "image_url"
         assert result[0]["image_url"]["url"].startswith("data:image/png;base64,")
         assert result[1]["type"] == "text"
-        assert result[1]["text"] == "hello"
+        # Text block includes path placeholder prefix followed by the user message
+        assert "hello" in result[1]["text"]
 
     def test_image_meta_includes_path(self, tmp_path):
         png = tmp_path / "test.png"

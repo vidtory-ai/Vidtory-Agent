@@ -49,6 +49,15 @@ class ContextBuilder:
 
         parts.append(render_template("agent/tool_contract.md"))
 
+        # Inject Vidtory creative knowledge: photography styles, platform specs,
+        # and professional prompt principles. This gives the agent deep expertise
+        # needed to produce commercial-grade image prompts automatically.
+        with suppress(Exception):
+            from nanobot.utils.vidtory_knowledge import get_system_knowledge_block
+            knowledge_block = get_system_knowledge_block()
+            if knowledge_block:
+                parts.append(knowledge_block)
+
         memory = self.memory.get_memory_context()
         if memory and not self._is_template_content(self.memory.read_memory(), "memory/MEMORY.md"):
             parts.append(f"# Memory\n\n{memory}")

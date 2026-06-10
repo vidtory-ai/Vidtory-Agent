@@ -352,6 +352,31 @@ class TestNoFallbackOnNonRetryableError:
         factory.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_bad_request_with_fallback_token(self) -> None:
+        primary = _FakeProvider(
+            "primary",
+            _make_response(
+                "Request too large for model llama-3.1-8b-instant, rate_limit_exceeded",
+                finish_reason="error",
+                error_status_code=400,
+                error_code="rate_limit_exceeded",
+            ),
+        )
+        fallback = _FakeProvider("fallback", _make_response("fallback ok"))
+        factory = MagicMock(return_value=fallback)
+        fb = FallbackProvider(
+            primary=primary,
+            fallback_presets=[_fallback("fallback-a")],
+            provider_factory=factory,
+        )
+
+        result = await fb.chat(messages=[{"role": "user", "content": "hi"}])
+
+        assert result.content == "fallback ok"
+        assert result.finish_reason == "stop"
+        factory.assert_called_once_with(_fallback("fallback-a"))
+
+    @pytest.mark.asyncio
     async def test_auth_error(self) -> None:
         primary = _FakeProvider(
             "primary",

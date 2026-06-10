@@ -273,6 +273,16 @@ class AgentLoop:
         )
         self._unified_session = unified_session
         self._max_messages = max_messages if max_messages > 0 else 120
+        # Number of messages (not turns) to feed into each LLM call.
+        # Default 20 = 10 user+assistant turns — enough to maintain context
+        # for multi-step creative projects without hitting token limits.
+        # Vidtory has a 1M token context window so we can afford more history.
+        # NANOBOT_LLM_HISTORY_MESSAGES env var overrides at runtime.
+        _env_hist = os.environ.get("NANOBOT_LLM_HISTORY_MESSAGES", "").strip()
+        try:
+            self._llm_history_messages: int = max(2, int(_env_hist)) if _env_hist else 20
+        except (ValueError, TypeError):
+            self._llm_history_messages = 20
         self._running = False
         self._mcp_servers = mcp_servers or {}
         self._mcp_stacks: dict[str, AsyncExitStack] = {}
@@ -614,10 +624,13 @@ class AgentLoop:
     def _build_customer_context_lines(msg: InboundMessage) -> list[str]:
         """Extract customer profile from message metadata and return LLM-visible context lines.
 
-        Injects three sets of context lines into every LLM turn:
+        Injects two sets of context lines into every LLM turn:
         1. **Onboarding Gate** — onboarding_status so agent knows to trigger flow
-        2. **Vidtory Knowledge** — global professional creative standards
-        3. **Customer Knowledge** — per-user brand guidelines, channels, preferences
+        2. **Customer Knowledge** — per-user brand guidelines, channels, preferences
+
+        NOTE: Vidtory creative knowledge (photography styles, platform specs) is injected
+        into the system prompt via ContextBuilder.build_system_prompt() — not here.
+        Do NOT re-inject it here — that would double the token cost every turn.
 
         Also sets the ``telegram_customer_profile`` contextvar so tools like
         generate_image/generate_video can access brand data for prompt optimization.
@@ -625,29 +638,19 @@ class AgentLoop:
         lines: list[str] = []
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
 
-        # ── Onboarding Gate — tell LLM the user's onboarding state ──────────
-        # This is the reliable trigger: LLM reads this line instead of file-checking.
+        # ── Auto-create minimal profile for new users (silent, no blocking) ──
+        # New users get a minimal profile created automatically so they can
+        # start working immediately without any onboarding questionnaire.
         onboarding_status = metadata.get("onboarding_status", "")
         if onboarding_status == "none":
-            lines.append(
-                "Onboarding Status: NEW_USER — No profile found. "
-                "Trigger the vidtory-onboarding skill immediately before doing anything else."
-            )
-        elif onboarding_status == "minimal":
-            lines.append(
-                "Onboarding Status: MINIMAL — User has a basic profile. "
-                "After 5-10 successful interactions, gently suggest completing full onboarding."
-            )
-        # "completed" → no special line needed
-
-        # ── Vidtory Knowledge — global professional creative standards ────────
-        try:
-            from nanobot.utils.vidtory_knowledge import get_system_knowledge_block
-            vidtory_block = get_system_knowledge_block()
-            if vidtory_block:
-                lines.append(vidtory_block)
-        except Exception:
-            pass  # Non-critical
+            try:
+                from nanobot.utils.customer_profile import create_minimal_profile
+                uid = (msg.sender_id or "").split("|")[0].strip()
+                if uid:
+                    create_minimal_profile(uid)
+            except Exception:
+                pass  # Non-critical — never block the turn
+        # "minimal" / "completed" → serve normally, no special gate
 
         # ── Customer Knowledge — per-user brand & channel preferences ─────────
         profile = metadata.get("customer_profile")
@@ -741,8 +744,12 @@ class AgentLoop:
 
         Returns (final_content, tools_used, messages, stop_reason, had_injections).
         """
-        from nanobot.utils.context_vars import telegram_user_api_key, telegram_user_workspace
-        token_key = telegram_user_api_key.set(metadata.get("user_api_key", "") if metadata else "")
+        from nanobot.utils.context_vars import telegram_user_api_key, telegram_user_workspace, telegram_vidtory_api_key
+        # telegram_vidtory_api_key: Vidtory merchant key for image/video/audio tools
+        # telegram_user_api_key: intentionally left empty so LLM providers use system keys
+        token_vidtory_key = telegram_vidtory_api_key.set(metadata.get("user_api_key", "") if metadata else "")
+        token_key = telegram_user_api_key.set("")  # LLM always uses system config keys
+
         token_ws = telegram_user_workspace.set(metadata.get("user_workspace", "") if metadata else "")
         try:
             self._sync_subagent_runtime_limits()
@@ -851,7 +858,9 @@ class AgentLoop:
             return result.final_content, result.tools_used, result.messages, result.stop_reason, result.had_injections
         finally:
             telegram_user_api_key.reset(token_key)
+            telegram_vidtory_api_key.reset(token_vidtory_key)
             telegram_user_workspace.reset(token_ws)
+
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
@@ -930,16 +939,16 @@ class AgentLoop:
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message: per-session serial, cross-session concurrent."""
-        session_key = self._effective_session_key(msg)
-        if session_key != msg.session_key:
-            msg = dataclasses.replace(msg, session_key_override=session_key)
-        lock = self._session_locks.setdefault(session_key, asyncio.Lock())
+        effective_key = self._effective_session_key(msg)
+        if effective_key != msg.session_key:
+            msg = dataclasses.replace(msg, session_key_override=effective_key)
+        lock = self._session_locks.setdefault(effective_key, asyncio.Lock())
         gate = self._concurrency_gate or nullcontext()
 
         # Register a pending queue so follow-up messages for this session are
         # routed here (mid-turn injection) instead of spawning a new task.
         pending = asyncio.Queue(maxsize=20)
-        self._pending_queues[session_key] = pending
+        self._pending_queues[effective_key] = pending
 
         try:
             async with lock, gate:
@@ -988,10 +997,10 @@ class AgentLoop:
                             content="", metadata=msg.metadata or {},
                         ))
                     if msg.channel == "websocket":
-                        turn_lat = self._pending_turn_latency_ms.pop(session_key, None)
+                        turn_lat = self._pending_turn_latency_ms.pop(effective_key, None)
                         await self._webui_turns.handle_turn_end(
                             msg,
-                            session_key=session_key,
+                            session_key=effective_key,
                             latency_ms=turn_lat,
                         )
                 except asyncio.CancelledError:
@@ -1030,7 +1039,9 @@ class AgentLoop:
             # Drain any messages still in the pending queue and re-publish
             # them to the bus so they are processed as fresh inbound messages
             # rather than silently lost.
-            queue = self._pending_queues.pop(session_key, None)
+            # NOTE: use effective_key (not session_key) — this is the canonical
+            # routing key used when the queue was registered above.
+            queue = self._pending_queues.pop(effective_key, None)
             if queue is not None:
                 leftover = 0
                 while True:
@@ -1043,11 +1054,11 @@ class AgentLoop:
                 if leftover:
                     logger.info(
                         "Re-published {} leftover message(s) to bus for session {}",
-                        leftover, session_key,
+                        leftover, effective_key,
                     )
             await self._webui_turns.publish_run_status(msg, "idle")
-            self._pending_turn_latency_ms.pop(session_key, None)
-            self._webui_turns.discard(session_key)
+            self._pending_turn_latency_ms.pop(effective_key, None)
+            self._webui_turns.discard(effective_key)
 
     async def close_mcp(self) -> None:
         """Drain pending background archives, then close MCP connections."""
@@ -1110,7 +1121,7 @@ class AgentLoop:
             msg.metadata, session_key=key,
         )
         _hist_kwargs: dict[str, Any] = {
-            "max_messages": self._max_messages,
+            "max_messages": self._llm_history_messages,
             "max_tokens": self._replay_token_budget(),
             "include_timestamps": True,
         }
@@ -1356,7 +1367,9 @@ class AgentLoop:
                 message_tool.start_turn()
 
         _hist_kwargs: dict[str, Any] = {
-            "max_messages": self._max_messages,
+            # Use a small window to keep LLM token usage low.
+            # Storage / compaction still uses self._max_messages (unchanged).
+            "max_messages": self._llm_history_messages,
             "max_tokens": self._replay_token_budget(),
             "include_timestamps": True,
         }
