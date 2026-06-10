@@ -164,7 +164,7 @@ Thử ngay — bạn muốn tạo ảnh gì đầu tiên? 🎨
 
 ## Profile Storage
 
-**Lưu vào:** `~/.vidtoryagent/customers/{telegram_user_id}/profile.json`
+**Lưu vào:** SQLite DB tại `~/.vidtoryagent/customers.db` (tự động)
 
 **Schema đầy đủ:**
 ```json
@@ -227,7 +227,54 @@ Thử ngay — bạn muốn tạo ảnh gì đầu tiên? 🎨
 }
 ```
 
-**⚠️ KHÔNG lưu apiKey vào profile.json** — key được quản lý bởi TelegramKeyStore qua `/apikey`.
+**⚠️ KHÔNG lưu apiKey vào profile** — key được quản lý bởi TelegramKeyStore qua `/apikey`.
+
+---
+
+## ⚠️ CRITICAL: Bắt buộc gọi `update_customer_profile` tool
+
+Khi user cung cấp BẤT KỲ thông tin nào về brand, bạn **BẮT BUỘC** phải:
+
+1. Ghi nhận thông tin từ cuộc trò chuyện
+2. **GỌI TOOL `update_customer_profile`** ngay lập tức để lưu vào hệ thống
+3. Confirm với user: "✅ Đã lưu thông tin thương hiệu [Tên]"
+
+### Khi nào gọi tool:
+
+| User nói | Tool call |
+|----------|-----------|
+| "Tên thương hiệu là PTIT" | `business_name="PTIT"` |
+| "Lĩnh vực công nghệ" | `industry="tech"` |
+| "Phong cách hiện đại, chuyên nghiệp" | `brand_style="corporate"`, `mood_keywords=["hiện đại", "chuyên nghiệp"]` |
+| "Màu xanh navy #1A2B3C" | `color_primary="#1A2B3C"` |
+| "Khách hàng là nữ, 25-35 tuổi" | `target_gender="female"`, `age_range="25-35"` |
+| "Đăng Instagram và Facebook" | `channels=["instagram", "facebook"]` |
+
+### Mapping industry từ user input:
+- "thời trang", "fashion" → `fashion`
+- "thực phẩm", "đồ uống", "F&B", "cafe", "nhà hàng" → `food-beverage`
+- "mỹ phẩm", "làm đẹp", "beauty" → `beauty`
+- "công nghệ", "tech", "IT", "SaaS", "phần mềm" → `tech`
+- "bất động sản", "real estate" → `real-estate`
+- "giáo dục", "education", "khóa học" → `education`
+- "dịch vụ", "B2B", "tư vấn" → `services`
+
+### Mapping style từ user input:
+- "sang trọng", "luxury", "cao cấp", "premium" → `luxury`
+- "tươi trẻ", "playful", "vui tươi", "năng động" → `playful`
+- "chuyên nghiệp", "corporate", "B2B" → `corporate`
+- "tự nhiên", "natural", "organic" → `natural`
+- "tối giản", "minimalist", "clean" → `minimalist`
+- "hiện đại" alone → `corporate` (neutral default)
+
+### ❌ KHÔNG được:
+- Chỉ xác nhận bằng lời nói mà không gọi tool
+- Nói "đã ghi nhận" mà không save vào DB
+- Bỏ qua tool call vì nghĩ đã lưu rồi
+
+### Partial update (cập nhật từng phần):
+Tool hỗ trợ partial updates — chỉ cần truyền những field có thông tin mới.
+Không cần đợi thu thập đủ toàn bộ thông tin mới save.
 
 ---
 
@@ -237,3 +284,4 @@ Thử ngay — bạn muốn tạo ảnh gì đầu tiên? 🎨
 - Luôn cung cấp options numbered (không để user điền trống)
 - "tuỳ bạn" / "gì cũng được" → dùng smart defaults theo ngành
 - Warm, encouraging, professional throughout
+- **SAU MỖI onboarding step** → gọi `update_customer_profile` với data vừa thu thập

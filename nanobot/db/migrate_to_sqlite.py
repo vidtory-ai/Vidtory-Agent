@@ -188,3 +188,73 @@ if __name__ == "__main__":
     counts = migrate()
     if counts["errors"] > 0:
         sys.exit(1)
+
+
+def migrate_profile_json_for_user(uid: str, data_dir: Path | None = None, db=None) -> bool:
+    """Migrate a single user's profile.json → SQLite if the JSON has richer data.
+
+    This is called at message-processing time to auto-import legacy profile.json
+    files for users who were onboarded before the SQLite migration.
+
+    Rules:
+    - If no profile exists in DB → import from JSON.
+    - If profile exists but business.name is empty → overwrite with JSON data.
+    - If profile exists and has a business.name → skip (DB is source of truth).
+
+    Returns True if migration was applied.
+    """
+    from nanobot.config.paths import get_data_dir
+    from nanobot.db.customer_db import get_db as _get_db
+
+    base = data_dir or get_data_dir()
+    db = db or _get_db()
+
+    # Look for legacy file at ~/.vidtoryagent/customers/{uid}/profile.json
+    # Check both possible parent directories and use the one that has the file.
+    candidates = [
+        base / "customers" / uid / "profile.json",    # ~/.vidtoryagent/customers/{uid}/
+        base.parent / "customers" / uid / "profile.json",  # ~/.customers/{uid}/ (unusual)
+    ]
+    profile_file = next((p for p in candidates if p.exists()), None)
+    if profile_file is None:
+        return False
+
+    try:
+        json_profile = json.loads(profile_file.read_text(encoding="utf-8"))
+        if not isinstance(json_profile, dict):
+            return False
+
+        json_biz_name = (json_profile.get("business") or {}).get("name", "").strip()
+        if not json_biz_name:
+            return False  # JSON file also has no data — nothing to import
+
+        # Check existing DB profile
+        existing = db.load_profile(uid)
+        if existing:
+            db_biz_name = (existing.get("business") or {}).get("name", "").strip()
+            if db_biz_name:
+                return False  # DB already has rich data — trust DB
+
+            # DB profile is empty/minimal — overwrite with JSON data
+            db.save_profile(uid, json_profile)
+            import logging
+            logging.getLogger(__name__).info(
+                "Auto-migrated profile.json for user %s (%s) → overwrote empty DB profile",
+                uid, json_biz_name,
+            )
+        else:
+            # No DB profile at all — create from JSON
+            db.save_profile(uid, json_profile)
+            import logging
+            logging.getLogger(__name__).info(
+                "Auto-migrated profile.json for user %s (%s) → created DB profile",
+                uid, json_biz_name,
+            )
+        return True
+
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Auto-migration of profile.json failed for user %s: %s", uid, exc
+        )
+        return False

@@ -161,15 +161,37 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
 
     keywords = brand.get("moodKeywords") or []
     if keywords:
-        parts.extend(keywords[:3])
+        parts.extend(keywords[:4])  # up to 4 mood keywords for richer context
 
     photo_style = brand.get("photographyStyle")
     if photo_style:
         parts.append(photo_style)
 
+    # Full color palette: primary + secondary + accent
     palette = brand.get("colorPalette") or {}
+    color_parts: list[str] = []
     if palette.get("primary"):
-        parts.append(f"primary color {palette['primary']}")
+        color_parts.append(f"primary color {palette['primary']}")
+    if palette.get("secondary"):
+        color_parts.append(f"secondary color {palette['secondary']}")
+    if palette.get("accent"):
+        color_parts.append(f"accent color {palette['accent']}")
+    parts.extend(color_parts)
+
+    # Industry-based photography style fallback (when no explicit photographyStyle)
+    if not photo_style:
+        industry = (profile.get("business") or {}).get("industry", "").lower()
+        industry_style_hints: dict[str, str] = {
+            "food-beverage": "food editorial photography",
+            "beauty": "beauty product photography",
+            "fashion": "fashion editorial photography",
+            "real-estate": "architectural photography",
+            "tech": "technology product photography",
+        }
+        for key, hint in industry_style_hints.items():
+            if key in industry:
+                parts.append(hint)
+                break
 
     avoid = brand.get("avoidList") or []
     avoid_str = ""
@@ -183,7 +205,7 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
     # Note about logo availability (LLM can decide to incorporate)
     logo_url = (brand.get("logoUrl") or "").strip()
     if logo_url:
-        suffix += f", brand has logo available"
+        suffix += ", brand has logo available"
 
     return suffix
 
@@ -214,9 +236,13 @@ def get_default_aspect_ratio_for_channel(
     # Map primary channel to default format key
     channel_map = {
         "instagram": "instagram_feed",
-        "facebook": "instagram_feed",
-        "youtube": "website",
-        "tiktok": "instagram_story",
+        "facebook": "facebook_post",
+        "youtube": "youtube_thumbnail",
+        "tiktok": "tiktok_video_cover",
+        "website": "website_hero",
+        "zalo": "zalo",
+        "linkedin": "linkedin_post",
+        "print": "print_a4",
     }
     for ch in primary:
         key = channel_map.get(ch.lower(), ch)
@@ -226,3 +252,21 @@ def get_default_aspect_ratio_for_channel(
                 return ar
 
     return None
+
+
+def get_customer_logo_url(profile: dict[str, Any]) -> str | None:
+    """Return the brand logo URL from a customer profile, or None if not set.
+
+    The logo URL is stored under ``profile.brand.logoUrl``.  It may be:
+    - A Vidtory CDN URL (https://...vidtory.net/...) — used directly
+    - A remote HTTP(S) URL — will be downloaded and re-uploaded with
+      ``preserveFormat=true`` by the Vidtory image provider
+    - A local file path — resolved and uploaded at generation time
+
+    Returns:
+        Non-empty logo URL string, or None if the profile has no logo.
+    """
+    brand = profile.get("brand") or {}
+    logo_url = (brand.get("logoUrl") or "").strip()
+    return logo_url if logo_url else None
+
