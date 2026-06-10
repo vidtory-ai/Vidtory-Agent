@@ -197,7 +197,9 @@ class ImageGenerationTool(Tool, ContextAware):
     def _resolve_reference_images(self, values: list[str] | None) -> list[str]:
         if not values:
             return []
-        return [self._resolve_reference_image(value) for value in values if value]
+        resolved = [self._resolve_reference_image(value) for value in values if value]
+        # Dedup while preserving order — LLM may pass the same image path twice
+        return list(dict.fromkeys(resolved))
 
     async def execute(
         self,

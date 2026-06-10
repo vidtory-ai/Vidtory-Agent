@@ -1728,12 +1728,14 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         # Vidtory forwards every entry into Gemini contents[0].parts as inlineData,
         # giving all images equal weight in the generation context.
         if extra_images:
-            body["startImages"] = [
+            # Dedup images (same data URL can appear twice from LLM or media group buffering)
+            unique_images = list(dict.fromkeys(
                 self._image_to_ref_value(r) for r in extra_images
-            ]
+            ))
+            body["startImages"] = unique_images
             logger.info(
-                "Vidtory: {} image(s) forwarded equally via startImages",
-                len(extra_images),
+                "Vidtory: {} unique image(s) forwarded via startImages (from {} provided)",
+                len(unique_images), len(extra_images),
             )
 
         # Style reference image (optional, separate semantic from content images)
