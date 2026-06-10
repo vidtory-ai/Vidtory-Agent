@@ -650,7 +650,15 @@ class AgentLoop:
                     create_minimal_profile(uid)
             except Exception:
                 pass  # Non-critical — never block the turn
-        # "minimal" / "completed" → serve normally, no special gate
+
+        # Soft onboarding gate: inject hint for LLM to progressively collect brand info
+        if onboarding_status == "minimal":
+            lines.append(
+                "[ONBOARDING] User mới, profile chưa đầy đủ. "
+                "Phục vụ yêu cầu ngay nhưng trong quá trình làm việc hãy hỏi thêm "
+                "về thương hiệu (tên, ngành, phong cách, màu sắc) một cách tự nhiên. "
+                "Gợi ý /brand để xem profile, /setlogo để thêm logo."
+            )
 
         # ── Customer Knowledge — per-user brand & channel preferences ─────────
         profile = metadata.get("customer_profile")

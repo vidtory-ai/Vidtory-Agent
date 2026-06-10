@@ -316,6 +316,8 @@ class TelegramChannel(BaseChannel):
         BotCommand("apikey", "Set your Vidtory API key"),
         BotCommand("mykey", "View your current API key (masked)"),
         BotCommand("credits", "Check your remaining Vidtory credits"),
+        BotCommand("brand", "View your brand profile & logo"),
+        BotCommand("setlogo", "Set or change your brand logo"),
         BotCommand("profile", "View or reset your brand profile"),
         BotCommand("new", "Start a new conversation"),
         BotCommand("clear", "Delete all your data and API key"),
@@ -436,7 +438,14 @@ class TelegramChannel(BaseChannel):
         # API key management commands (multi-user mode)
         self._app.add_handler(
             MessageHandler(
-                filters.Regex(r"^/(apikey|mykey|clear|credits|profile)(?:@\w+)?(?:\s+.*)?$"),
+                filters.Regex(r"^/(apikey|mykey|clear|credits|profile|brand|setlogo)(?:@\w+)?(?:\s+.*)?$"),
+                self._on_api_key_management,
+            )
+        )
+        # Handle photos sent with /setlogo as caption
+        self._app.add_handler(
+            MessageHandler(
+                filters.PHOTO & filters.CaptionRegex(r"^/setlogo(?:@\w+)?(?:\s+.*)?$"),
                 self._on_api_key_management,
             )
         )
@@ -1155,10 +1164,10 @@ class TelegramChannel(BaseChannel):
         /profile is always handled regardless of require_user_api_key setting.
         """
         message = update.message
-        if not message or not message.text:
+        if not message or not (message.text or message.caption):
             return False
 
-        text = message.text.strip()
+        text = (message.text or message.caption or "").strip()
         cmd = text.split()[0].lower() if text else ""
 
         if "@" in cmd:
@@ -1262,6 +1271,14 @@ class TelegramChannel(BaseChannel):
         elif cmd == "/clear":
             self.keystore.remove_key(sender_id)
 
+            # Delete customer profile from DB
+            try:
+                from nanobot.db.customer_db import get_db
+                uid = sender_id.split("|")[0].strip()
+                get_db().delete_profile(uid)
+            except Exception as e:
+                self.logger.warning("Failed to delete customer profile: {}", e)
+
             session_key = self._derive_topic_session_key(message) or f"telegram:{chat_id}"
             from nanobot.session.manager import SessionManager
             safe_key = SessionManager.safe_key(session_key)
@@ -1279,7 +1296,7 @@ class TelegramChannel(BaseChannel):
 
             await message.reply_text(
                 "🗑️ *Đã xóa toàn bộ dữ liệu!*\n"
-                "API key, lịch sử hội thoại và workspace của bạn đã được xóa sạch.",
+                "API key, brand profile, lịch sử hội thoại và workspace của bạn đã được xóa sạch.",
                 parse_mode="Markdown"
             )
             return True
@@ -1350,6 +1367,230 @@ class TelegramChannel(BaseChannel):
                     parse_mode="Markdown"
                 )
             return True
+
+        elif cmd == "/brand":
+            try:
+                from nanobot.utils.customer_profile import load_profile, get_logo_url
+                uid = sender_id.split("|")[0].strip()
+                profile = load_profile(uid)
+                if not profile:
+                    await message.reply_text(
+                        "📋 *Chưa có brand profile.*\n\n"
+                        "Bắt đầu trò chuyện để tôi tự động tạo profile cho bạn, "
+                        "hoặc gõ *\"dùng ngay\"* để bắt đầu.",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    biz = profile.get("business") or {}
+                    brand = profile.get("brand") or {}
+                    audience = profile.get("audience") or {}
+                    channels = profile.get("contentChannels") or {}
+                    onboarding = profile.get("onboarding") or {}
+                    learning = profile.get("learningData") or {}
+                    status_map = {
+                        "minimal": "Cơ bản ✅",
+                        "completed": "Hoàn chỉnh ✅",
+                        "in_progress": "Đang thiết lập 🔄",
+                    }
+                    status = status_map.get(onboarding.get("status", ""), onboarding.get("status", "—"))
+                    name = biz.get("name") or "—"
+                    industry = biz.get("industry") or "—"
+                    style = brand.get("style") or "—"
+                    colors = brand.get("colorPalette") or {}
+                    primary_color = colors.get("primary") or "—"
+                    mood = ", ".join(brand.get("moodKeywords") or []) or "—"
+                    avoid = ", ".join(brand.get("avoidList") or []) or "—"
+                    logo = (brand.get("logoUrl") or "").strip()
+                    photo_style = brand.get("photographyStyle") or "—"
+                    primary_channels = ", ".join(channels.get("primary") or []) or "—"
+                    aud_gender = audience.get("gender") or "—"
+                    aud_age = audience.get("ageRange") or "—"
+                    aud_seg = audience.get("segment") or "—"
+                    total_gens = learning.get("totalGenerations", 0)
+                    approved = learning.get("approvedCount", 0)
+                    rejected = learning.get("rejectedCount", 0)
+
+                    lines = [
+                        "📋 *Brand Profile*",
+                        "",
+                        "🏢 *Thương hiệu*",
+                        f"  Tên: {name}",
+                        f"  Ngành: {industry}",
+                        "",
+                        "🎨 *Phong cách*",
+                        f"  Style: {style}",
+                        f"  Mood: {mood}",
+                        f"  Màu chủ đạo: {primary_color}",
+                        f"  Photo style: {photo_style}",
+                        f"  Tránh: {avoid}",
+                        "",
+                    ]
+
+                    if logo:
+                        lines.append(f"🖼️ *Logo:* [Xem logo]({logo})")
+                    else:
+                        lines.append("🖼️ *Logo:* _Chưa có_ — dùng /setlogo để thêm")
+                    lines.append("")
+
+                    lines.extend([
+                        "👥 *Đối tượng*",
+                        f"  Giới tính: {aud_gender} | Tuổi: {aud_age} | Phân khúc: {aud_seg}",
+                        "",
+                        f"📱 *Kênh:* {primary_channels}",
+                        "",
+                        f"📊 *Thống kê:* {total_gens} ảnh tạo | {approved} ✅ | {rejected} ❌",
+                        f"✅ *Onboarding:* {status}",
+                        "",
+                        "_Để thay đổi logo: /setlogo_",
+                        "_Để reset toàn bộ: /clear_",
+                    ])
+                    await message.reply_text("\n".join(lines), parse_mode="Markdown",
+                                            disable_web_page_preview=True)
+            except Exception as e:
+                self.logger.warning("Failed to load brand profile: {}", e)
+                await message.reply_text(
+                    "⚠️ Không thể tải brand profile. Vui lòng thử lại sau.",
+                    parse_mode="Markdown"
+                )
+            return True
+
+        elif cmd == "/setlogo":
+            try:
+                from nanobot.utils.customer_profile import set_logo_url, get_logo_url, profile_exists
+                uid = sender_id.split("|")[0].strip()
+
+                if not profile_exists(uid):
+                    await message.reply_text(
+                        "❌ *Chưa có profile.*\n"
+                        "Hãy bắt đầu chat với bot trước để tạo profile.",
+                        parse_mode="Markdown"
+                    )
+                    return True
+
+                parts = text.split(None, 1)
+                logo_url_arg = parts[1].strip() if len(parts) > 1 else ""
+
+                # Case 0: /setlogo clear — remove logo
+                if logo_url_arg.lower() == "clear":
+                    from nanobot.utils.customer_profile import clear_logo
+                    if clear_logo(uid):
+                        await message.reply_text(
+                            "✅ *Logo đã được xóa.*\n\n"
+                            "_Dùng /setlogo để thêm logo mới._",
+                            parse_mode="Markdown"
+                        )
+                    else:
+                        await message.reply_text(
+                            "⚠️ Không thể xóa logo. Vui lòng thử lại.",
+                            parse_mode="Markdown"
+                        )
+                    return True
+
+                # Case 1: URL provided as argument
+                if logo_url_arg and logo_url_arg.startswith(("http://", "https://")):
+                    if set_logo_url(uid, logo_url_arg):
+                        await message.reply_text(
+                            "✅ *Logo đã được cập nhật!*\n\n"
+                            f"🖼️ [Xem logo]({logo_url_arg})\n\n"
+                            "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                            parse_mode="Markdown",
+                            disable_web_page_preview=True,
+                        )
+                    else:
+                        await message.reply_text(
+                            "⚠️ Không thể lưu logo. Vui lòng thử lại.",
+                            parse_mode="Markdown"
+                        )
+                    return True
+
+                # Case 2: Reply to a photo
+                reply = getattr(message, "reply_to_message", None)
+                if reply and getattr(reply, "photo", None):
+                    try:
+                        photo = reply.photo[-1]  # Largest resolution
+                        file = await self._app.bot.get_file(photo.file_id)
+                        # Use Telegram file URL as the logo URL
+                        file_url = file.file_path
+                        if file_url and not file_url.startswith("http"):
+                            file_url = f"https://api.telegram.org/file/bot{self.config.token}/{file_url}"
+                        if file_url and set_logo_url(uid, file_url):
+                            await message.reply_text(
+                                "✅ *Logo đã được lưu từ ảnh!*\n\n"
+                                "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                                parse_mode="Markdown"
+                            )
+                        else:
+                            await message.reply_text(
+                                "⚠️ Không thể lưu logo từ ảnh. Vui lòng thử lại.",
+                                parse_mode="Markdown"
+                            )
+                    except Exception as e:
+                        self.logger.warning("Failed to save logo from photo: {}", e)
+                        await message.reply_text(
+                            "⚠️ Lỗi khi xử lý ảnh. Vui lòng thử lại.",
+                            parse_mode="Markdown"
+                        )
+                    return True
+
+                # Case 3: Photo sent with the command message
+                if getattr(message, "photo", None):
+                    try:
+                        photo = message.photo[-1]
+                        file = await self._app.bot.get_file(photo.file_id)
+                        file_url = file.file_path
+                        if file_url and not file_url.startswith("http"):
+                            file_url = f"https://api.telegram.org/file/bot{self.config.token}/{file_url}"
+                        if file_url and set_logo_url(uid, file_url):
+                            await message.reply_text(
+                                "✅ *Logo đã được lưu!*\n\n"
+                                "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                                parse_mode="Markdown"
+                            )
+                        else:
+                            await message.reply_text(
+                                "⚠️ Không thể lưu logo. Vui lòng thử lại.",
+                                parse_mode="Markdown"
+                            )
+                    except Exception as e:
+                        self.logger.warning("Failed to save logo from photo: {}", e)
+                        await message.reply_text(
+                            "⚠️ Lỗi khi xử lý ảnh. Vui lòng thử lại.",
+                            parse_mode="Markdown"
+                        )
+                    return True
+
+                # Case 4: Show usage
+                current_logo = get_logo_url(uid)
+                if current_logo:
+                    await message.reply_text(
+                        f"🖼️ *Logo hiện tại:* [Xem]({current_logo})\n\n"
+                        "*Để thay đổi:*\n"
+                        "• `/setlogo https://url-logo-moi.png`\n"
+                        "• Hoặc reply một ảnh với `/setlogo`\n\n"
+                        "_Để xóa logo, dùng_ `/setlogo clear`",
+                        parse_mode="Markdown",
+                        disable_web_page_preview=True,
+                    )
+                else:
+                    await message.reply_text(
+                        "🖼️ *Thêm logo thương hiệu*\n\n"
+                        "*Cách 1:* Gửi URL\n"
+                        "`/setlogo https://link-logo.png`\n\n"
+                        "*Cách 2:* Reply một ảnh logo\n"
+                        "Reply ảnh + gõ `/setlogo`\n\n"
+                        "_Logo sẽ được tự động áp dụng vào mọi sản phẩm._",
+                        parse_mode="Markdown"
+                    )
+
+                return True
+
+            except Exception as e:
+                self.logger.warning("Failed to handle /setlogo: {}", e)
+                await message.reply_text(
+                    "⚠️ Lỗi xử lý logo. Vui lòng thử lại.",
+                    parse_mode="Markdown"
+                )
+                return True
 
         return False
 
