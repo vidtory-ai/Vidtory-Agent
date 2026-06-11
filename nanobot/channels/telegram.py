@@ -2022,8 +2022,35 @@ class TelegramChannel(BaseChannel):
                     # Translate to a clear instruction for the LLM
                     content = "Tôi muốn bỏ qua khai báo và bắt đầu sử dụng bot ngay."
                 elif raw_content in ("bắt đầu khai báo", "khai báo thông tin"):
-                    # Keep status as 'none' so the LLM triggers the onboarding flow
-                    pass
+                    # Send the onboarding template directly
+                    username = metadata.get("username") or ""
+                    profile = create_minimal_profile(uid, username=username)
+                    profile["onboarding"]["status"] = "in_progress"
+                    from nanobot.utils.customer_profile import save_profile
+                    save_profile(uid, profile)
+                    
+                    try:
+                        await self._app.bot.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                "📝 *Tuyệt vời! Dưới đây là mẫu thông tin cơ bản:*\n\n"
+                                "• *Tên thương hiệu:* ...\n"
+                                "• *Ngành nghề:* ...\n"
+                                "• *Phong cách thiết kế:* ...\n"
+                                "• *Màu sắc chủ đạo:* ...\n\n"
+                                "_💡 Mẹo: Điền càng chi tiết thì AI tạo nội dung càng chuẩn xác. "
+                                "Tuy nhiên nếu bạn không điền đủ cũng không sao, "
+                                "sau này trong quá trình làm việc hệ thống sẽ tự động quan sát và học dần dần. "
+                                "Bạn không cần phải ép mình trả lời hoàn hảo ngay từ đầu!_\n\n"
+                                "Hãy copy mẫu trên, điền thông tin và gửi lại cho tôi nhé."
+                            ),
+                            parse_mode="Markdown"
+                        )
+                    except Exception as e:
+                        self.logger.warning("Failed to send onboarding template: {}", e)
+                    finally:
+                        self._stop_typing(chat_id)
+                    return
                 else:
                     # Fallback for non-Telegram channels or unexpected flows
                     username = metadata.get("username") or ""
