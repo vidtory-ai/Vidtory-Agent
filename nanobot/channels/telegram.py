@@ -1942,6 +1942,30 @@ class TelegramChannel(BaseChannel):
             )
             return
 
+        # Guard: New user onboarding prompt
+        try:
+            from nanobot.utils.customer_profile import get_onboarding_status
+            uid = sender_id.split("|")[0].strip()
+            if get_onboarding_status(uid) == "none":
+                raw_text = (message.text or "").strip().lower()
+                # If user hasn't made a choice yet, show the prompt and stop processing
+                if raw_text not in ("dùng ngay", "bỏ qua, dùng ngay", "bắt đầu khai báo", "khai báo thông tin"):
+                    buttons = [
+                        ["Bắt đầu khai báo", "Dùng ngay"]
+                    ]
+                    reply_markup = self._build_keyboard(buttons)
+                    await message.reply_text(
+                        "👋 *Chào mừng bạn đến với Vidtory Agent!*\n\n"
+                        "Để tôi có thể tạo ra hình ảnh và video bám sát nhận diện thương hiệu của bạn, "
+                        "chúng ta nên thực hiện một bài khai báo ngắn (khoảng 3 câu hỏi).\n\n"
+                        "Bạn muốn khai báo ngay, hay bỏ qua để dùng thử profile cơ bản?",
+                        parse_mode="Markdown",
+                        reply_markup=reply_markup
+                    )
+                    return
+        except Exception as e:
+            self.logger.warning("Error checking onboarding status for prompt: {}", e)
+
         # Start typing indicator before processing
         self._start_typing(str_chat_id)
         await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
@@ -1988,11 +2012,23 @@ class TelegramChannel(BaseChannel):
             uid = sender_id.split("|")[0].strip()
             onboarding_status = get_onboarding_status(uid)
 
-            # Auto-bootstrap new users with a minimal profile (silent)
+            # Handle new user onboarding choice
             if onboarding_status == "none":
-                username = metadata.get("username") or ""
-                create_minimal_profile(uid, username=username)
-                onboarding_status = "minimal"
+                raw_content = content.strip().lower()
+                if raw_content in ("dùng ngay", "bỏ qua, dùng ngay"):
+                    username = metadata.get("username") or ""
+                    create_minimal_profile(uid, username=username)
+                    onboarding_status = "minimal"
+                    # Translate to a clear instruction for the LLM
+                    content = "Tôi muốn bỏ qua khai báo và bắt đầu sử dụng bot ngay."
+                elif raw_content in ("bắt đầu khai báo", "khai báo thông tin"):
+                    # Keep status as 'none' so the LLM triggers the onboarding flow
+                    pass
+                else:
+                    # Fallback for non-Telegram channels or unexpected flows
+                    username = metadata.get("username") or ""
+                    create_minimal_profile(uid, username=username)
+                    onboarding_status = "minimal"
 
             # Auto-migrate legacy profile.json → SQLite if DB profile is empty.
             # This is a one-time, lightweight operation per user — safe to call every turn.
