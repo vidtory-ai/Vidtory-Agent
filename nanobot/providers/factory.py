@@ -9,6 +9,7 @@ from nanobot.config.schema import Config, InlineFallbackConfig, ModelPresetConfi
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.fallback_provider import FallbackProvider
 from nanobot.providers.registry import find_by_name
+from nanobot.providers.vision_aware_provider import VisionAwareProvider
 
 
 @dataclass(frozen=True)
@@ -255,4 +256,55 @@ def load_provider_snapshot(
     return build_provider_snapshot(
         resolve_config_env_vars(load_config(config_path)),
         preset_name=preset_name,
+    )
+
+
+def build_vision_aware_snapshot(
+    config: Config,
+    *,
+    text_preset_name: str | None = None,
+    vision_preset_name: str | None = None,
+) -> ProviderSnapshot:
+    """Build a VisionAwareProvider that routes:
+
+    - Text-only messages  → text_preset  (e.g. DeepSeek via DS2API — fast, free)
+    - Messages with images → vision_preset (e.g. Codex — can read images)
+
+    If vision_preset_name is not given, falls back to text_preset for both.
+    Config example::
+
+        model_presets:
+          deepseek_text:
+            model: deepseek-v4-pro-nothinking
+            provider: deepseek
+          codex_vision:
+            model: gpt-5.4
+            provider: custom   # → CLIProxyAPI → Codex
+    """
+    text_snapshot = build_provider_snapshot(config, preset_name=text_preset_name)
+
+    if vision_preset_name is None or vision_preset_name == text_preset_name:
+        # No separate vision preset configured — use text provider for everything.
+        return text_snapshot
+
+    vision_snapshot = build_provider_snapshot(config, preset_name=vision_preset_name)
+
+    router = VisionAwareProvider(
+        text_provider=text_snapshot.provider,
+        vision_provider=vision_snapshot.provider,
+    )
+
+    # Use text preset as the representative model/context_window for the snapshot.
+    return ProviderSnapshot(
+        provider=router,
+        model=text_snapshot.model,
+        context_window_tokens=min(
+            text_snapshot.context_window_tokens,
+            vision_snapshot.context_window_tokens,
+        ),
+        signature=(
+            "vision_aware",
+            text_snapshot.signature,
+            vision_snapshot.signature,
+        ),
     )
