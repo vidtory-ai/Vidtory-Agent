@@ -2162,13 +2162,7 @@ class TelegramChannel(BaseChannel):
                     create_minimal_profile(uid, username=username)
                     onboarding_status = "minimal"
 
-            # Auto-migrate legacy profile.json → SQLite if DB profile is empty.
-            # This is a one-time, lightweight operation per user — safe to call every turn.
-            try:
-                from nanobot.db.migrate_to_sqlite import migrate_profile_json_for_user
-                migrate_profile_json_for_user(uid)
-            except Exception:
-                pass  # Migration failure must never block message processing
+
 
             metadata["onboarding_status"] = onboarding_status  # 'minimal'|'completed'
 
