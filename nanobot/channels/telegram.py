@@ -316,10 +316,9 @@ class TelegramChannel(BaseChannel):
         BotCommand("apikey", "Set your Vidtory API key"),
         BotCommand("mykey", "View your current API key (masked)"),
         BotCommand("credits", "Check your remaining Vidtory credits"),
-        BotCommand("brand", "View your brand profile & logo"),
+        BotCommand("brand", "View & manage your brand profile"),
         BotCommand("setbrand", "Update a brand field: /setbrand style luxury"),
         BotCommand("setlogo", "Set or change your brand logo"),
-        BotCommand("profile", "View or reset your brand profile"),
         BotCommand("new", "Start a new conversation"),
         BotCommand("clear", "Delete all your data and API key"),
         BotCommand("stop", "Stop the current task"),
@@ -439,7 +438,7 @@ class TelegramChannel(BaseChannel):
         # API key management commands (multi-user mode)
         self._app.add_handler(
             MessageHandler(
-                filters.Regex(r"^/(apikey|mykey|clear|credits|profile|brand|setbrand|setlogo)(?:@\w+)?(?:\s+.*)?$"),
+                filters.Regex(r"^/(apikey|mykey|clear|credits|brand|setbrand|setlogo|profile)(?:@\w+)?(?:\s+.*)?$"),
                 self._on_api_key_management,
             )
         )
@@ -1162,7 +1161,6 @@ class TelegramChannel(BaseChannel):
         """Handle multi-user API key registration/management commands.
 
         Returns True if a command was handled and no further processing is needed.
-        /profile is always handled regardless of require_user_api_key setting.
         """
         message = update.message
         if not message or not (message.text or message.caption):
@@ -1180,56 +1178,13 @@ class TelegramChannel(BaseChannel):
         sender_id = self._sender_id(user)
         chat_id = str(message.chat_id)
 
-        # /profile is always available — does not require require_user_api_key
+        # /profile no longer exists
         if cmd == "/profile":
-            try:
-                from nanobot.utils.customer_profile import load_profile
-                uid = sender_id.split("|")[0].strip()
-                profile = load_profile(uid)
-                if not profile:
-                    await message.reply_text(
-                        "📋 *Chưa có brand profile.*\n\n"
-                        "Bắt đầu trò chuyện và tôi sẽ hướng dẫn bạn thiết lập, "
-                        "hoặc nói *\"dùng ngay\"* để bỏ qua onboarding.",
-                        parse_mode="Markdown"
-                    )
-                else:
-                    biz = profile.get("business") or {}
-                    brand = profile.get("brand") or {}
-                    onboarding = profile.get("onboarding") or {}
-                    status_map = {
-                        "minimal": "Cơ bản ✅",
-                        "completed": "Hoàn chỉnh ✅",
-                        "in_progress": "Đang thiết lập 🔄",
-                    }
-                    status = status_map.get(onboarding.get("status", ""), onboarding.get("status", "—"))
-                    name = biz.get("name") or "—"
-                    industry = biz.get("industry") or "—"
-                    style = brand.get("style") or "—"
-                    colors = brand.get("colorPalette") or {}
-                    primary_color = colors.get("primary") or "—"
-                    mood = ", ".join(brand.get("moodKeywords") or []) or "—"
-                    avoid = ", ".join(brand.get("avoidList") or []) or "—"
-                    lines = [
-                        "📋 *Brand Profile của bạn*",
-                        "",
-                        f"🏢 *Tên:* {name}",
-                        f"🏭 *Ngành:* {industry}",
-                        f"🎨 *Phong cách:* {style}",
-                        f"✨ *Mood:* {mood}",
-                        f"🎨 *Màu chủ đạo:* {primary_color}",
-                        f"🚫 *Tránh:* {avoid}",
-                        f"✅ *Onboarding:* {status}",
-                        "",
-                        "_Để reset profile, dùng_ `/clear` _rồi chat lại._",
-                    ]
-                    await message.reply_text("\n".join(lines), parse_mode="Markdown")
-            except Exception as e:
-                self.logger.warning("Failed to load customer profile: {}", e)
-                await message.reply_text(
-                    "⚠️ Không thể tải profile. Vui lòng thử lại sau.",
-                    parse_mode="Markdown"
-                )
+            await message.reply_text(
+                "❌ Lệnh `/profile` không tồn tại.\n"
+                "Vui lòng thử lệnh khác — dùng /brand để xem brand profile.",
+                parse_mode="Markdown"
+            )
             return True
 
         # All key-management commands are always handled — no flag restriction.
@@ -1246,11 +1201,32 @@ class TelegramChannel(BaseChannel):
                 return True
             key = parts[1].strip()
             self.keystore.set_key(sender_id, key)
-            await message.reply_text(
-                "✅ *Cấu hình API Key thành công!*\n"
-                "Bạn có thể bắt đầu chat với bot ngay bây giờ.",
-                parse_mode="Markdown"
-            )
+            # Check if user already has a brand profile
+            has_profile = False
+            try:
+                from nanobot.utils.customer_profile import profile_exists
+                uid = sender_id.split("|")[0].strip()
+                has_profile = profile_exists(uid)
+            except Exception:
+                pass
+            if has_profile:
+                await message.reply_text(
+                    "✅ *Đã lưu Vidtory API Key thành công!*\n"
+                    "Bot đang sẵn sàng phục vụ bạn. Gõ /brand để xem profile.",
+                    parse_mode="Markdown"
+                )
+            else:
+                buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
+                reply_markup = self._build_keyboard(buttons)
+                await message.reply_text(
+                    "✅ *Đã lưu Vidtory API Key thành công!*\n\n"
+                    "🎯 Để bot tạo nội dung *bám sát thương hiệu* của bạn, "
+                    "mình cần biết thêm một chút về brand.\n\n"
+                    "Bạn muốn thiết lập brand profile ngay không?\n"
+                    "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_",
+                    parse_mode="Markdown",
+                    reply_markup=reply_markup,
+                )
             return True
 
         elif cmd == "/mykey":
@@ -1375,11 +1351,15 @@ class TelegramChannel(BaseChannel):
                 uid = sender_id.split("|")[0].strip()
                 profile = load_profile(uid)
                 if not profile:
+                    buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
+                    reply_markup = self._build_keyboard(buttons)
                     await message.reply_text(
-                        "📋 *Chưa có brand profile.*\n\n"
-                        "Bắt đầu trò chuyện để tôi tự động tạo profile cho bạn, "
-                        "hoặc gõ *\"dùng ngay\"* để bắt đầu.",
-                        parse_mode="Markdown"
+                        "📋 *Bạn chưa có brand profile.*\n\n"
+                        "Mình có thể hỏi vài câu để tạo profile phù hợp — chỉ mất ~1 phút. "
+                        "Profile giúp AI tạo nội dung *chuẩn thương hiệu* hơn rất nhiều.\n\n"
+                        "Bạn muốn thiết lập ngay không?",
+                        parse_mode="Markdown",
+                        reply_markup=reply_markup,
                     )
                 else:
                     biz = profile.get("business") or {}
@@ -1822,12 +1802,32 @@ class TelegramChannel(BaseChannel):
             if not self.keystore.get_key(sender_id):
                 if self._looks_like_api_key(raw_text := (message.text or "").strip()):
                     self.keystore.set_key(sender_id, raw_text)
-                    await message.reply_text(
-                        "✅ *Đã lưu Vidtory API Key thành công!*\n"
-                        "Bạn có thể bắt đầu chat với bot ngay bây giờ.\n"
-                        "Gõ /help để xem danh sách lệnh.",
-                        parse_mode="Markdown"
-                    )
+                    # Check if user already has a brand profile
+                    has_profile = False
+                    try:
+                        from nanobot.utils.customer_profile import profile_exists
+                        uid_check = sender_id.split("|")[0].strip()
+                        has_profile = profile_exists(uid_check)
+                    except Exception:
+                        pass
+                    if has_profile:
+                        await message.reply_text(
+                            "✅ *Đã lưu Vidtory API Key thành công!*\n"
+                            "Bot đang sẵn sàng. Gõ /help để xem danh sách lệnh.",
+                            parse_mode="Markdown"
+                        )
+                    else:
+                        buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
+                        reply_markup = self._build_keyboard(buttons)
+                        await message.reply_text(
+                            "✅ *Đã lưu Vidtory API Key thành công!*\n\n"
+                            "🎯 Để bot tạo nội dung *bám sát thương hiệu* của bạn, "
+                            "mình cần biết thêm một chút về brand.\n\n"
+                            "Bạn muốn thiết lập brand profile ngay không?\n"
+                            "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_",
+                            parse_mode="Markdown",
+                            reply_markup=reply_markup,
+                        )
                     return
                 else:
                     await message.reply_text(
@@ -1847,11 +1847,31 @@ class TelegramChannel(BaseChannel):
             raw_text = (message.text or "").strip()
             if self._looks_like_api_key(raw_text):
                 self.keystore.set_key(sender_id, raw_text)
-                await message.reply_text(
-                    "✅ *Đã lưu Vidtory API Key thành công!*\n"
-                    "Bạn có thể bắt đầu tạo ảnh, video, âm thanh ngay bây giờ.",
-                    parse_mode="Markdown"
-                )
+                has_profile = False
+                try:
+                    from nanobot.utils.customer_profile import profile_exists
+                    uid_check = sender_id.split("|")[0].strip()
+                    has_profile = profile_exists(uid_check)
+                except Exception:
+                    pass
+                if has_profile:
+                    await message.reply_text(
+                        "✅ *Đã lưu Vidtory API Key thành công!*\n"
+                        "Bot đang sẵn sàng phục vụ bạn.",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
+                    reply_markup = self._build_keyboard(buttons)
+                    await message.reply_text(
+                        "✅ *Đã lưu Vidtory API Key thành công!*\n\n"
+                        "🎯 Để bot tạo nội dung *bám sát thương hiệu* của bạn, "
+                        "mình cần biết thêm một chút về brand.\n\n"
+                        "Bạn muốn thiết lập brand profile ngay không?\n"
+                        "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_",
+                        parse_mode="Markdown",
+                        reply_markup=reply_markup,
+                    )
                 return
 
         self._remember_thread_context(message)
@@ -1979,6 +1999,7 @@ class TelegramChannel(BaseChannel):
             metadata=metadata,
             session_key=session_key,
         )
+
     async def _handle_message(
         self,
         sender_id: str,
