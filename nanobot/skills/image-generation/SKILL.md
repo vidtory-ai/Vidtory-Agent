@@ -2,9 +2,6 @@
 name: image-generation
 description: Native image generation skill using the generate_image tool.
 ---
-name: image-generation
-description: Native image generation skill using the generate_image tool.
----
 
 # Image Generation
 
@@ -21,6 +18,18 @@ Use the `generate_image` tool when the user asks to create an image, photo, or a
 5. **Prompt tiếng Việt**: Khi ngôn ngữ giao tiếp là tiếng Việt, prompt PHẢI viết **100% tiếng Việt**. KHÔNG được lẫn lộn tiếng Anh.
 6. **Thuật ngữ kỹ thuật**: Giữ nguyên thuật ngữ quốc tế (bokeh, 8K, HDR, f/2.8) nhưng mô tả phải bằng tiếng Việt.
 7. **KHÔNG tự bịa thông tin**: KHÔNG tự thêm tên thương hiệu, logo, slogan vào prompt nếu không có trong Customer Profile. Nếu thiếu → hỏi khách cung cấp.
+
+### ⚠️ QUY TẮC XÁC NHẬN TRƯỚC KHI TẠO — BẮT BUỘC
+8. **Yêu cầu mơ hồ → Hỏi trước, tạo sau**: Nếu yêu cầu chỉ có mục đích/chủ đề chung (ví dụ: "tạo ảnh vinh danh thầy cô", "ảnh tuyển sinh", "ảnh kỷ niệm", "ảnh sự kiện") mà KHÔNG có mô tả chủ thể cụ thể → **DỪNG, hỏi xác nhận** theo format của vidtory-input-validator Rule 7 trước khi gọi `generate_image`.
+9. **Điều kiện được tạo ngay**: Yêu cầu có đủ chủ thể (người, vật, cảnh) + phong cách + mục đích. Ví dụ: "tạo ảnh nhóm sinh viên đứng trước campus PTIT phong cách hiện đại" → đủ thông tin, tạo ngay.
+
+### ⚠️ QUY TẮC PHẢN HỒI — BẮT BUỘC
+10. **KHÔNG thêm footer gợi ý lệnh**: Sau khi gửi ảnh, TUYỆT ĐỐI KHÔNG thêm các đoạn như:
+    - "Nhân tiện, mình đang dùng nhận diện [tên] có sẵn..."
+    - "Nếu muốn cập nhật logo, dùng /setlogo..."
+    - "Bạn có thể xem brand profile bằng /brand..."
+    
+    Chỉ được gợi ý các biến thể ảnh tiếp theo (tỷ lệ khác, có chữ, màu khác) hoặc hỏi nếu cần thêm gì.
 
 ## Example
 

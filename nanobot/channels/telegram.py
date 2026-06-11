@@ -1994,10 +1994,18 @@ class TelegramChannel(BaseChannel):
             uid_logo = sender_id.split("|")[0].strip()
             raw_req = (message.text or message.caption or "").strip().lower()
             _AD_KEYWORDS = (
-                "quảng cáo", "banner", "poster", "flyer", "truyền thông",
+                # Quảng cáo / marketing
+                "quảng cáo", "quảng bá", "banner", "poster", "flyer", "truyền thông",
                 "marketing", "khuyến mãi", "sale", "promotion", "advertis",
-                "sản phẩm", "thương hiệu", "brand", "social media", "facebook ads",
-                "instagram", "thumbnail", "cover", "landing",
+                "social media", "facebook ads", "instagram", "thumbnail", "cover", "landing",
+                # Thương hiệu / sản phẩm
+                "sản phẩm", "thương hiệu", "brand", "nhãn hàng",
+                # Sự kiện / tổ chức
+                "sự kiện", "tuyển sinh", "vinh danh", "tri ân", "kỷ niệm", "chào mừng",
+                "lễ tốt nghiệp", "hội nghị", "hội thảo", "khai giảng", "bế giảng",
+                "giải thưởng", "thành tích", "chương trình", "hoạt động",
+                # Tổ chức / trường học
+                "trường", "cục", "phòng", "viện", "nhà trường", "nhà máy", "công ty",
             )
             _LOGO_SKIP_PHRASES = (
                 "không có logo", "bỏ qua logo", "không cần logo",
