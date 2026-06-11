@@ -1986,6 +1986,47 @@ class TelegramChannel(BaseChannel):
         except Exception as e:
             self.logger.warning("Error checking onboarding status for prompt: {}", e)
 
+        # Guard: Logo pre-flight for ad/marketing image requests
+        # When user asks to create advertising/promotional content but has no logo set,
+        # prompt them to add a logo first (or explicitly skip) before proceeding.
+        try:
+            from nanobot.utils.customer_profile import get_logo_url, profile_exists
+            uid_logo = sender_id.split("|")[0].strip()
+            raw_req = (message.text or message.caption or "").strip().lower()
+            _AD_KEYWORDS = (
+                "quảng cáo", "banner", "poster", "flyer", "truyền thông",
+                "marketing", "khuyến mãi", "sale", "promotion", "advertis",
+                "sản phẩm", "thương hiệu", "brand", "social media", "facebook ads",
+                "instagram", "thumbnail", "cover", "landing",
+            )
+            _LOGO_SKIP_PHRASES = (
+                "không có logo", "bỏ qua logo", "không cần logo",
+                "skip logo", "no logo", "tạo không cần logo",
+            )
+            is_ad_request = any(kw in raw_req for kw in _AD_KEYWORDS)
+            user_skipping_logo = any(kw in raw_req for kw in _LOGO_SKIP_PHRASES)
+            if (
+                is_ad_request
+                and not user_skipping_logo
+                and profile_exists(uid_logo)
+                and not get_logo_url(uid_logo)
+            ):
+                buttons = [["📤 Thêm logo ngay", "⏩ Tạo không cần logo"]]
+                reply_markup = self._build_keyboard(buttons)
+                await message.reply_text(
+                    "🖼️ *Bạn chưa có logo thương hiệu!*\n\n"
+                    "Logo giúp ảnh quảng cáo trông chuyên nghiệp và nhận diện thương hiệu hơn rất nhiều.\n\n"
+                    "*Cách thêm logo:*\n"
+                    "• Gửi URL: `/setlogo https://link-logo.png`\n"
+                    "• Gửi file: reply ảnh logo + gõ `/setlogo`\n\n"
+                    "Bạn muốn thêm logo trước, hay tạo ảnh không cần logo?",
+                    parse_mode="Markdown",
+                    reply_markup=reply_markup,
+                )
+                return
+        except Exception as e:
+            self.logger.warning("Error in logo pre-flight check: {}", e)
+
         # Start typing indicator before processing
         self._start_typing(str_chat_id)
         await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
@@ -2011,6 +2052,33 @@ class TelegramChannel(BaseChannel):
         is_dm: bool = False,
     ) -> None:
         metadata = dict(metadata or {})
+
+        # Handle logo pre-flight button responses
+        _raw_content = content.strip().lower()
+        if _raw_content in ("\ud83d\udce4 th\u00eam logo ngay", "th\u00eam logo ngay"):
+            # User wants to add a logo — send setlogo guide and stop
+            if self._app:
+                with suppress(Exception):
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "\ud83d\uddbc\ufe0f *H\u01b0\u1edbng d\u1eabn th\u00eam logo th\u01b0\u01a1ng hi\u1ec7u:*\n\n"
+                            "*C\u00e1ch 1 \u2014 G\u1eedi URL logo:*\n"
+                            "`/setlogo https://link-logo-cua-ban.png`\n\n"
+                            "*C\u00e1ch 2 \u2014 G\u1eedi file \u1ea3nh tr\u1ef1c ti\u1ebfp:*\n"
+                            "1\ufe0f\u20e3 G\u1eedi \u1ea3nh logo v\u00e0o chat\n"
+                            "2\ufe0f\u20e3 Reply \u1ea3nh \u0111\u00f3 v\u00e0 g\u00f5 `/setlogo`\n\n"
+                            "*C\u00e1ch 3 \u2014 G\u1eedi \u1ea3nh k\u00e8m l\u1ec7nh:*\n"
+                            "G\u1eedi \u1ea3nh logo v\u1edbi caption `/setlogo`\n\n"
+                            "_Sau khi th\u00eam logo xong, b\u1ea1n c\u00f3 th\u1ec3 ti\u1ebfp t\u1ee5c y\u00eau c\u1ea7u t\u1ea1o \u1ea3nh ban \u0111\u1ea7u._"
+                        ),
+                        parse_mode="Markdown",
+                    )
+            return
+        if _raw_content in ("\u23e9 t\u1ea1o kh\u00f4ng c\u1ea7n logo", "t\u1ea1o kh\u00f4ng c\u1ea7n logo"):
+            # User explicitly skips logo — pass through with a hint so LLM knows
+            metadata["logo_skipped"] = True
+            content = content + "\n[Người dùng chọn tạo ảnh không cần logo thương hiệu]"
 
         # Always inject keystore API key into metadata so Vidtory tools receive the
         # merchant key regardless of require_user_api_key setting.
@@ -2058,12 +2126,20 @@ class TelegramChannel(BaseChannel):
                                 "• *Tên thương hiệu:* ...\n"
                                 "• *Ngành nghề:* ...\n"
                                 "• *Phong cách thiết kế:* ...\n"
-                                "• *Màu sắc chủ đạo:* ...\n\n"
+                                "• *Màu sắc chủ đạo:* ...\n"
+                                "• *Logo:* (xem hướng dẫn bên dưới)\n\n"
                                 "_💡 Mẹo: Điền càng chi tiết thì AI tạo nội dung càng chuẩn xác. "
                                 "Tuy nhiên nếu bạn không điền đủ cũng không sao, "
                                 "sau này trong quá trình làm việc hệ thống sẽ tự động quan sát và học dần dần. "
                                 "Bạn không cần phải ép mình trả lời hoàn hảo ngay từ đầu!_\n\n"
-                                "Hãy copy mẫu trên, điền thông tin và gửi lại cho tôi nhé."
+                                "Hãy copy mẫu trên, điền thông tin và gửi lại cho tôi nhé.\n\n"
+                                "━━━━━━━━━━━━━━\n"
+                                "🖼️ *Thêm logo thương hiệu (tuỳ chọn nhưng rất nên có):*\n\n"
+                                "*Cách 1 — Gửi URL logo:*\n"
+                                "`/setlogo https://link-logo-cua-ban.png`\n\n"
+                                "*Cách 2 — Gửi file ảnh:*\n"
+                                "Reply bất kỳ ảnh logo nào + gõ `/setlogo`\n\n"
+                                "_Logo sẽ được tự động chèn vào mọi ảnh quảng cáo bạn tạo._"
                             ),
                             parse_mode="Markdown"
                         )
