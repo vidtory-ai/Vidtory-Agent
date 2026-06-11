@@ -1801,13 +1801,23 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         if style_image_url:
             body["styleImageUrl"] = self._image_to_ref_value(style_image_url)
 
-        # Brand logo — passed as a SEPARATE protected field.
-        # This tells Vidtory/Gemini that the logo is a brand asset to PRESERVE,
-        # not a watermark to erase or a subject to modify.
-        # MUST be a Vidtory CDN URL (pre-uploaded via _resolve_logo_url).
+        # Brand logo — injected into startImages so Vidtory/Gemini receives it
+        # as a reference image asset alongside the prompt.
+        # NOTE: The /generative-core/image API does NOT have a dedicated logoUrl
+        # field. startImages is the correct channel for brand logo injection.
+        # The logo URL is always a Vidtory CDN URL (pre-resolved via _resolve_logo_url)
+        # so it can be passed directly without re-encoding.
         if logo_url:
-            body["logoUrl"] = logo_url
-            logger.info("Vidtory: brand logo attached as protected asset → {}", logo_url)
+            existing_starts = list(body.get("startImages") or [])
+            # Append logo to end of startImages (after any user reference images)
+            if logo_url not in existing_starts:
+                existing_starts.append(logo_url)
+            body["startImages"] = existing_starts
+            logger.info(
+                "Vidtory: brand logo injected into startImages ({} total image(s)): {}",
+                len(existing_starts),
+                logo_url,
+            )
 
         body.update(self.extra_body)
 

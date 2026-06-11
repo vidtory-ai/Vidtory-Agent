@@ -19,26 +19,35 @@ Layer 3: + Industry Templates → Professional techniques
 Layer 4: + Platform Specs → Format optimization
 Layer 5: + Quality Keywords → Technical excellence
 Layer 6: + Feedback Adjustments → Learned preferences
+Layer 7: + Language Normalization → Thống nhất ngôn ngữ
 ```
+
+## ⚠️ QUY TẮC NGÔN NGỮ — BẮT BUỘC
+
+1. **Prompt cuối PHẢI thống nhất một ngôn ngữ** — không lẫn lộn
+2. Khi khách giao tiếp bằng tiếng Việt → prompt PHẢI 100% tiếng Việt
+3. Thuật ngữ kỹ thuật quốc tế giữ nguyên: "bokeh", "8K", "HDR", "f/2.8"
+4. **KHÔNG BAO GIỌ** tự thêm tên thương hiệu, logo, slogan vào prompt nếu không có trong Customer Profile
+5. Nếu thiếu thông tin thương hiệu → TRẢ VỀ cho agent để HỎI KHÁCH, không tự bịa
 
 ## Enhancement Rules
 
 ### For IMAGE prompts:
 
 Always include these elements in the enhanced prompt:
-1. **Subject** — What the image shows (detailed description)
-2. **Style** — Visual style from brand guidelines
-3. **Composition** — Camera angle, framing, rule of thirds
-4. **Lighting** — Lighting setup appropriate for the subject
-5. **Color palette** — Brand colors integrated naturally
-6. **Quality markers** — "sharp focus", "high resolution", "professional"
-7. **Mood** — Emotional tone from brand keywords
+1. **Chủ thể** — Mô tả chi tiết đối tượng chính của ảnh
+2. **Phong cách** — Phong cách thị giác từ brand guidelines
+3. **Bố cục** — Góc chụp, framing, quy tắc phần ba
+4. **Ánh sáng** — Loại ánh sáng phù hợp với chủ thể
+5. **Gam màu** — Màu thương hiệu tích hợp tự nhiên
+6. **Chất lượng** — "nét sắc", "độ phân giải cao", "chuyên nghiệp"
+7. **Tâm trạng** — Cảm xúc từ brand keywords
 
 Template:
 ```
-{detailed_subject}, {style} style, {composition}, {lighting}, 
-{color_palette} color scheme, {mood} atmosphere, 
-professional {industry} photography, sharp focus, high resolution
+{chủ_thể_chi_tiết}, phong cách {style}, {bố_cục}, {ánh_sáng},
+gam màu {bảng_màu}, không khí {tâm_trạng},
+ảnh {ngành} chuyên nghiệp, nét sắc, độ phân giải cao
 ```
 
 ### For VIDEO prompts:
@@ -69,11 +78,11 @@ Before finalizing any prompt, check customer's `learningData.commonFeedback`:
 ## Examples
 
 ### Input: "tạo ảnh áo dài"
-### Customer: Hana Boutique (fashion, minimalist, black+gold)
+### Customer: Hana Boutique (fashion, minimalist, đen+vàng)
 ### Output:
-"Vietnamese Ao Dai dress, premium silk fabric, elegant woman model, minimalist composition with negative space, studio lighting with softbox key light and subtle rim light, black and gold color accents on clean white backdrop, three-quarter body shot, slightly elevated camera angle, commercial fashion photography for Instagram, sharp focus, high resolution, luxury premium feel"
+"Áo dài Việt Nam vải lụa cao cấp, người mẫu nữ thanh lịch, bố cục tối giản với khoảng trống âm, ánh sáng studio softbox chính và viền sáng tinh tế, điểm nhấn màu đen và vàng trên nền trắng sạch, chụp 3/4 người, góc máy hơi cao, ảnh thời trang thương mại cho Instagram, nét sắc, độ phân giải cao, cảm giác sang trọng cao cấp"
 
 ### Input: "làm video giới thiệu sản phẩm mới"  
-### Customer: Same as above
+### Customer: Tương tự như trên
 ### Output:
-"Cinematic product reveal of Vietnamese Ao Dai dress, slow camera orbit around the garment on a mannequin, dramatic lighting transitioning from shadow to spotlight, black and gold visual motifs, smooth dolly movement, luxury fashion commercial style, 8-second duration, 9:16 vertical format for Instagram Reels"
+"Cảnh mở hộp sản phẩm áo dài Việt Nam điện ảnh, camera xoay chậm quanh trang phục trên mô hình, ánh sáng kịch tính chuyển từ bóng tối sang spotlight, hình ảnh đen và vàng chủ đạo, chuyển động camera đẩy mượt mà, phong cách quảng cáo thời trang cao cấp, thời lượng 8 giây, định dạng dọc 9:16 cho Instagram Reels"

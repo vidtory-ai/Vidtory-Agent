@@ -205,7 +205,6 @@ _CONTENT_TYPE_TO_STYLE: dict[str, str] = {
     "kids": "kids_product",
     "fitness": "fitness",
     "pet": "pet",
-    "real_estate": "real_estate",
 }
 
 # ── Universal quality suffixes always appended ───────────────────────────────
@@ -213,6 +212,117 @@ _UNIVERSAL_QUALITY_SUFFIX = (
     "sharp focus, high resolution, professional grade, no watermark, no text overlay, "
     "photorealistic, commercial quality"
 )
+
+_UNIVERSAL_QUALITY_SUFFIX_VI = (
+    "nét sắc, độ phân giải cao, chất lượng chuyên nghiệp, không watermark, không chữ chồng, "
+    "siêu thực, chất lượng thương mại"
+)
+
+# ── Vietnamese photography style presets ─────────────────────────────────────
+_PHOTOGRAPHY_STYLES_VI: dict[str, str] = {
+    # Sản phẩm
+    "product_hero": (
+        "ảnh hero sản phẩm, chất lượng thương mại 8K, nền studio trắng hoặc chuyển màu, "
+        "ánh sáng studio ba điểm (chính + phụ + viền), phản xạ trên bề mặt, "
+        "nét sắc siêu rõ với độ sâu trường ảnh nông, màu sắc chuẩn, sẵn sàng cho thương hiệu"
+    ),
+    "product_lifestyle": (
+        "ảnh sản phẩm phong cách sống, bối cảnh môi trường tự nhiên, ánh sáng cửa sổ mềm dịu, "
+        "gam màu ấm, độ sâu trường ảnh nông f/2.8, chất lượng editorial, không khí khát vọng"
+    ),
+    "product_packshot": (
+        "ảnh packshot chuyên nghiệp, cân đối chính giữa, nền trắng tinh, "
+        "bóng đổ nhẹ chân đế, đã retouch, sắc nét 100%, sẵn sàng thương mại điện tử"
+    ),
+    # Thời trang
+    "fashion_editorial": (
+        "ảnh thời trang editorial cao cấp, chất lượng Vogue, ánh sáng định hướng kịch tính, "
+        "phông nền có kết cấu, tông màu điện ảnh, chi tiết sắc nét thời trang cao cấp, thẩm mỹ sang trọng"
+    ),
+    "fashion_lookbook": (
+        "ảnh lookbook thời trang, nền tối giản sạch, ánh sáng studio cân bằng, "
+        "khung toàn thân hoặc 3/4, tư thế người mẫu chuyên nghiệp, chất lượng catalog thương mại"
+    ),
+    "fashion_street": (
+        "ảnh thời trang đường phố, bối cảnh đô thị, ánh sáng hoàng hôn ngược sáng, "
+        "nền bokeh, năng lượng tự nhiên, tương phản cao, thẩm mỹ trẻ trung"
+    ),
+    # Đồ ăn & Đồ uống
+    "food_hero": (
+        "ảnh hero đồ ăn, góc chụp từ trên xuống hoặc 45°, hơi nước bốc lên, "
+        "kết cấu tươi mọn lấp lánh, đạo cụ phụ hợp, ánh sáng cửa sổ khuếch tán tự nhiên, "
+        "màu sắc sống động bão hòa, hoàn thiện kiểu food stylist chuyên nghiệp"
+    ),
+    "food_beverage": (
+        "ảnh đồ uống, giọt nước ngưng tụ trên ly, viên đá trong suốt, "
+        "chất lỏng trong suốt được hắt sáng từ phía sau, nền tối tâm trạng, chi tiết macro, phong cách cao cấp"
+    ),
+    "food_restaurant": (
+        "ảnh bày biện món ăn nhà hàng, trình bày kiểu bếp trưởng, tông ánh nến ấm, "
+        "không khí bokeh, chất lượng fine dining, chuẩn tạp chí ẩm thực"
+    ),
+    # Mỹ phẩm & Làm đẹp
+    "beauty_product": (
+        "ảnh sản phẩm làm đẹp, bề mặt đá cẩm thạch hoặc kết cấu cao cấp, chi tiết macro kết cấu, "
+        "gam màu pastel hoặc đơn sắc, ánh sáng khuếch tán mềm, bề mặt bóng cao cấp, "
+        "chuẩn catalog mỹ phẩm thượng hạng"
+    ),
+    "beauty_portrait": (
+        "ảnh chân dung làm đẹp, điểm sáng trong mắt, da hoàn hảo retouch, "
+        "ánh sáng bướm hoặc Rembrandt, nền sạch trung tính, "
+        "retouch cao cấp, chất lượng tạp chí thời trang hàng đầu"
+    ),
+    # Bất động sản & Kiến trúc
+    "interior_design": (
+        "ảnh kiến trúc nội thất, góc rộng ống kính 16-24mm, "
+        "ánh sáng cửa sổ tự nhiên cân bằng với ánh sáng phụ, đường dọc thẳng chuẩn, "
+        "tông màu ấm giàu, chất lượng tạp chí kiến trúc"
+    ),
+    "real_estate": (
+        "ảnh bất động sản, ngoại thất hoàng hôn, phơi sáng HDR cân bằng, "
+        "đèn nội thất tỏa ánh ấm, bầu trời giờ xanh, góc máy chuyên nghiệp"
+    ),
+    # Chân dung & Phong cách sống
+    "portrait_professional": (
+        "chân dung chuyên nghiệp doanh nhân, nền trung tính sạch, ánh sáng softbox đều, "
+        "mắt sắc nét với điểm sáng, biểu cảm tự tin, chất lượng ảnh doanh nghiệp/LinkedIn"
+    ),
+    "lifestyle_authentic": (
+        "ảnh phong cách sống, khoảnh khắc tự nhiên chân thực, ánh sáng hoàng hôn tự nhiên, "
+        "độ sâu trường ảnh nông, tông màu ấm kiểu phim, giàu cảm xúc"
+    ),
+    # Công nghệ & SaaS
+    "tech_product": (
+        "ảnh sản phẩm công nghệ, nền tối gradient, ánh sáng neon điểm nhấn, "
+        "phản chiếu trên bề mặt, không khí tương lai, chất lượng editorial công nghệ"
+    ),
+    # Trang sức & Đồng hồ
+    "jewelry": (
+        "ảnh trang sức cao cấp, chi tiết macro đá quý, bề mặt tối phản chiếu hoặc "
+        "đá cẩm thạch trắng, ánh sáng chính đơn mềm với viền sáng tinh tế, phản xạ kim loại, "
+        "chuẩn catalog trang sức hàng đầu, siêu sắc nét 8K"
+    ),
+    # Nến & Trang trí nhà
+    "candle_decor": (
+        "ảnh nến và trang trí nhà, ánh sáng nến ấm áp với bokeh mềm, "
+        "đạo cụ mộc mạc hoặc tối giản, không khí ấm cúng, tông màu hổ phách ấm, chất lượng editorial"
+    ),
+    # Trẻ em & Em bé
+    "kids_product": (
+        "ảnh sản phẩm trẻ em, màu sắc tươi sáng vui tươi, đạo cụ vui nhộn và nền mềm, "
+        "ánh sáng cửa sổ tự nhiên mềm, thẩm mỹ sạch an toàn, không khí ấm áp hấp dẫn"
+    ),
+    # Thể hình & Thể thao
+    "fitness": (
+        "ảnh sản phẩm thể hình, nền trắng sạch hoặc phòng gym, ánh sáng bên kịch tính, "
+        "thẩm mỹ cơ bắp tự tin, màu sắc đậm bão hòa, chất lượng editorial sức khỏe"
+    ),
+    # Thú cưng
+    "pet": (
+        "ảnh thú cưng, ánh sáng cửa sổ tự nhiên mềm, biểu cảm đáng yêu tự nhiên, "
+        "nền tối giản sạch, không khí ấm áp vui tươi, nét sắc vào mắt"
+    ),
+}
 
 # ── Content type keyword detection ───────────────────────────────────────────
 _CONTENT_TYPE_KEYWORDS: dict[str, list[str]] = {
@@ -330,6 +440,14 @@ def _get_universal_suffix() -> str:
     return _overrides.get("universal_quality_suffix", _UNIVERSAL_QUALITY_SUFFIX)
 
 
+def _get_universal_suffix_vi() -> str:
+    return _overrides.get("universal_quality_suffix_vi", _UNIVERSAL_QUALITY_SUFFIX_VI)
+
+
+def _get_styles_vi() -> dict[str, str]:
+    return {**_PHOTOGRAPHY_STYLES_VI, **_overrides.get("photography_styles_vi", {})}
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -364,6 +482,7 @@ def build_professional_prompt_suffix(
     prompt: str,
     content_type: str | None = None,
     platform: str | None = None,
+    lang: str | None = None,
 ) -> str:
     """Build a professional suffix to append to image generation prompts.
 
@@ -376,11 +495,16 @@ def build_professional_prompt_suffix(
                       Auto-detected from ``prompt`` if ``None``.
         platform: Optional platform key (e.g. ``'instagram_feed'``).
                   Adds platform-specific composition hints when supplied.
+        lang: Language code (e.g. ``'vi'`` for Vietnamese).
+              When ``'vi'``, returns Vietnamese suffix.
 
     Returns:
         A suffix string ready to be appended to the prompt with ``", "``.
         Empty string if no enhancement is applicable.
     """
+    if lang == "vi":
+        return _build_professional_prompt_suffix_vi(prompt, content_type, platform)
+
     detected = content_type or detect_content_type(prompt)
     style = get_style_for_content(detected)
 
@@ -396,6 +520,38 @@ def build_professional_prompt_suffix(
             parts.append(style_note)
 
     parts.append(_get_universal_suffix())
+
+    return ", ".join(p for p in parts if p)
+
+
+def _build_professional_prompt_suffix_vi(
+    prompt: str,
+    content_type: str | None = None,
+    platform: str | None = None,
+) -> str:
+    """Vietnamese version of build_professional_prompt_suffix."""
+    detected = content_type or detect_content_type(prompt)
+
+    # Get Vietnamese style if available, fallback to original English
+    style: str | None = None
+    if detected:
+        style_key = _CONTENT_TYPE_TO_STYLE.get(detected)
+        if style_key:
+            styles_vi = _get_styles_vi()
+            style = styles_vi.get(style_key) or _get_styles().get(style_key)
+
+    parts: list[str] = []
+
+    if style:
+        parts.append(style)
+
+    if platform:
+        specs = _get_platform_specs().get(platform, {})
+        style_note = specs.get("style_note")
+        if style_note:
+            parts.append(style_note)
+
+    parts.append(_get_universal_suffix_vi())
 
     return ", ".join(p for p in parts if p)
 

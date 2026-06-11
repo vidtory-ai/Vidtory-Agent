@@ -2,6 +2,9 @@
 name: image-generation
 description: Native image generation skill using the generate_image tool.
 ---
+name: image-generation
+description: Native image generation skill using the generate_image tool.
+---
 
 # Image Generation
 
@@ -9,16 +12,21 @@ Use the `generate_image` tool when the user asks to create an image, photo, or a
 
 ## Guidelines
 
-1. **Detailed Prompting**: Expand the user's short request into a detailed visual prompt. Include the main subject, style, lighting, and composition.
-2. **Aspect Ratio**: By default, generate square images (`1:1`). If the user specifies for a story/reels/tiktok, use `9:16`. If for youtube/desktop, use `16:9`.
-3. **Artifact Handling**: The `generate_image` tool will return a local path. You MUST use the `message` tool to send this media file back to the user.
-4. **Reference Images**: If the user uploads/provides an image and asks to edit it or generate something inspired by it (e.g. "tạo ảnh quảng cáo cho con gấu trong hình" or "làm giống ảnh này"), you MUST pass the path of the user's image (which appears as `[image: /path/to/file.jpg]` in the user's message) to the `reference_images` parameter of `generate_image` as a list.
+1. **Detailed Prompting**: Mở rộng yêu cầu ngắn thành prompt chi tiết. Bao gồm chủ thể, phong cách, ánh sáng, bố cục.
+2. **Aspect Ratio**: Mặc định ảnh vuông (`1:1`). Story/reels/tiktok dùng `9:16`. Youtube/desktop dùng `16:9`.
+3. **Artifact Handling**: Tool `generate_image` trả về đường dẫn. PHẢI dùng tool `message` để gửi file ảnh cho user.
+4. **Reference Images**: Nếu user upload/gửi ảnh và yêu cầu chỉnh sửa hoặc tạo dựa trên ảnh (vd: "tạo ảnh quảng cáo cho con gấu trong hình" hay "làm giống ảnh này"), PHẢI truyền đường dẫn ảnh (xuất hiện dạng `[image: /path/to/file.jpg]` trong tin nhắn) vào tham số `reference_images` dưới dạng list.
+
+### ⚠️ QUY TẮC NGÔN NGỮ — BẮT BUỘC
+5. **Prompt tiếng Việt**: Khi ngôn ngữ giao tiếp là tiếng Việt, prompt PHẢI viết **100% tiếng Việt**. KHÔNG được lẫn lộn tiếng Anh.
+6. **Thuật ngữ kỹ thuật**: Giữ nguyên thuật ngữ quốc tế (bokeh, 8K, HDR, f/2.8) nhưng mô tả phải bằng tiếng Việt.
+7. **KHÔNG tự bịa thông tin**: KHÔNG tự thêm tên thương hiệu, logo, slogan vào prompt nếu không có trong Customer Profile. Nếu thiếu → hỏi khách cung cấp.
 
 ## Example
 
 ```text
 generate_image(
-  prompt="A highly detailed and beautiful advertisement photography of a premium sneaker shoe, dynamic lighting, 8k, photorealistic",
+  prompt="Ảnh quảng cáo giày sneaker cao cấp cực kỳ chi tiết và đẹp, ánh sáng động, 8K, siêu thực",
   reference_images=["C:\\Users\\vidto\\.gemini\\antigravity-ide\\nanobot\\media\\telegram\\file_0.jpg"],
   aspect_ratio="1:1"
 )

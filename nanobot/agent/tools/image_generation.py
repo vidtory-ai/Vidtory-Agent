@@ -146,7 +146,19 @@ class ImageGenerationTool(Tool, ContextAware):
             "Returns artifact ids and local paths. "
             "IMPORTANT: When the user provides multiple images (uploads 2+ photos), you MUST pass ALL image paths "
             "into reference_images — the provider needs every image to correctly combine or reference them. "
-            "Never call this tool with only 1 image when the user sent 2 or more."
+            "Never call this tool with only 1 image when the user sent 2 or more.\n\n"
+            "⛔ DO NOT CALL THIS TOOL if any of the following is true:\n"
+            "1. The user's request only states a PURPOSE ('ảnh tuyển sinh', 'quảng cáo về học viện', 'ảnh sản phẩm') "
+            "without a concrete SUBJECT (specific visual: what people/objects/scene should appear in the image). "
+            "In this case, STOP and ask: 'Bạn muốn ảnh thể hiện hình ảnh gì cụ thể?' with 3 specific suggestions.\n"
+            "2. The request mentions a specific brand/organization name that is NOT present in the Customer Profile. "
+            "In this case, STOP and ask for logo + brand colors. "
+            "NEVER fabricate, hallucinate, or render a logo from a name — this produces incorrect brand representation.\n"
+            "3. The request asks for text/headline ON the image but the user has not specified the actual text content. "
+            "In this case, STOP and ask: 'Bạn muốn ghi dòng chữ gì trên ảnh?'\n\n"
+            "⚠️ LOGO RULE: If Customer Profile contains 'Brand Logo: [URL]', the logo is automatically injected by "
+            "the provider — do NOT write logo instructions in the prompt text. "
+            "If no logo is in the profile but the user wants one, ask them to upload it first via /setlogo."
         )
 
     def _provider_config(self) -> ProviderConfig | None:
@@ -228,6 +240,12 @@ class ImageGenerationTool(Tool, ContextAware):
         optimized_prompt, customer_ar, logo_url = self._apply_customer_context(prompt)
         resolved_ar = aspect_ratio or customer_ar or self.config.default_aspect_ratio
 
+        # Log logo status for traceability
+        if logo_url:
+            logger.info("Brand logo will be attached to request: {}", logo_url)
+        else:
+            logger.debug("No brand logo in customer profile — generation without logo overlay")
+
         try:
             refs = self._resolve_reference_images(reference_images)
             image_urls: list[str] = []
@@ -244,6 +262,7 @@ class ImageGenerationTool(Tool, ContextAware):
                 )
                 if logo_url and hasattr(client, "_resolve_logo_url"):
                     gen_kwargs["logo_url"] = logo_url
+                    logger.info("Vidtory provider: injecting logo_url into API call")
 
                 response = await client.generate(**gen_kwargs)
                 # Collect remote CDN URLs directly — no local storage
@@ -389,7 +408,9 @@ class ImageGenerationTool(Tool, ContextAware):
         1. Auto-detect content type from prompt
         2. Apply Vidtory professional photography style for that content type
            (SKIPPED when prompt is already detailed to avoid injecting irrelevant styles)
+           Uses Vietnamese styles when customer's language is 'vi'.
         3. Apply customer brand guidelines (style, mood keywords, colors)
+           Uses Vietnamese labels when customer's language is 'vi'.
         4. Derive customer's preferred aspect ratio from their primary channel
         5. Extract brand logo URL (for logo-aware generation)
         6. Inject logo preservation instruction when watermark-related keywords
@@ -403,6 +424,16 @@ class ImageGenerationTool(Tool, ContextAware):
         aspect_ratio: str | None = None
         logo_url: str | None = None
 
+        # ── Detect customer language preference ──────────────────────────────
+        customer_lang: str | None = None
+        try:
+            profile = telegram_customer_profile.get()
+            if profile:
+                prefs = profile.get("preferences") or {}
+                customer_lang = prefs.get("communicationLanguage")
+        except Exception:
+            pass
+
         # ── Step 1: Vidtory professional prompt enhancement ──────────────────
         # Skip when the user has already written a detailed/professional prompt
         # to avoid injecting irrelevant content-type keywords (e.g. 'beverage
@@ -410,12 +441,15 @@ class ImageGenerationTool(Tool, ContextAware):
         if not self._is_detailed_prompt(prompt):
             try:
                 content_type = detect_content_type(prompt)
-                pro_suffix = build_professional_prompt_suffix(prompt, content_type=content_type)
+                pro_suffix = build_professional_prompt_suffix(
+                    prompt, content_type=content_type, lang=customer_lang,
+                )
                 if pro_suffix:
                     enriched = f"{enriched}, {pro_suffix}"
                     logger.debug(
-                        "Vidtory professional enhancement applied (content_type={}): +{} chars",
+                        "Vidtory professional enhancement applied (content_type={}, lang={}): +{} chars",
                         content_type or "auto",
+                        customer_lang or "default",
                         len(pro_suffix),
                     )
             except Exception:
@@ -446,7 +480,25 @@ class ImageGenerationTool(Tool, ContextAware):
                 aspect_ratio = get_default_aspect_ratio_for_channel(profile)
 
                 # ── Step 4: Brand logo URL ────────────────────────────────────
-                logo_url = get_customer_logo_url(profile)
+                # Logo is stored by /setlogo into the DB column `logo_url`.
+                # get_customer_logo_url(profile) reads brand.logoUrl from profile
+                # JSON which is NOT populated by /setlogo — so we must read
+                # directly from the DB column as the authoritative source.
+                try:
+                    uid = str(
+                        profile.get("telegramUserId")
+                        or profile.get("telegram_user_id")
+                        or ""
+                    ).strip().split("|")[0]
+                    if uid:
+                        from nanobot.db.customer_db import get_db
+                        logo_url = get_db().get_logo_url(uid) or None
+                        if logo_url:
+                            logger.info("Brand logo loaded from DB (/setlogo): {}", logo_url)
+                        else:
+                            logger.debug("No logo set for user {} — generating without logo overlay", uid)
+                except Exception as _logo_exc:
+                    logger.debug("Failed to read logo from DB (non-critical): {}", _logo_exc)
 
                 # ── Step 5: Logo preservation guard ──────────────────────────
                 # When the user's prompt contains watermark-related keywords AND
@@ -455,14 +507,31 @@ class ImageGenerationTool(Tool, ContextAware):
                 # from erasing the logo while removing other watermark elements.
                 if logo_url and self._prompt_has_watermark_keywords(prompt):
                     logo_guard = (
-                        "IMPORTANT: preserve the existing brand logo exactly as-is — "
-                        "do NOT erase, blur, or modify the brand logo"
+                        "QUAN TRỌNG: giữ nguyên logo thương hiệu như cũ — "
+                        "KHÔNG xóa, làm mờ hoặc chỉnh sửa logo thương hiệu"
+                        if customer_lang == "vi"
+                        else (
+                            "IMPORTANT: preserve the existing brand logo exactly as-is — "
+                            "do NOT erase, blur, or modify the brand logo"
+                        )
                     )
                     enriched = f"{enriched}. {logo_guard}"
                     logger.info(
                         "Logo preservation guard injected into prompt "
                         "(watermark keyword detected, customer has logo)"
                     )
+
+                # ── Step 6: Language text instruction ─────────────────────────
+                # Instruct the model to render any text/typography inside the
+                # image in the correct language. Without this, Gemini defaults
+                # to English text even when the prompt is in Vietnamese.
+                if customer_lang == "vi":
+                    lang_instruction = (
+                        "LƯU Ý QUAN TRỌNG: Nếu có chữ/text xuất hiện trong ảnh, "
+                        "PHẢI viết bằng tiếng Việt, KHÔNG dùng tiếng Anh."
+                    )
+                    enriched = f"{enriched}. {lang_instruction}"
+                    logger.debug("Vietnamese text instruction injected into prompt")
         except Exception:
             logger.warning("Customer context enhancement failed — using defaults")
 

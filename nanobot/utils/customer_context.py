@@ -182,9 +182,27 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
     Used by generate_image tool to auto-apply brand guidelines.
     Merges data from layered brand_memory (preferred) with profile.brand (fallback).
     Returns empty string if no relevant brand data.
+
+    When the customer's communicationLanguage is 'vi', labels are output in Vietnamese.
     """
     brand = profile.get("brand") or {}
     user_id = profile.get("telegramUserId") or ""
+    prefs = profile.get("preferences") or {}
+    lang = prefs.get("communicationLanguage", "")
+
+    # Vietnamese vs English label mapping
+    if lang == "vi":
+        lbl_primary = "màu chủ đạo"
+        lbl_secondary = "màu phụ"
+        lbl_accent = "màu điểm nhấn"
+        lbl_avoid = "tránh"
+        lbl_logo = "thương hiệu có logo"
+    else:
+        lbl_primary = "primary color"
+        lbl_secondary = "secondary color"
+        lbl_accent = "accent color"
+        lbl_avoid = "avoid"
+        lbl_logo = "brand has logo available"
 
     # ── Collect from layered brand memory (takes precedence) ────────────
     mem_parts: list[str] = []
@@ -197,11 +215,11 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
             # Core layer: colors, typography
             core = {m["key"]: m["value"] for m in db.get_memory_layer(user_id, "core")}
             if core.get("color_primary"):
-                mem_parts.append(f"primary color {core['color_primary']}")
+                mem_parts.append(f"{lbl_primary} {core['color_primary']}")
             if core.get("color_secondary"):
-                mem_parts.append(f"secondary color {core['color_secondary']}")
+                mem_parts.append(f"{lbl_secondary} {core['color_secondary']}")
             if core.get("color_accent"):
-                mem_parts.append(f"accent color {core['color_accent']}")
+                mem_parts.append(f"{lbl_accent} {core['color_accent']}")
             if core.get("tone_of_voice"):
                 mem_parts.append(core["tone_of_voice"])
 
@@ -215,8 +233,8 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
                 mem_parts.append(style["lighting_preference"])
 
             # Preference layer: learned constraints
-            prefs = db.get_memory_layer(user_id, "preference")
-            for p in prefs[:4]:
+            prefs_mem = db.get_memory_layer(user_id, "preference")
+            for p in prefs_mem[:4]:
                 if p["key"].startswith("avoid_"):
                     mem_avoid.append(p["value"])
                 elif p["confidence"] >= 0.7:
@@ -244,11 +262,11 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
 
         palette = brand.get("colorPalette") or {}
         if palette.get("primary"):
-            parts.append(f"primary color {palette['primary']}")
+            parts.append(f"{lbl_primary} {palette['primary']}")
         if palette.get("secondary"):
-            parts.append(f"secondary color {palette['secondary']}")
+            parts.append(f"{lbl_secondary} {palette['secondary']}")
         if palette.get("accent"):
-            parts.append(f"accent color {palette['accent']}")
+            parts.append(f"{lbl_accent} {palette['accent']}")
 
     # Industry-based photography style fallback
     if not brand.get("photographyStyle") and not any("photography" in p.lower() for p in parts):
@@ -271,7 +289,7 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
     avoid = list(dict.fromkeys(avoid))
     avoid_str = ""
     if avoid:
-        avoid_str = f", avoid: {', '.join(avoid)}"
+        avoid_str = f", {lbl_avoid}: {', '.join(avoid)}"
 
     if not parts:
         return ""
@@ -280,7 +298,7 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
     # Note about logo availability
     logo_url = (brand.get("logoUrl") or "").strip()
     if logo_url:
-        suffix += ", brand has logo available"
+        suffix += f", {lbl_logo}"
 
     return suffix
 
