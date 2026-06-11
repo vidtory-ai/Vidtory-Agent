@@ -488,18 +488,77 @@ def _extract_avoid_keywords(feedback_text: str) -> list[str]:
     """Map Vietnamese/English feedback complaints to visual avoid keywords.
 
     This is a rule-based extractor — no LLM needed for common patterns.
+    Covers generic visual complaints + domain-specific feedback for:
+    education, luxury/premium, F&B, healthcare, fashion, beauty,
+    real estate, tech, kids/family, and fitness industries.
     """
     text = feedback_text.lower()
     mappings: list[tuple[list[str], str]] = [
+        # ── Generic visual quality ────────────────────────────────────────────
         (["quá sáng", "sáng quá", "chói", "overexposed", "too bright"], "overexposed"),
-        (["quá tối", "tối quá", "dark", "too dark"], "too dark"),
-        (["mờ", "blur", "blurry", "không sắc nét"], "blurry"),
-        (["cartoon", "hoạt hình", "toon", "animated"], "cartoon"),
-        (["xấu", "thô", "low quality", "chất lượng thấp"], "low quality"),
-        (["sai màu", "màu sai", "wrong color", "lệch màu"], "incorrect colors"),
-        (["quá phức tạp", "rối", "cluttered", "messy"], "cluttered"),
-        (["thiếu chuyên nghiệp", "không chuyên", "amateur"], "amateur"),
-        (["quá đơn giản", "nhạt", "plain", "boring"], "too plain"),
+        (["quá tối", "tối quá", "dark", "too dark", "u ám", "gloomy", "depressing"], "too dark"),
+        (["mờ", "blur", "blurry", "không sắc nét", "out of focus"], "blurry"),
+        (["cartoon", "hoạt hình", "toon", "animated", "illustration style"], "cartoon"),
+        (["xấu", "thô", "low quality", "chất lượng thấp", "vỡ hạt", "pixelated"], "low quality"),
+        (["sai màu", "màu sai", "wrong color", "lệch màu", "color cast"], "incorrect colors"),
+        (["quá phức tạp", "rối", "cluttered", "messy", "busy background"], "cluttered"),
+        (["thiếu chuyên nghiệp", "không chuyên", "amateur", "trông amateurish"], "amateur"),
+        (["quá đơn giản", "nhạt", "plain", "boring", "vô hồn"], "too plain"),
+        # ── Lighting & exposure ───────────────────────────────────────────────
+        (["ánh sáng không đều", "uneven lighting", "harsh shadow", "bóng đổ xấu"], "harsh lighting"),
+        (["thiếu chiều sâu", "flat lighting", "no depth", "2d feel"], "flat lighting"),
+        # ── Education / Academic ──────────────────────────────────────────────
+        (["too casual", "thiếu học thuật", "không nghiêm túc", "không trang trọng",
+          "không phù hợp giáo dục", "childish for adult"], "too casual"),
+        (["không phù hợp trẻ em", "không an toàn trẻ em", "inappropriate for kids",
+          "not child-safe", "không phù hợp học sinh"], "inappropriate for children"),
+        # ── Luxury / Premium ──────────────────────────────────────────────────
+        (["không đủ sang", "trông rẻ", "cheap", "cheap-looking", "mass market",
+          "bình dân quá", "không premium", "trông phổ thông", "low-end"], "low-end appearance"),
+        (["không đúng luxury", "không đúng cao cấp", "không sang trọng",
+          "thiếu sang trọng", "not luxurious"], "lacks luxury feel"),
+        # ── F&B (Food & Beverage) ─────────────────────────────────────────────
+        (["trông không ngon", "không hấp dẫn", "unappetizing", "not appetizing",
+          "không kích thích vị giác", "nhạt nhẽo về thức ăn"], "unappetizing"),
+        (["quá nhân tạo", "fake food", "plastic looking", "đồ ăn giả",
+          "trông đồ ăn nhựa", "artificial food"], "artificial food"),
+        (["màu thức ăn sai", "wrong food color", "thức ăn mất tươi",
+          "food color off", "not fresh looking"], "wrong food color"),
+        # ── Healthcare / Medical ──────────────────────────────────────────────
+        (["thiếu tin cậy", "không đáng tin", "untrustworthy", "not trustworthy",
+          "không chuyên nghiệp y tế", "not medical grade", "thiếu uy tín y tế"], "untrustworthy medical"),
+        (["quá lạnh lẽo", "sterile feel", "không thân thiện bệnh nhân",
+          "not patient-friendly", "too clinical"], "too clinical"),
+        # ── Fashion / Apparel ─────────────────────────────────────────────────
+        (["không đúng phong cách", "off-brand style", "không match style",
+          "style không phù hợp", "wrong vibe"], "wrong style"),
+        (["model pose xấu", "bad pose", "tư thế xấu", "awkward pose",
+          "stiff pose", "tư thế cứng"], "bad pose"),
+        # ── Beauty / Cosmetics ────────────────────────────────────────────────
+        (["màu sản phẩm sai", "wrong product color", "sai màu son", "sai màu kem",
+          "màu mỹ phẩm lệch"], "wrong product color"),
+        (["da không đẹp", "bad skin retouch", "retouch quá", "over-retouched",
+          "da nhựa", "plastic skin", "skin không tự nhiên"], "over-retouched skin"),
+        # ── Real Estate / Architecture ────────────────────────────────────────
+        (["ảnh nội thất tối", "dark interior", "thiếu ánh sáng phòng",
+          "room too dark", "không thấy chi tiết nội thất"], "dark interior"),
+        (["góc ảnh xấu", "bad angle", "perspective xấu", "distorted perspective",
+          "wide angle distortion", "méo góc rộng"], "bad perspective"),
+        # ── Tech / Gadget ─────────────────────────────────────────────────────
+        (["sản phẩm không sắc nét", "product not sharp", "thiếu chi tiết sản phẩm",
+          "missing product detail", "product blurry"], "product not sharp"),
+        (["background không phù hợp tech", "background sai tech",
+          "not tech aesthetic", "không hợp với tech"], "wrong tech aesthetic"),
+        # ── Kids / Baby / Family ──────────────────────────────────────────────
+        (["màu sắc quá tối với trẻ", "too dark for kids", "không vui tươi",
+          "not cheerful enough", "không phù hợp trẻ", "màu tối với trẻ em"], "too dark for children"),
+        (["không an toàn", "not safe", "unsafe content", "nội dung không an toàn",
+          "không phù hợp gia đình", "not family-friendly"], "unsafe content"),
+        # ── Fitness / Sport ───────────────────────────────────────────────────
+        (["thiếu năng lượng", "không đủ energy", "low energy", "flat energy",
+          "không hùng mạnh", "không bold"], "lacks energy"),
+        (["không đủ dynamic", "static pose", "tư thế tĩnh", "không action",
+          "boring fitness pose"], "static/boring pose"),
     ]
     found: list[str] = []
     for triggers, keyword in mappings:
