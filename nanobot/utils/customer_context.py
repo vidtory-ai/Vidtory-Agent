@@ -1,6 +1,6 @@
 """Customer context loader for Vidtory-Agent.
 
-Loads a customer's profile from ~/.vidtoryagent/customers/{user_id}/profile.json
+Loads a customer's profile from SQLite via ``nanobot.utils.customer_profile``
 and formats it into context lines that are injected into every LLM turn.
 
 This enables the agent to automatically:
@@ -12,20 +12,14 @@ This enables the agent to automatically:
 
 from __future__ import annotations
 
-import json
 import re
-from pathlib import Path
 from typing import Any
 
 
-def _get_customer_dir() -> Path:
-    """Return the base directory for customer profiles."""
-    from nanobot.config.paths import get_data_dir
-    return get_data_dir().parent / "customers"
 
 
 def load_customer_profile(telegram_user_id: str) -> dict[str, Any] | None:
-    """Load a customer profile by Telegram user ID.
+    """Load a customer profile by Telegram user ID from SQLite.
 
     Args:
         telegram_user_id: The numeric Telegram user ID (extracted from sender_id).
@@ -38,22 +32,10 @@ def load_customer_profile(telegram_user_id: str) -> dict[str, Any] | None:
     if not uid.isdigit():
         return None
 
-    # Primary: load from SQLite DB (current architecture)
+    # Load from SQLite DB — authoritative source of truth
     try:
         from nanobot.utils.customer_profile import load_profile
-        profile = load_profile(uid)
-        if profile is not None:
-            return profile
-    except Exception:
-        pass
-
-    # Legacy fallback: try JSON file (migration may not have run)
-    profile_path = _get_customer_dir() / uid / "profile.json"
-    if not profile_path.is_file():
-        return None
-
-    try:
-        return json.loads(profile_path.read_text(encoding="utf-8"))
+        return load_profile(uid)
     except Exception:
         return None
 

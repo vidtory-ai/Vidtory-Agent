@@ -655,9 +655,8 @@ class AgentLoop:
         if onboarding_status == "minimal":
             lines.append(
                 "[ONBOARDING] User mới, profile chưa đầy đủ. "
-                "Phục vụ yêu cầu ngay nhưng trong quá trình làm việc hãy hỏi thêm "
-                "về thương hiệu (tên, ngành, phong cách, màu sắc) một cách tự nhiên. "
-                "Gợi ý /brand để xem profile, /setlogo để thêm logo."
+                "Phục vụ yêu cầu ngay nhưng trong quá trình làm việc hãy tự nhiên hỏi thêm "
+                "về thương hiệu (tên, ngành, phong cách, màu sắc) khi phù hợp với ngữ cảnh."
             )
 
         # ── Customer Knowledge — per-user brand & channel preferences ─────────
