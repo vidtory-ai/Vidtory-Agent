@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
@@ -256,6 +257,61 @@ class ImageGenerationTool(Tool, ContextAware):
                     if len(image_urls) >= requested:
                         break
 
+            # ── Record task + build design note ──────────────────────────
+            task_id = ""
+            design_note = ""
+            try:
+                profile = telegram_customer_profile.get()
+                user_id = str(
+                    (profile or {}).get("telegramUserId")
+                    or (profile or {}).get("telegram_user_id")
+                    or ""
+                ).strip()
+                if user_id:
+                    from nanobot.db.customer_db import get_db
+                    from nanobot.utils.design_notes import build_design_note
+                    from nanobot.utils.quality_metrics import get_lifecycle_stage
+
+                    task_id = f"gen-{uuid.uuid4().hex[:12]}"
+                    stage = get_lifecycle_stage(user_id)
+                    content_type_detected = None
+                    if not self._is_detailed_prompt(prompt):
+                        content_type_detected = detect_content_type(prompt)
+
+                    design_note = build_design_note(
+                        user_id=user_id,
+                        original_prompt=prompt,
+                        enhanced_prompt=optimized_prompt,
+                        content_type=content_type_detected,
+                        model_used=self.config.model,
+                        aspect_ratio=resolved_ar,
+                    )
+
+                    db = get_db()
+                    db.create_task(
+                        user_id,
+                        task_id=task_id,
+                        brief=prompt[:500],
+                        content_type="image",
+                        lifecycle_stage=stage,
+                        model_used=self.config.model,
+                        prompt_used=prompt[:500],
+                        enhanced_prompt=optimized_prompt[:500],
+                        design_note=design_note[:1000],
+                        result_url=image_urls[0] if image_urls else "",
+                    )
+                    # Also record in generation_history for backward compat
+                    db.record_generation(
+                        user_id,
+                        content_type="image",
+                        prompt=prompt,
+                        enhanced_prompt=optimized_prompt,
+                        model=self.config.model,
+                        result_url=image_urls[0] if image_urls else "",
+                    )
+            except Exception as exc:
+                logger.debug("Task recording/design note failed (non-fatal): {}", exc)
+
             # Auto-send images directly via bus so LLM doesn't need to call message tool
             ctx = _image_gen_request_ctx.get()
             if ctx and self._send_callback and image_urls:
@@ -272,24 +328,31 @@ class ImageGenerationTool(Tool, ContextAware):
                         "ImageGenerationTool: auto-sent {} image(s) to {}:{}",
                         len(image_urls), ctx.channel, ctx.chat_id,
                     )
-                    return json.dumps(
-                        {"status": "sent", "count": len(image_urls)},
-                        ensure_ascii=False,
-                    )
+                    result = {
+                        "status": "sent",
+                        "count": len(image_urls),
+                    }
+                    if task_id:
+                        result["task_id"] = task_id
+                    if design_note:
+                        result["design_note"] = design_note
+                    return json.dumps(result, ensure_ascii=False)
                 except Exception as send_exc:
                     logger.warning("ImageGenerationTool: auto-send failed: {}", send_exc)
                     # Fall through to returning URLs for LLM to deliver manually
 
-            return json.dumps(
-                {
-                    "image_urls": image_urls,
-                    "next_step": (
-                        "Call the message tool with these URLs in the media parameter "
-                        "to deliver the images to the user."
-                    ),
-                },
-                ensure_ascii=False,
-            )
+            result = {
+                "image_urls": image_urls,
+                "next_step": (
+                    "Call the message tool with these URLs in the media parameter "
+                    "to deliver the images to the user."
+                ),
+            }
+            if task_id:
+                result["task_id"] = task_id
+            if design_note:
+                result["design_note"] = design_note
+            return json.dumps(result, ensure_ascii=False)
         except (ImageGenerationError, OSError) as exc:
             return f"Error: {exc}"
 

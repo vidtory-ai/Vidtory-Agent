@@ -1,12 +1,52 @@
 ---
 name: vidtory-onboarding
-description: Manages onboarding flow for new and returning customers. Triggered automatically when Onboarding Status is NEW_USER.
+description: Manages onboarding flow for new and returning customers. Triggered automatically when Onboarding Status is NEW_USER or Lifecycle Stage is new_user/testing.
 always: false
 ---
 
-# Customer Onboarding Flow
+# Customer Onboarding Flow — Lifecycle-Aware
 
-Kích hoạt khi Runtime Context chứa: `Onboarding Status: NEW_USER`
+Kích hoạt khi Runtime Context chứa:
+- `Onboarding Status: NEW_USER`
+- `Lifecycle: new_user` hoặc `Lifecycle: testing`
+
+---
+
+## Lifecycle Integration
+
+Onboarding is Stage 1 of the Resident Designer lifecycle:
+
+| Stage | Trigger | Goal |
+|-------|---------|------|
+| 🧪 **Testing (Stage 0)** | Khách mới chưa có profile | WOW nhanh — tạo 1 ảnh demo đẹp, gây ấn tượng đầu |
+| 📋 **Onboarding (Stage 1)** | Sau WOW thành công | Thu thập Brand Core + Style Memory, lưu locked entries |
+| 🔄 **Probation (Stage 2)** | Onboarding complete | Học preference từ feedback, theo dõi FPAR |
+| ✅ **Official (Stage 3)** | FPAR ≥ 70%, 5+ tasks | Tự chủ cao, ít hỏi, cảnh báo gu drift |
+
+---
+
+## Stage 0: WOW First Impression
+
+Khi khách mới nhắn lần đầu, **KHÔNG hỏi onboarding ngay**. Thay vào đó:
+
+1. Chào ngắn, tự giới thiệu là Resident Designer
+2. Hỏi **đúng 1 câu**: "Bạn muốn thử tạo ảnh gì?"
+3. Generate ngay 1 ảnh demo chất lượng cao
+4. Dựa vào reaction → chuyển sang onboarding hoặc tiếp tục phục vụ
+
+```
+🎬 Xin chào! Tôi là Vidtory — nhân viên thiết kế AI của bạn.
+
+Để show cho bạn thấy tôi làm được gì, thử gửi tôi một ý tưởng ảnh đi!
+Ví dụ: "ảnh cà phê aesthetic", "sản phẩm son môi cao cấp", "banner sale cuối tuần"...
+```
+
+**Sau khi gửi ảnh WOW thành công:**
+- Set lifecycle stage: testing → onboarding
+```python
+from nanobot.utils.quality_metrics import set_lifecycle_stage
+set_lifecycle_stage(user_id, "onboarding")
+```
 
 ---
 
@@ -22,38 +62,18 @@ Kích hoạt khi Runtime Context chứa: `Onboarding Status: NEW_USER`
 
 ---
 
-## Step 1: WELCOME
+## Step 1: WELCOME + API KEY
 
 ```
-🎬 Xin chào! Tôi là Vidtory AI — trợ lý sáng tạo AI cho thương hiệu của bạn.
+🎬 Rất vui được làm việc cùng bạn! Để phục vụ tốt nhất, tôi cần biết thêm về thương hiệu.
 
-Tôi có thể tạo ảnh, video, audio chuyên nghiệp ngay trên Telegram — không cần designer, không cần phần mềm.
-
-🎯 Để phục vụ tốt nhất, mình cần biết thêm về thương hiệu của bạn. Chỉ mất 3-5 phút thôi!
-
-Gõ "dùng ngay" nếu muốn bỏ qua và bắt đầu luôn.
+🔑 Nếu chưa set API key, gõ: /apikey YOUR_VIDTORY_API_KEY
+(Chưa có? Liên hệ https://vidtory.net để đăng ký)
 ```
 
 ---
 
-## Step 2: API KEY SETUP (QUAN TRỌNG — làm TRƯỚC)
-
-```
-🔑 Trước tiên, bạn cần cấu hình API key Vidtory để tôi có thể tạo ảnh cho bạn.
-
-Nếu đã có API key, gõ lệnh:
-/apikey YOUR_VIDTORY_API_KEY
-
-Chưa có? Liên hệ Vidtory tại: https://vidtory.net để đăng ký tài khoản.
-
-(Sau khi set xong, nhắn lại để mình tiếp tục nhé!)
-```
-
-Sau khi user xác nhận đã set key → tiếp tục Step 3.
-
----
-
-## Step 3: BUSINESS INFO
+## Step 2: BUSINESS INFO
 
 Hỏi:
 1. **Tên thương hiệu / công ty** của bạn là gì?
@@ -69,9 +89,11 @@ Hỏi:
    8️⃣ Khác
    ```
 
+**→ Gọi `update_customer_profile`** ngay (Brand Core entries sẽ tự động ghi vào brand_memory)
+
 ---
 
-## Step 4: BRAND STYLE GALLERY
+## Step 3: BRAND STYLE GALLERY
 
 Gửi các ảnh mẫu từ Vidtory CDN để user chọn phong cách:
 
@@ -98,7 +120,7 @@ Sau khi user chọn, map sang brand.style:
 
 ---
 
-## Step 5: BRAND COLORS
+## Step 4: BRAND COLORS
 
 ```
 🎨 Màu sắc chủ đạo của thương hiệu?
@@ -115,7 +137,7 @@ Nếu user gửi logo → Mô tả màu từ logo và confirm với user.
 
 ---
 
-## Step 6: TARGET AUDIENCE
+## Step 5: TARGET AUDIENCE
 
 Hỏi (chọn, không điền):
 ```
@@ -130,7 +152,7 @@ Phân khúc: 1️⃣ Phổ thông  2️⃣ Trung cấp  3️⃣ Cao cấp/Premiu
 
 ---
 
-## Step 7: CONTENT CHANNELS
+## Step 6: CONTENT CHANNELS
 
 ```
 📱 Kênh phân phối chính (chọn nhiều):
@@ -147,17 +169,26 @@ Map channels → defaultFormats:
 
 ---
 
-## Step 8: DEMO + COMPLETE
+## Step 7: DEMO + COMPLETE — Lifecycle Transition
 
 1. Tóm tắt profile đã thu thập
 2. Generate 1 ảnh demo với brand guidelines vừa thiết lập
 3. Hỏi approval: "Profile này ổn chưa? Ảnh demo thấy thế nào?"
-4. Save profile (xem Profile Storage bên dưới)
+4. Save profile with `onboarding_complete=True` → automatically advances to **Probation stage**
 
 ```
-✅ Setup hoàn tất! Từ giờ mọi ảnh tôi tạo đều sẽ theo đúng phong cách của [Brand Name].
+✅ Setup hoàn tất! Từ giờ tôi là Resident Designer chính thức của [Brand Name].
+
+📊 Giai đoạn hiện tại: Probation — tôi sẽ học gu của bạn qua từng lần feedback.
+Sau 5 bản thiết kế với FPAR ≥ 70%, tôi sẽ tự tin tạo content mà không cần hỏi nhiều nữa!
 
 Thử ngay — bạn muốn tạo ảnh gì đầu tiên? 🎨
+```
+
+**After completion, execute lifecycle transition:**
+```python
+from nanobot.utils.quality_metrics import set_lifecycle_stage
+set_lifecycle_stage(user_id, "probation")
 ```
 
 ---
@@ -165,6 +196,7 @@ Thử ngay — bạn muốn tạo ảnh gì đầu tiên? 🎨
 ## Profile Storage
 
 **Lưu vào:** SQLite DB tại `~/.vidtoryagent/customers.db` (tự động)
+**Dual-write:** Tool `update_customer_profile` tự động ghi cả `profile_json` và `brand_memory` table.
 
 **Schema đầy đủ:**
 ```json
@@ -178,52 +210,12 @@ Thử ngay — bạn muốn tạo ảnh gì đầu tiên? 🎨
     "currentStep": "completed"
   },
 
-  "business": {
-    "name": "string",
-    "industry": "fashion|food-beverage|beauty|tech|real-estate|education|services|other",
-    "description": "string"
-  },
-
-  "brand": {
-    "style": "minimalist|luxury|playful|corporate|natural",
-    "moodKeywords": ["string"],
-    "colorPalette": {
-      "primary": "#hex",
-      "secondary": "#hex",
-      "accent": "#hex"
-    },
-    "logoUrl": "string (cloud URL, nếu có)",
-    "photographyStyle": "string",
-    "avoidList": ["string"]
-  },
-
-  "audience": {
-    "gender": "female|male|all",
-    "ageRange": "18-25|25-35|35-50|50+",
-    "segment": "mass|mid|premium"
-  },
-
-  "contentChannels": {
-    "primary": ["instagram", "tiktok", "facebook", "website", "zalo", "youtube", "print"],
-    "defaultFormats": {
-      "instagram_feed": {"aspectRatio": "1:1"},
-      "instagram_story": {"aspectRatio": "9:16"},
-      "website": {"aspectRatio": "16:9"}
-    }
-  },
-
-  "preferences": {
-    "communicationLanguage": "vi",
-    "autoApplyBrandGuidelines": true
-  },
-
-  "learningData": {
-    "totalGenerations": 0,
-    "approvedCount": 0,
-    "rejectedCount": 0,
-    "commonFeedback": [],
-    "bestPerformingPrompts": []
-  }
+  "business": { "name": "string", "industry": "...", "description": "..." },
+  "brand": { "style": "...", "moodKeywords": [], "colorPalette": {}, "logoUrl": "...", "photographyStyle": "...", "avoidList": [] },
+  "audience": { "gender": "...", "ageRange": "...", "segment": "..." },
+  "contentChannels": { "primary": [], "defaultFormats": {} },
+  "preferences": { "communicationLanguage": "vi", "autoApplyBrandGuidelines": true },
+  "learningData": { "totalGenerations": 0, "approvedCount": 0, "rejectedCount": 0, "commonFeedback": [], "bestPerformingPrompts": [] }
 }
 ```
 
@@ -238,17 +230,6 @@ Khi user cung cấp BẤT KỲ thông tin nào về brand, bạn **BẮT BUỘC*
 1. Ghi nhận thông tin từ cuộc trò chuyện
 2. **GỌI TOOL `update_customer_profile`** ngay lập tức để lưu vào hệ thống
 3. Confirm với user: "✅ Đã lưu thông tin thương hiệu [Tên]"
-
-### Khi nào gọi tool:
-
-| User nói | Tool call |
-|----------|-----------|
-| "Tên thương hiệu là PTIT" | `business_name="PTIT"` |
-| "Lĩnh vực công nghệ" | `industry="tech"` |
-| "Phong cách hiện đại, chuyên nghiệp" | `brand_style="corporate"`, `mood_keywords=["hiện đại", "chuyên nghiệp"]` |
-| "Màu xanh navy #1A2B3C" | `color_primary="#1A2B3C"` |
-| "Khách hàng là nữ, 25-35 tuổi" | `target_gender="female"`, `age_range="25-35"` |
-| "Đăng Instagram và Facebook" | `channels=["instagram", "facebook"]` |
 
 ### Mapping industry từ user input:
 - "thời trang", "fashion" → `fashion`
@@ -267,15 +248,6 @@ Khi user cung cấp BẤT KỲ thông tin nào về brand, bạn **BẮT BUỘC*
 - "tối giản", "minimalist", "clean" → `minimalist`
 - "hiện đại" alone → `corporate` (neutral default)
 
-### ❌ KHÔNG được:
-- Chỉ xác nhận bằng lời nói mà không gọi tool
-- Nói "đã ghi nhận" mà không save vào DB
-- Bỏ qua tool call vì nghĩ đã lưu rồi
-
-### Partial update (cập nhật từng phần):
-Tool hỗ trợ partial updates — chỉ cần truyền những field có thông tin mới.
-Không cần đợi thu thập đủ toàn bộ thông tin mới save.
-
 ---
 
 ## Rules
@@ -285,3 +257,4 @@ Không cần đợi thu thập đủ toàn bộ thông tin mới save.
 - "tuỳ bạn" / "gì cũng được" → dùng smart defaults theo ngành
 - Warm, encouraging, professional throughout
 - **SAU MỖI onboarding step** → gọi `update_customer_profile` với data vừa thu thập
+- **Kết thúc onboarding** → set `onboarding_complete=True` → lifecycle tự chuyển sang Probation

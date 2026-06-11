@@ -57,6 +57,63 @@ def get_onboarding_status(user_id: str) -> str:
     return (profile.get("onboarding") or {}).get("status", "none")
 
 
+def get_profile_completeness(profile: dict[str, Any]) -> int:
+    """Calculate profile completeness as a percentage (0-100).
+
+    Checks presence of key brand fields:
+    - Business: name (10), industry (10), description (5)
+    - Brand: style (10), colors (15 = 5 each), moodKeywords (5),
+             photographyStyle (5), logoUrl (10)
+    - Audience: gender (5), ageRange (5), segment (5)
+    - Channels: primary (10)
+    - Preferences: communicationLanguage (5)
+    """
+    score = 0
+
+    business = profile.get("business") or {}
+    if business.get("name", "").strip():
+        score += 10
+    if business.get("industry", "").strip():
+        score += 10
+    if business.get("description", "").strip():
+        score += 5
+
+    brand = profile.get("brand") or {}
+    if brand.get("style", "").strip():
+        score += 10
+    palette = brand.get("colorPalette") or {}
+    if palette.get("primary"):
+        score += 5
+    if palette.get("secondary"):
+        score += 5
+    if palette.get("accent"):
+        score += 5
+    if brand.get("moodKeywords"):
+        score += 5
+    if brand.get("photographyStyle", "").strip():
+        score += 5
+    if (brand.get("logoUrl") or "").strip():
+        score += 10
+
+    audience = profile.get("audience") or {}
+    if audience.get("gender"):
+        score += 5
+    if audience.get("ageRange"):
+        score += 5
+    if audience.get("segment"):
+        score += 5
+
+    channels = profile.get("contentChannels") or {}
+    if channels.get("primary"):
+        score += 10
+
+    prefs = profile.get("preferences") or {}
+    if prefs.get("communicationLanguage"):
+        score += 5
+
+    return min(score, 100)
+
+
 def get_logo_url(user_id: str) -> str:
     """Return the logo URL for this user, or empty string."""
     return _db().get_logo_url(user_id)
@@ -354,6 +411,54 @@ def update_learning(
     if changed:
         profile["learningData"] = learning
         save_profile(user_id, profile)
+
+        # ── Dual-write learned preferences to brand_memory ────────────────
+        # This creates the traceable evidence trail:
+        # each preference entry records the generation_id that triggered it.
+        try:
+            from nanobot.db.customer_db import get_db
+            db = get_db()
+            source = f"feedback:{generation_id or 'unknown'}"
+
+            if rating == "rejected" and feedback_text:
+                # Write avoid keywords to preference layer (learned, not locked)
+                avoid_keywords = _extract_avoid_keywords(feedback_text)
+                for kw in avoid_keywords:
+                    db.set_memory(
+                        user_id, layer="preference",
+                        key=f"avoid_{kw.replace(' ', '_')}",
+                        value=kw,
+                        source=source,
+                        confidence=min(
+                            _db().count_feedback_occurrences(user_id, feedback_text) / 5.0,
+                            1.0,
+                        ),
+                    )
+
+                # Write common feedback pattern as preference
+                normalized = feedback_text.strip().lower()[:100]
+                db.set_memory(
+                    user_id, layer="preference",
+                    key=f"feedback_{normalized[:30].replace(' ', '_')}",
+                    value=normalized,
+                    source=source,
+                    confidence=min(
+                        _db().count_feedback_occurrences(user_id, feedback_text) / 5.0,
+                        1.0,
+                    ),
+                )
+
+            elif rating == "approved" and prompt:
+                # Write approved prompt pattern as positive preference
+                db.set_memory(
+                    user_id, layer="preference",
+                    key=f"good_prompt_{hash(prompt[:50]) % 10000:04d}",
+                    value=prompt[:150],
+                    source=source,
+                    confidence=0.7,
+                )
+        except Exception:
+            pass  # Non-fatal — profile_json remains source of truth
 
     # Always append to feedback log
     append_feedback(

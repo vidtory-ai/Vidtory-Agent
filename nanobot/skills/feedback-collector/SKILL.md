@@ -1,6 +1,6 @@
 ---
 name: feedback-collector
-description: Collects customer feedback after every generation, learns preferences, and continuously improves output quality.
+description: Collects customer feedback after every generation, updates task scores, learns preferences, and continuously improves output quality through the brand memory system.
 always: false
 ---
 
@@ -8,7 +8,11 @@ always: false
 
 ## When to Collect Feedback
 
-After EVERY content generation, prompt the customer for feedback:
+After EVERY content generation, prompt the customer for feedback.
+
+### Key change: `task_id` tracking
+After `generate_image` returns, you will see a `task_id` in the response (e.g. `gen-abc123def456`).
+**Use this task_id when recording feedback** — it connects the feedback to the specific generation.
 
 ### Positive signals (mark as APPROVED):
 - 👍, "đẹp", "ok", "được", "thích", "tuyệt", "perfect", "great"
@@ -29,9 +33,9 @@ After EVERY content generation, prompt the customer for feedback:
 ```
 After sending output:
 ├── Wait for response
-├── If POSITIVE → Log approved, save prompt as "golden example"
+├── If POSITIVE → Log approved + task score, design note confirms approach works
 ├── If NEGATIVE → Ask: "Bạn muốn chỉnh gì cụ thể?"
-│   ├── If specific feedback → Log, adjust prompt, regenerate
+│   ├── If specific feedback → Log, increment revision, adjust prompt, regenerate
 │   └── If vague → Offer options: "Thử phong cách khác? Đổi nền? Thêm chi tiết?"
 └── If NO response (5 min) → Gently ask: "Bạn thấy kết quả phù hợp không? 👍👎"
 ```
@@ -40,34 +44,45 @@ After sending output:
 
 **Sử dụng module Python `nanobot.utils.customer_profile`** (KHÔNG dùng write_file trực tiếp).
 
-Agent không gọi trực tiếp được Python module — thay vào đó dùng `exec` tool:
+Agent dùng `exec` tool:
 
+### Approved:
 ```python
-import sys, json
+import sys
 sys.path.insert(0, 'C:/Users/vidto/Documents/Vidtory-Agent')
 from nanobot.utils.customer_profile import update_learning
 update_learning(
     user_id="{telegram_user_id}",
-    rating="approved",      # hoặc "rejected"
+    rating="approved",
     prompt="{original_prompt}",
-    feedback_text="{comment}",
-    generation_id="{gen_id}",
+    feedback_text="",
+    generation_id="{task_id}",  # from generate_image response
 )
+# Also update task score for FPAR tracking
+from nanobot.db.customer_db import get_db
+db = get_db()
+db.update_task_score("{task_id}", score_brand_compliance=4.0, first_pass_accepted=True)
+db.complete_task("{task_id}")
 print("OK")
 ```
 
-**Feedback entry format** (tự động ghi vào `feedback.jsonl`):
-```json
-{
-  "timestamp": "2026-06-08T11:30:00Z",
-  "generationId": "gen-1234567890",
-  "contentType": "image",
-  "originalPrompt": "tạo ảnh áo dài",
-  "enhancedPrompt": "Vietnamese Ao Dai dress...",
-  "rating": "approved|rejected",
-  "comment": "nền quá sáng",
-  "adjustments": "darker background, lower exposure"
-}
+### Rejected (with specific feedback):
+```python
+import sys
+sys.path.insert(0, 'C:/Users/vidto/Documents/Vidtory-Agent')
+from nanobot.utils.customer_profile import update_learning
+update_learning(
+    user_id="{telegram_user_id}",
+    rating="rejected",
+    prompt="{original_prompt}",
+    feedback_text="{specific_complaint}",
+    generation_id="{task_id}",
+)
+# Increment revision count for FPAR tracking
+from nanobot.db.customer_db import get_db
+db = get_db()
+db.increment_task_revisions("{task_id}")
+print("OK")
 ```
 
 ## Learning Rules
@@ -80,6 +95,7 @@ print("OK")
 - ≥ 2 identical complaints → `update_learning()` tự thêm vào `commonFeedback`
 - ≥ 2 identical visual complaints → tự thêm vào `avoidList` trong profile
 - ≥ 3 approvals of same style prompt → add to `bestPerformingPrompts`
+- All updates write to **brand_memory preference layer** with source tracing
 - Tất cả cập nhật **âm thầm** — không thông báo cho user
 
 ### Long-term (global patterns):
@@ -89,6 +105,22 @@ print("OK")
 ## Proactive Improvement
 
 After every 10 generations for a customer, analyze:
-- Approval rate: If < 70%, suggest updating brand guidelines
+- FPAR (First-Pass Acceptance Rate): If < 70%, suggest updating brand guidelines
 - Common complaints: Proactively address before generating
 - Best performing prompts: Reuse patterns for similar requests
+- Lifecycle convergence: Track if quality is improving (probation → official gate)
+
+## Design Note Citation
+
+When delivering generated images to the user, include the `design_note` from the tool response.
+This explains WHY certain design decisions were made, citing the memory layers:
+
+Example:
+```
+🎨 Đây là kết quả! 
+
+📋 Design note: Dùng tone warm natural theo Style Memory + màu #FFB6C1 theo Brand Core.
+Tránh background sáng quá (học từ feedback trước).
+
+Bạn thấy sao? 👍👎
+```

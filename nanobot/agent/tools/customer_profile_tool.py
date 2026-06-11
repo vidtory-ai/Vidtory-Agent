@@ -417,6 +417,56 @@ class UpdateCustomerProfileTool(Tool):
             # Also update the in-memory ContextVar so the current turn uses fresh data
             telegram_customer_profile.set(current)
 
+            # ── Dual-write to layered brand_memory ────────────────────────
+            # Core/Style entries are written with force=True because they come
+            # from explicit client input (onboarding interview or direct update).
+            try:
+                from nanobot.db.customer_db import get_db
+                db = get_db()
+                source = f"profile_update:{_utc_now()}"
+
+                # Core layer: colors, logo, typography
+                if color_primary and color_primary.strip():
+                    db.set_memory(user_id, layer="core", key="color_primary",
+                                  value=_normalize_color(color_primary), source=source, force=True)
+                if color_secondary and color_secondary.strip():
+                    db.set_memory(user_id, layer="core", key="color_secondary",
+                                  value=_normalize_color(color_secondary), source=source, force=True)
+                if color_accent and color_accent.strip():
+                    db.set_memory(user_id, layer="core", key="color_accent",
+                                  value=_normalize_color(color_accent), source=source, force=True)
+                if logo_url and logo_url.strip():
+                    db.set_memory(user_id, layer="core", key="logo",
+                                  value=logo_url.strip(), source=source, force=True)
+
+                # Style layer: aesthetic, mood, photography
+                if brand_style and brand_style.strip():
+                    db.set_memory(user_id, layer="style", key="aesthetic",
+                                  value=_normalize_brand_style(brand_style), source=source, force=True)
+                if photography_style and photography_style.strip():
+                    db.set_memory(user_id, layer="style", key="photography_style",
+                                  value=photography_style.strip(), source=source, force=True)
+                if mood_keywords:
+                    mood_str = ", ".join(kw.strip() for kw in mood_keywords if kw.strip())
+                    if mood_str:
+                        db.set_memory(user_id, layer="style", key="mood_reference",
+                                      value=mood_str, source=source, force=True)
+                if avoid_list:
+                    for i, avoid_item in enumerate(avoid_list[:5]):
+                        if avoid_item.strip():
+                            db.set_memory(user_id, layer="style", key=f"avoid_{i}",
+                                          value=avoid_item.strip(), source=source, force=True)
+            except Exception:
+                pass  # Non-fatal — profile_json is the primary source of truth
+
+            # ── Lifecycle stage advancement ────────────────────────────────
+            if onboarding_complete:
+                try:
+                    from nanobot.utils.quality_metrics import set_lifecycle_stage
+                    set_lifecycle_stage(user_id, "probation")
+                except Exception:
+                    pass
+
             status_tag = " ✅ Onboarding hoàn tất!" if onboarding_complete else ""
             return (
                 f"✅ Brand profile updated successfully.{status_tag} "

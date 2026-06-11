@@ -65,6 +65,16 @@ def format_customer_context_lines(profile: dict[str, Any]) -> list[str]:
     """
     lines: list[str] = []
 
+    # Lifecycle stage & quality metrics (injected first for agent awareness)
+    user_id = profile.get("telegramUserId") or ""
+    if user_id:
+        try:
+            from nanobot.utils.quality_metrics import get_quality_summary
+            quality_lines = get_quality_summary(user_id)
+            lines.extend(quality_lines)
+        except Exception:
+            pass
+
     # Business context
     business = profile.get("business") or {}
     if business.get("name"):
@@ -91,6 +101,29 @@ def format_customer_context_lines(profile: dict[str, Any]) -> list[str]:
             parts.append(f"avoid=[{', '.join(avoid)}]")
         if parts:
             lines.append("Brand Guidelines: " + " | ".join(parts))
+
+    # Layered brand memory summary (from brand_memory table)
+    if user_id:
+        try:
+            from nanobot.db.customer_db import get_db
+            db = get_db()
+            all_mem = db.get_all_memory(user_id)
+            layer_labels = {
+                "core": "🏛️ Core",
+                "style": "🎨 Style",
+                "preference": "💡 Pref",
+                "project": "📋 Project",
+                "insight": "🔍 Insight",
+            }
+            for layer_key in ("core", "style", "preference", "project"):
+                entries = all_mem.get(layer_key, [])
+                if entries:
+                    label = layer_labels.get(layer_key, layer_key)
+                    summary = ", ".join(f"{e['key']}={e['value'][:50]}" for e in entries[:6])
+                    locked = " [locked]" if layer_key in ("core", "style") else ""
+                    lines.append(f"Memory {label}{locked}: {summary}")
+        except Exception:
+            pass
 
     # Target audience
     audience = profile.get("audience") or {}
@@ -147,39 +180,78 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
     """Build a compact brand suffix to append to image/video generation prompts.
 
     Used by generate_image tool to auto-apply brand guidelines.
+    Merges data from layered brand_memory (preferred) with profile.brand (fallback).
     Returns empty string if no relevant brand data.
     """
     brand = profile.get("brand") or {}
-    if not brand:
-        return ""
+    user_id = profile.get("telegramUserId") or ""
 
-    parts: list[str] = []
+    # ── Collect from layered brand memory (takes precedence) ────────────
+    mem_parts: list[str] = []
+    mem_avoid: list[str] = []
+    if user_id:
+        try:
+            from nanobot.db.customer_db import get_db
+            db = get_db()
 
-    style = brand.get("style")
-    if style:
-        parts.append(style)
+            # Core layer: colors, typography
+            core = {m["key"]: m["value"] for m in db.get_memory_layer(user_id, "core")}
+            if core.get("color_primary"):
+                mem_parts.append(f"primary color {core['color_primary']}")
+            if core.get("color_secondary"):
+                mem_parts.append(f"secondary color {core['color_secondary']}")
+            if core.get("color_accent"):
+                mem_parts.append(f"accent color {core['color_accent']}")
+            if core.get("tone_of_voice"):
+                mem_parts.append(core["tone_of_voice"])
 
-    keywords = brand.get("moodKeywords") or []
-    if keywords:
-        parts.extend(keywords[:4])  # up to 4 mood keywords for richer context
+            # Style layer: aesthetic, mood
+            style = {m["key"]: m["value"] for m in db.get_memory_layer(user_id, "style")}
+            if style.get("aesthetic"):
+                mem_parts.append(style["aesthetic"])
+            if style.get("mood_reference"):
+                mem_parts.append(style["mood_reference"])
+            if style.get("lighting_preference"):
+                mem_parts.append(style["lighting_preference"])
 
-    photo_style = brand.get("photographyStyle")
-    if photo_style:
-        parts.append(photo_style)
+            # Preference layer: learned constraints
+            prefs = db.get_memory_layer(user_id, "preference")
+            for p in prefs[:4]:
+                if p["key"].startswith("avoid_"):
+                    mem_avoid.append(p["value"])
+                elif p["confidence"] >= 0.7:
+                    mem_parts.append(p["value"])
 
-    # Full color palette: primary + secondary + accent
-    palette = brand.get("colorPalette") or {}
-    color_parts: list[str] = []
-    if palette.get("primary"):
-        color_parts.append(f"primary color {palette['primary']}")
-    if palette.get("secondary"):
-        color_parts.append(f"secondary color {palette['secondary']}")
-    if palette.get("accent"):
-        color_parts.append(f"accent color {palette['accent']}")
-    parts.extend(color_parts)
+        except Exception:
+            pass
 
-    # Industry-based photography style fallback (when no explicit photographyStyle)
-    if not photo_style:
+    # ── Fallback: collect from profile.brand ────────────────────────────
+    parts: list[str] = list(mem_parts)  # Start with memory-sourced parts
+
+    if not parts:
+        # Only use profile.brand if no memory data is available
+        style = brand.get("style")
+        if style:
+            parts.append(style)
+
+        keywords = brand.get("moodKeywords") or []
+        if keywords:
+            parts.extend(keywords[:4])
+
+        photo_style = brand.get("photographyStyle")
+        if photo_style:
+            parts.append(photo_style)
+
+        palette = brand.get("colorPalette") or {}
+        if palette.get("primary"):
+            parts.append(f"primary color {palette['primary']}")
+        if palette.get("secondary"):
+            parts.append(f"secondary color {palette['secondary']}")
+        if palette.get("accent"):
+            parts.append(f"accent color {palette['accent']}")
+
+    # Industry-based photography style fallback
+    if not brand.get("photographyStyle") and not any("photography" in p.lower() for p in parts):
         industry = (profile.get("business") or {}).get("industry", "").lower()
         industry_style_hints: dict[str, str] = {
             "food-beverage": "food editorial photography",
@@ -193,7 +265,10 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
                 parts.append(hint)
                 break
 
-    avoid = brand.get("avoidList") or []
+    # Combine avoid lists from memory and profile
+    avoid = list(mem_avoid) + (brand.get("avoidList") or [])
+    # Dedup
+    avoid = list(dict.fromkeys(avoid))
     avoid_str = ""
     if avoid:
         avoid_str = f", avoid: {', '.join(avoid)}"
@@ -202,7 +277,7 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
         return ""
     suffix = ", ".join(parts) + avoid_str
 
-    # Note about logo availability (LLM can decide to incorporate)
+    # Note about logo availability
     logo_url = (brand.get("logoUrl") or "").strip()
     if logo_url:
         suffix += ", brand has logo available"

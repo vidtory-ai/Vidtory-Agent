@@ -258,3 +258,145 @@ def migrate_profile_json_for_user(uid: str, data_dir: Path | None = None, db=Non
             "Auto-migration of profile.json failed for user %s: %s", uid, exc
         )
         return False
+
+
+# ---------------------------------------------------------------------------
+# Brand Memory Migration
+# ---------------------------------------------------------------------------
+
+def migrate_profile_to_brand_memory(uid: str, db=None) -> bool:
+    """Split existing profile_json data into brand_memory table rows.
+
+    Called for each user to populate the layered brand memory from their
+    legacy flat profile. Idempotent — existing entries are overwritten.
+
+    Maps:
+        profile.brand.colorPalette.{primary,secondary,accent} → core layer
+        profile.brand.logoUrl                                  → core layer
+        profile.brand.style                                    → style layer (aesthetic)
+        profile.brand.moodKeywords                             → style layer (mood_reference)
+        profile.brand.photographyStyle                         → style layer
+        profile.brand.avoidList                                → style layer (avoid_*)
+        profile.learningData.commonFeedback                    → preference layer
+        profile.learningData.bestPerformingPrompts             → preference layer
+
+    Returns True if any entries were migrated.
+    """
+    from nanobot.db.customer_db import get_db as _get_db
+
+    db = db or _get_db()
+    profile = db.load_profile(uid)
+    if not profile:
+        return False
+
+    source = "migration:profile_json"
+    migrated = 0
+
+    brand = profile.get("brand") or {}
+
+    # ── Core layer ─────────────────────────────────────────────────────
+    palette = brand.get("colorPalette") or {}
+    for color_key in ("primary", "secondary", "accent"):
+        val = palette.get(color_key, "").strip()
+        if val:
+            db.set_memory(uid, layer="core", key=f"color_{color_key}",
+                          value=val, source=source, force=True)
+            migrated += 1
+
+    logo = (brand.get("logoUrl") or "").strip()
+    if logo:
+        db.set_memory(uid, layer="core", key="logo",
+                      value=logo, source=source, force=True)
+        migrated += 1
+
+    # ── Style layer ────────────────────────────────────────────────────
+    style = (brand.get("style") or "").strip()
+    if style:
+        db.set_memory(uid, layer="style", key="aesthetic",
+                      value=style, source=source, force=True)
+        migrated += 1
+
+    mood = brand.get("moodKeywords") or []
+    if mood:
+        db.set_memory(uid, layer="style", key="mood_reference",
+                      value=", ".join(str(m) for m in mood),
+                      source=source, force=True)
+        migrated += 1
+
+    photo_style = (brand.get("photographyStyle") or "").strip()
+    if photo_style:
+        db.set_memory(uid, layer="style", key="photography_style",
+                      value=photo_style, source=source, force=True)
+        migrated += 1
+
+    avoid = brand.get("avoidList") or []
+    for i, item in enumerate(avoid[:10]):
+        if isinstance(item, str) and item.strip():
+            db.set_memory(uid, layer="style", key=f"avoid_{i}",
+                          value=item.strip(), source=source, force=True)
+            migrated += 1
+
+    # ── Preference layer ───────────────────────────────────────────────
+    learning = profile.get("learningData") or {}
+
+    for fb in (learning.get("commonFeedback") or [])[:10]:
+        if isinstance(fb, str) and fb.strip():
+            key = f"feedback_{fb.strip().lower()[:30].replace(' ', '_')}"
+            db.set_memory(uid, layer="preference", key=key,
+                          value=fb.strip()[:100], source=source, confidence=0.8)
+            migrated += 1
+
+    for p in (learning.get("bestPerformingPrompts") or [])[:10]:
+        if isinstance(p, str) and p.strip():
+            key = f"good_prompt_{hash(p[:50]) % 10000:04d}"
+            db.set_memory(uid, layer="preference", key=key,
+                          value=p[:150], source=source, confidence=0.7)
+            migrated += 1
+
+    return migrated > 0
+
+
+def migrate_all_profiles_to_brand_memory(verbose: bool = True, db=None) -> dict[str, int]:
+    """Migrate all existing customer profiles into brand_memory table.
+
+    This should be run once after upgrading to the layered memory architecture.
+    Safe to run multiple times (idempotent via UPSERT).
+
+    Usage:
+        python -c "from nanobot.db.migrate_to_sqlite import migrate_all_profiles_to_brand_memory; migrate_all_profiles_to_brand_memory()"
+    """
+    from nanobot.db.customer_db import get_db as _get_db
+
+    db = db or _get_db()
+    counts = {"migrated": 0, "skipped": 0, "errors": 0}
+
+    # Get all user IDs from customer_profiles
+    import sqlite3
+    with db._conn() as conn:
+        rows = conn.execute("SELECT user_id FROM customer_profiles").fetchall()
+
+    user_ids = [row["user_id"] for row in rows]
+    if verbose:
+        print(f"\n🔄 Migrating {len(user_ids)} profiles to brand_memory...")
+
+    for uid in user_ids:
+        try:
+            if migrate_profile_to_brand_memory(uid, db=db):
+                counts["migrated"] += 1
+                if verbose:
+                    mem_count = db.count_memory(uid)
+                    print(f"  ✅ {uid}: {mem_count} memory entries created")
+            else:
+                counts["skipped"] += 1
+        except Exception as e:
+            counts["errors"] += 1
+            if verbose:
+                print(f"  ⚠️  {uid}: {e}")
+
+    if verbose:
+        print(f"\n✅ Brand memory migration complete!")
+        print(f"   Migrated : {counts['migrated']}")
+        print(f"   Skipped  : {counts['skipped']}")
+        print(f"   Errors   : {counts['errors']}")
+
+    return counts
