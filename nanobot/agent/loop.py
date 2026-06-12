@@ -202,12 +202,7 @@ class AgentLoop:
         if is_resident_designer_profile(_tc.capability_profile):
             _tc = _tc.model_copy(update={
                 "restrict_to_workspace": True,
-                "exec": _tc.exec.model_copy(update={"enable": False}),
-                "web": _tc.web.model_copy(update={"enable": False}),
-                "my": _tc.my.model_copy(update={"enable": False}),
-                "mcp_servers": {},
             })
-            mcp_servers = {}
         defaults = AgentDefaults()
         self.bus = bus
         self.channels_config = channels_config
@@ -241,8 +236,6 @@ class AgentLoop:
         self.tools_config = _tc
         self.capability_profile = _tc.capability_profile
         self.providers_config = providers_config
-        self.web_config = _tc.web
-        self.exec_config = _tc.exec
         self._image_generation_provider_configs = dict(image_generation_provider_configs or {})
         if image_generation_provider_config is not None:
             # Use the configured provider name as the key; fall back to "openrouter" for
@@ -303,10 +296,7 @@ class AgentLoop:
         except (ValueError, TypeError):
             self._llm_history_messages = 20
         self._running = False
-        self._mcp_servers = mcp_servers or {}
-        self._mcp_stacks: dict[str, AsyncExitStack] = {}
         self._mcp_connected = False
-        self._mcp_connecting = False
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._background_tasks: list[asyncio.Task] = []
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -389,7 +379,6 @@ class AgentLoop:
             provider_retry_mode=defaults.provider_retry_mode,
             tool_hint_max_length=defaults.tool_hint_max_length,
             restrict_to_workspace=config.tools.restrict_to_workspace,
-            mcp_servers=config.tools.mcp_servers,
             channels_config=config.channels,
             timezone=defaults.timezone,
             unified_session=defaults.unified_session,
@@ -504,41 +493,11 @@ class AgentLoop:
         loader = ToolLoader()
         registered = loader.load(ctx, self.tools)
 
-        # MyTool needs runtime state reference — manual registration
-        if (
-            self.tools_config.my.enable
-            and not is_resident_designer_profile(self.capability_profile)
-        ):
-            self.tools.register(
-                MyTool(runtime_state=self, modify_allowed=self.tools_config.my.allow_set)
-            )
-            registered.append("my")
-
         logger.info("Registered {} tools: {}", len(registered), registered)
 
     async def _connect_mcp(self) -> None:
-        """Connect to configured MCP servers (one-time, lazy)."""
-        if is_resident_designer_profile(self.capability_profile):
-            return
-        if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
-            return
-        self._mcp_connecting = True
-        from nanobot.agent.tools.mcp import connect_mcp_servers
-
-        try:
-            self._mcp_stacks = await connect_mcp_servers(self._mcp_servers, self.tools)
-            if self._mcp_stacks:
-                self._mcp_connected = True
-            else:
-                logger.warning("No MCP servers connected successfully (will retry next message)")
-        except asyncio.CancelledError:
-            logger.warning("MCP connection cancelled (will retry next message)")
-            self._mcp_stacks.clear()
-        except BaseException as e:
-            logger.warning("Failed to connect MCP servers (will retry next message): {}", e)
-            self._mcp_stacks.clear()
-        finally:
-            self._mcp_connecting = False
+        """MCP servers removed — no-op stub for compatibility."""
+        pass
 
     def _set_tool_context(
         self, channel: str, chat_id: str,

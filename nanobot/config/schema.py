@@ -12,12 +12,8 @@ from nanobot.cron.types import CronSchedule
 
 if TYPE_CHECKING:
     from nanobot.agent.tools.audio_generation import AudioGenerationToolConfig
-    from nanobot.agent.tools.cli_apps import CliAppsToolConfig
     from nanobot.agent.tools.image_generation import ImageGenerationToolConfig
-    from nanobot.agent.tools.self import MyToolConfig
-    from nanobot.agent.tools.shell import ExecToolConfig
     from nanobot.agent.tools.video_generation import VideoGenerationToolConfig
-    from nanobot.agent.tools.web import WebToolsConfig
 
 
 class Base(BaseModel):
@@ -250,19 +246,6 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
-class MCPServerConfig(Base):
-    """MCP server connection configuration (stdio or HTTP)."""
-
-    type: Literal["stdio", "sse", "streamableHttp"] | None = None  # auto-detected if omitted
-    command: str = ""  # Stdio: command to run (e.g. "npx")
-    args: list[str] = Field(default_factory=list)  # Stdio: command arguments
-    env: dict[str, str] = Field(default_factory=dict)  # Stdio: extra env vars
-    url: str = ""  # HTTP/SSE: endpoint URL
-    headers: dict[str, str] = Field(default_factory=dict)  # HTTP/SSE: custom headers
-    tool_timeout: int = 30  # seconds before a tool call is cancelled
-    enabled_tools: list[str] = Field(default_factory=lambda: ["*"])  # Only register these tools; accepts raw MCP names or wrapped mcp_<server>_<tool> names; ["*"] = all tools; [] = no tools
-
-
 def _lazy_default(module_path: str, class_name: str) -> Any:
     """Deferred import helper for ToolsConfig default factories."""
     import importlib
@@ -278,10 +261,6 @@ class ToolsConfig(Base):
     Base from schema.py).
     """
 
-    web: WebToolsConfig = Field(default_factory=lambda: _lazy_default("nanobot.agent.tools.web", "WebToolsConfig"))
-    exec: ExecToolConfig = Field(default_factory=lambda: _lazy_default("nanobot.agent.tools.shell", "ExecToolConfig"))
-    cli_apps: CliAppsToolConfig = Field(default_factory=lambda: _lazy_default("nanobot.agent.tools.cli_apps", "CliAppsToolConfig"))
-    my: MyToolConfig = Field(default_factory=lambda: _lazy_default("nanobot.agent.tools.self", "MyToolConfig"))
     image_generation: ImageGenerationToolConfig = Field(
         default_factory=lambda: _lazy_default("nanobot.agent.tools.image_generation", "ImageGenerationToolConfig"),
     )
@@ -293,8 +272,7 @@ class ToolsConfig(Base):
     )
     capability_profile: Literal["standard", "resident_designer"] = "standard"
     restrict_to_workspace: bool = False  # restrict all tool access to workspace directory
-    mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
-    ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)
+    ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking
 
 
 class Config(BaseSettings):
@@ -470,26 +448,16 @@ def _resolve_tool_config_refs() -> None:
 
     Must be called after all modules are loaded (breaks circular imports).
     Re-exports the classes into this module's namespace so existing imports
-    like ``from nanobot.config.schema import ExecToolConfig`` continue to work.
+    continue to work.
     """
     import sys
 
     from nanobot.agent.tools.audio_generation import AudioGenerationToolConfig
-    from nanobot.agent.tools.cli_apps import CliAppsToolConfig
     from nanobot.agent.tools.image_generation import ImageGenerationToolConfig
-    from nanobot.agent.tools.self import MyToolConfig
-    from nanobot.agent.tools.shell import ExecToolConfig
     from nanobot.agent.tools.video_generation import VideoGenerationToolConfig
-    from nanobot.agent.tools.web import WebFetchConfig, WebSearchConfig, WebToolsConfig
 
     # Re-export into this module's namespace
     mod = sys.modules[__name__]
-    mod.ExecToolConfig = ExecToolConfig  # type: ignore[attr-defined]
-    mod.CliAppsToolConfig = CliAppsToolConfig  # type: ignore[attr-defined]
-    mod.WebToolsConfig = WebToolsConfig  # type: ignore[attr-defined]
-    mod.WebSearchConfig = WebSearchConfig  # type: ignore[attr-defined]
-    mod.WebFetchConfig = WebFetchConfig  # type: ignore[attr-defined]
-    mod.MyToolConfig = MyToolConfig  # type: ignore[attr-defined]
     mod.ImageGenerationToolConfig = ImageGenerationToolConfig  # type: ignore[attr-defined]
     mod.VideoGenerationToolConfig = VideoGenerationToolConfig  # type: ignore[attr-defined]
     mod.AudioGenerationToolConfig = AudioGenerationToolConfig  # type: ignore[attr-defined]
