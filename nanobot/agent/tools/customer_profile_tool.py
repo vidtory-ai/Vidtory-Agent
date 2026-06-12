@@ -208,6 +208,12 @@ def _normalize_color(value: str) -> str:
             "Accepts: CDN URL (https://...), local file path, or Telegram CDN URL. "
             "Leave empty if no logo provided.",
         ),
+        brand_guidelines=StringSchema(
+            "Brand guidelines text extracted from uploaded documents (PDF, DOCX, etc.). "
+            "Store key design rules, typography guidelines, tone of voice rules, "
+            "do/don't lists, and other brand standards. Max 2000 chars — "
+            "summarize if the original is longer.",
+        ),
         onboarding_complete=BooleanSchema(
             description=(
                 "Set to true when the user has provided enough brand information "
@@ -277,6 +283,7 @@ class UpdateCustomerProfileTool(Tool):
         segment: str | None = None,
         channels: list[str] | None = None,
         logo_url: str | None = None,
+        brand_guidelines: str | None = None,
         onboarding_complete: bool = False,
         **kwargs: Any,
     ) -> str:
@@ -360,6 +367,12 @@ class UpdateCustomerProfileTool(Tool):
                     get_db().set_logo_url(user_id, logo_url.strip())
                 except Exception:
                     pass  # Non-fatal — JSON blob is the source of truth
+
+            if brand_guidelines is not None and brand_guidelines.strip():
+                # Truncate to 2000 chars to keep profile size reasonable
+                guidelines_text = brand_guidelines.strip()[:2000]
+                brand["guidelines"] = guidelines_text
+                changed_fields.append("brand_guidelines")
 
             # ── Audience section ──────────────────────────────────────────
             audience = current.setdefault("audience", {})
@@ -456,6 +469,10 @@ class UpdateCustomerProfileTool(Tool):
                         if avoid_item.strip():
                             db.set_memory(user_id, layer="style", key=f"avoid_{i}",
                                           value=avoid_item.strip(), source=source, force=True)
+                if brand_guidelines and brand_guidelines.strip():
+                    # Store guidelines summary in style layer for prompt enrichment
+                    db.set_memory(user_id, layer="style", key="brand_guidelines",
+                                  value=brand_guidelines.strip()[:500], source=source, force=True)
             except Exception:
                 pass  # Non-fatal — profile_json is the primary source of truth
 
