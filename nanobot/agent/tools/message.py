@@ -225,6 +225,8 @@ class MessageTool(Tool, ContextAware):
                 "Error: message content blocked by resident_designer "
                 f"security policy ({policy.reason})"
             )
+        if policy.redacted_text and policy.redacted_text.strip() and policy.redacted_text.strip() != content.strip():
+            content = policy.redacted_text
         if is_resident_designer_profile(self._capability_profile) and not media:
             return (
                 "Error: text-only message sends are disabled by the "

@@ -203,7 +203,11 @@ class AgentLoop:
             _tc = _tc.model_copy(update={
                 "restrict_to_workspace": True,
                 "exec": _tc.exec.model_copy(update={"enable": False}),
+                "web": _tc.web.model_copy(update={"enable": False}),
+                "my": _tc.my.model_copy(update={"enable": False}),
+                "mcp_servers": {},
             })
+            mcp_servers = {}
         defaults = AgentDefaults()
         self.bus = bus
         self.channels_config = channels_config
@@ -251,7 +255,7 @@ class AgentLoop:
                     image_generation_provider_config
                 )
         self.cron_service = cron_service
-        self.restrict_to_workspace = restrict_to_workspace
+        self.restrict_to_workspace = _tc.restrict_to_workspace
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
         self._pending_turn_latency_ms: dict[str, int] = {}
@@ -281,7 +285,7 @@ class AgentLoop:
             model=self.model,
             tools_config=_tc,
             max_tool_result_chars=self.max_tool_result_chars,
-            restrict_to_workspace=restrict_to_workspace,
+            restrict_to_workspace=_tc.restrict_to_workspace,
             disabled_skills=disabled_skills,
             max_iterations=self.max_iterations,
             llm_wall_timeout_for_session=lambda sk: runner_wall_llm_timeout_s(self.sessions, sk),
@@ -1388,28 +1392,6 @@ class AgentLoop:
 
     async def _state_command(self, ctx: TurnContext) -> str:
         raw = ctx.msg.content.strip()
-        cmd_ctx = CommandContext(
-            msg=ctx.msg, session=ctx.session, key=ctx.session_key, raw=raw, loop=self
-        )
-        result = await self.commands.dispatch(cmd_ctx)
-        if result is not None:
-            ctx.outbound = result
-            # Shortcut commands skip BUILD and SAVE, so we must persist the
-            # turn here so WebUI history hydration after _turn_end sees the
-            # message.  Mark messages with _command so get_history can filter
-            # them out of LLM context.  /new is excluded because it
-            # intentionally clears the session.
-            if raw.lower() != "/new":
-                ctx.user_persisted_early = self._persist_user_message_early(
-                    ctx.msg, ctx.session, _command=True
-                )
-                ctx.session.add_message(
-                    "assistant", result.content, _command=True
-                )
-                self.sessions.save(ctx.session)
-                self._clear_pending_user_turn(ctx.session)
-            return "shortcut"
-
         policy = evaluate_request(self.capability_profile, raw)
         if policy.blocked:
             logger.warning(
@@ -1449,6 +1431,29 @@ class AgentLoop:
                     "_security_reason": policy.reason or "mixed_request",
                 },
             )
+            raw = ctx.msg.content.strip()
+
+        cmd_ctx = CommandContext(
+            msg=ctx.msg, session=ctx.session, key=ctx.session_key, raw=raw, loop=self
+        )
+        result = await self.commands.dispatch(cmd_ctx)
+        if result is not None:
+            ctx.outbound = result
+            # Shortcut commands skip BUILD and SAVE, so we must persist the
+            # turn here so WebUI history hydration after _turn_end sees the
+            # message.  Mark messages with _command so get_history can filter
+            # them out of LLM context.  /new is excluded because it
+            # intentionally clears the session.
+            if raw.lower() != "/new":
+                ctx.user_persisted_early = self._persist_user_message_early(
+                    ctx.msg, ctx.session, _command=True
+                )
+                ctx.session.add_message(
+                    "assistant", result.content, _command=True
+                )
+                self.sessions.save(ctx.session)
+                self._clear_pending_user_turn(ctx.session)
+            return "shortcut"
         return "dispatch"
 
     async def _state_build(self, ctx: TurnContext) -> str:
@@ -1532,6 +1537,14 @@ class AgentLoop:
             )
             final_content = output_policy.response
             stop_reason = "security_policy"
+            self._replace_final_assistant_content(all_msgs, final_content)
+        elif output_policy.redacted_text and output_policy.redacted_text.strip() and output_policy.redacted_text.strip() != (final_content or "").strip():
+            logger.warning(
+                "Model output redacted by capability policy {}: {}",
+                self.capability_profile,
+                output_policy.reason or "mixed_request",
+            )
+            final_content = output_policy.redacted_text
             self._replace_final_assistant_content(all_msgs, final_content)
         ctx.final_content = final_content
         ctx.tools_used = tools_used

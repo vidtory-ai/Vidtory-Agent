@@ -107,7 +107,10 @@ class SubagentManager:
         return ToolsConfig(
             exec=self.tools_config.exec,
             web=self.tools_config.web,
+            my=self.tools_config.my,
+            capability_profile=self.tools_config.capability_profile,
             restrict_to_workspace=self.restrict_to_workspace,
+            mcp_servers={},
         )
 
     def _build_tools(

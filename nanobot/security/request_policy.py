@@ -113,15 +113,21 @@ _COMMAND_RE = re.compile(
 _PROMPT_OVERRIDE_RE = re.compile(
     r"\b(?:ignore|disregard|forget|override|bypass)\b.{0,80}"
     r"\b(?:previous|prior|system|developer|instruction|rule|policy|prompt)\b"
+    r"|\b(?:do not|don't|dont|stop)\b.{0,40}\b(?:follow|obey)\b.{0,80}"
+    r"\b(?:previous|prior|system|developer|instruction|rule|policy|prompt)\b"
     r"|\b(?:bo qua|quen|ghi de|vo hieu hoa)\b.{0,80}"
-    r"\b(?:chi dan|quy tac|he thong|system prompt|lenh truoc)\b",
+    r"\b(?:chi dan|quy tac|he thong|system prompt|lenh truoc)\b"
+    r"|\b(?:bo tat ca|bo het|bo moi|khong tuan theo|dung tuan theo)\b.{0,80}"
+    r"\b(?:chi dan|huong dan|quy tac|luat|he thong|lenh truoc|noi bo)\b",
     re.IGNORECASE | re.DOTALL,
 )
 _PROMPT_EXFIL_RE = re.compile(
-    r"\b(?:show|reveal|print|dump|repeat|leak|extract)\b.{0,60}"
-    r"\b(?:system prompt|developer message|hidden instructions?|soul(?:\.|\s+)md)\b"
-    r"|\b(?:hien|tiet lo|in|doc|trich xuat)\b.{0,60}"
-    r"\b(?:system prompt|cau hinh he thong|chi dan an|soul(?:\.|\s+)md)\b",
+    r"\b(?:show|reveal|print|dump|repeat|leak|extract|tell|share|give|list|display|return)\b.{0,80}"
+    r"\b(?:system prompt|system instructions?|developer message|developer instructions?|"
+    r"hidden instructions?|internal instructions?|soul(?:\.|\s+)md)\b"
+    r"|\b(?:hien|tiet lo|in|doc|trich xuat|cho toi biet|noi lai|gui|chia se|cho xem)\b.{0,80}"
+    r"\b(?:system prompt|cau hinh he thong|huong dan he thong|chi dan he thong|"
+    r"chi dan noi bo|chi dan an|quy tac he thong|noi dung an|soul(?:\.|\s+)md)\b",
     re.IGNORECASE | re.DOTALL,
 )
 _ROLE_OVERRIDE_RE = re.compile(
@@ -272,12 +278,6 @@ def evaluate_request(profile: Any, text: str) -> PolicyDecision:
 
     command_decision = _evaluate_command(text)
     if command_decision.blocked:
-        if creative_context and negated_tech:
-            return PolicyDecision(False)
-        if creative_context and not negated_tech:
-            redacted = _sanitize_mixed_request(text)
-            if redacted and redacted.strip() and redacted.strip() != text.strip():
-                return PolicyDecision(False, "mixed_request", redacted_text=redacted)
         return command_decision
 
     if _ROLE_OVERRIDE_RE.search(normalized) and not creative_context:
