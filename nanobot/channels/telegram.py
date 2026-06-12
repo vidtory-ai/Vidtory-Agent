@@ -442,10 +442,11 @@ class TelegramChannel(BaseChannel):
                 self._on_api_key_management,
             )
         )
-        # Handle photos sent with /setlogo as caption
+        # Handle photos/documents sent with /setlogo as caption
         self._app.add_handler(
             MessageHandler(
-                filters.PHOTO & filters.CaptionRegex(r"^/setlogo(?:@\w+)?(?:\s+.*)?$"),
+                (filters.PHOTO | filters.Document.IMAGE)
+                & filters.CaptionRegex(r"^/setlogo(?:@\w+)?(?:\s+.*)?$"),
                 self._on_api_key_management,
             )
         )
@@ -988,6 +989,26 @@ class TelegramChannel(BaseChannel):
         else:
             return f"[Reply to: {text}]"
 
+    @staticmethod
+    def _extract_image_file(msg) -> dict[str, str] | None:
+        """Extract image file info from a Telegram message (photo or image document).
+
+        Returns ``{"file_id": ..., "mime_type": ...}`` when the message
+        carries an image, or ``None`` otherwise.  Handles both the native
+        Photo attachment and Documents whose MIME starts with ``image/``.
+        """
+        if msg is None:
+            return None
+        if getattr(msg, "photo", None):
+            photo = msg.photo[-1]  # Largest resolution
+            return {"file_id": photo.file_id, "mime_type": "image/jpeg"}
+        doc = getattr(msg, "document", None)
+        if doc:
+            doc_mime = getattr(doc, "mime_type", "") or ""
+            if doc_mime.startswith("image/"):
+                return {"file_id": doc.file_id, "mime_type": doc_mime}
+        return None
+
     async def _download_message_media(
         self, msg, *, add_failure_content: bool = False
     ) -> tuple[list[str], list[str]]:
@@ -1005,7 +1026,17 @@ class TelegramChannel(BaseChannel):
             media_type = "audio"
         elif getattr(msg, "document", None):
             media_file = msg.document
-            media_type = "file"
+            # When a user sends an image/video via Telegram's "File" mode
+            # instead of "Photo or Video", it arrives as a Document.
+            # Reclassify based on MIME so downstream treats it like a native
+            # photo/video (correct extension, vision blocks, etc.).
+            doc_mime = getattr(media_file, "mime_type", "") or ""
+            if doc_mime.startswith("image/"):
+                media_type = "image"
+            elif doc_mime.startswith("video/"):
+                media_type = "video"
+            else:
+                media_type = "file"
         elif getattr(msg, "video", None):
             media_file = msg.video
             media_type = "video"
@@ -1019,16 +1050,18 @@ class TelegramChannel(BaseChannel):
             return [], []
         try:
             file = await self._app.bot.get_file(media_file.file_id)
-            ext = self._get_extension(
-                media_type,
-                getattr(media_file, "mime_type", None),
-                getattr(media_file, "file_name", None),
-            )
+            doc_mime_type = getattr(media_file, "mime_type", None)
+            doc_file_name = getattr(media_file, "file_name", None)
+            ext = self._get_extension(media_type, doc_mime_type, doc_file_name)
             media_dir = get_media_dir("telegram")
             unique_id = getattr(media_file, "file_unique_id", media_file.file_id)
             file_path = media_dir / f"{unique_id}{ext}"
             await file.download_to_drive(str(file_path))
             path_str = str(file_path)
+            self.logger.debug(
+                "Downloaded media: type={}, mime={}, filename={}, saved={}",
+                media_type, doc_mime_type, doc_file_name, file_path.name,
+            )
             if media_type in ("voice", "audio"):
                 transcription = await self.transcribe_audio(file_path)
                 if transcription:
@@ -1618,14 +1651,14 @@ class TelegramChannel(BaseChannel):
                         )
                     return True
 
-                # Case 2: Reply to a photo
+                # Case 2: Reply to a photo or document (image sent as File)
                 # Download photo bytes locally (same as _download_message_media flow),
                 # then upload to Vidtory CDN via /media/upload to get a permanent URL.
                 reply = getattr(message, "reply_to_message", None)
-                if reply and getattr(reply, "photo", None):
+                reply_media = self._extract_image_file(reply) if reply else None
+                if reply_media:
                     try:
-                        photo = reply.photo[-1]  # Largest resolution
-                        tg_file = await self._app.bot.get_file(photo.file_id)
+                        tg_file = await self._app.bot.get_file(reply_media["file_id"])
                         # Download to local bytes — same pattern as product generation upload flow
                         file_bytes = await tg_file.download_as_bytearray()
                         if not file_bytes:
@@ -1638,7 +1671,7 @@ class TelegramChannel(BaseChannel):
                         api_key = self.keystore.get_key(sender_id)
                         cdn_url = await self._upload_logo_bytes_to_cdn(
                             bytes(file_bytes),
-                            mime_type="image/jpeg",
+                            mime_type=reply_media["mime_type"],
                             api_key=api_key or "",
                             user_id=uid,
                         )
@@ -1664,12 +1697,12 @@ class TelegramChannel(BaseChannel):
                         )
                     return True
 
-                # Case 3: Photo sent directly with the /setlogo command
+                # Case 3: Photo or document (image) sent directly with /setlogo
                 # Download to local bytes first, then upload to Vidtory CDN.
-                if getattr(message, "photo", None):
+                direct_media = self._extract_image_file(message)
+                if direct_media:
                     try:
-                        photo = message.photo[-1]
-                        tg_file = await self._app.bot.get_file(photo.file_id)
+                        tg_file = await self._app.bot.get_file(direct_media["file_id"])
                         file_bytes = await tg_file.download_as_bytearray()
                         if not file_bytes:
                             await message.reply_text(
@@ -1680,7 +1713,7 @@ class TelegramChannel(BaseChannel):
                         api_key = self.keystore.get_key(sender_id)
                         cdn_url = await self._upload_logo_bytes_to_cdn(
                             bytes(file_bytes),
-                            mime_type="image/jpeg",
+                            mime_type=direct_media["mime_type"],
                             api_key=api_key or "",
                             user_id=uid,
                         )
@@ -2436,12 +2469,23 @@ class TelegramChannel(BaseChannel):
             if mime_type in ext_map:
                 return ext_map[mime_type]
 
+        # Prefer the original filename's extension when available (documents
+        # sent via Telegram's "File" mode always carry their filename).
+        if filename:
+            suffixes = "".join(Path(filename).suffixes)
+            if suffixes:
+                return suffixes
+
+        # Fallback: guess extension from MIME type (handles image/bmp → .bmp etc.)
+        if mime_type:
+            import mimetypes as _mt
+            guessed = _mt.guess_extension(mime_type, strict=False)
+            if guessed:
+                return guessed
+
         type_map = {"image": ".jpg", "voice": ".ogg", "audio": ".mp3", "video": ".mp4", "file": ""}
         if ext := type_map.get(media_type, ""):
             return ext
-
-        if filename:
-            return "".join(Path(filename).suffixes)
 
         return ""
 
