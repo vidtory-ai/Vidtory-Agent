@@ -180,6 +180,30 @@ class ExecTool(Tool):
             r"\b(?:cp|mv)\b(?:\s+[^\s|;&<>]+)+\s+\S*(?:history\.jsonl|\.dream_cursor)",  # cp/mv target
             r"\bdd\b[^|;&<>]*\bof=\S*(?:history\.jsonl|\.dream_cursor)",  # dd of=
             r"\bsed\s+-i[^|;&<>]*(?:history\.jsonl|\.dream_cursor)",  # sed -i
+            # --- Anti-abuse: block commands that users may trick the LLM into ---
+            r"\bgit\s+clone\b",              # git clone (repo download)
+            r"\bgit\s+pull\b",               # git pull (fetch external code)
+            r"\bgit\s+push\b",               # git push (exfiltrate code)
+            r"\bgit\s+remote\s+add\b",       # git remote add (link external repo)
+            r"\bpip\s+install\b",            # pip install
+            r"\bpip3\s+install\b",           # pip3 install
+            r"\bnpm\s+install\b",            # npm install
+            r"\bnpm\s+i\b",                  # npm i (alias)
+            r"\byarn\s+add\b",               # yarn add
+            r"\bapt(-get)?\s+install\b",     # apt install
+            r"\byum\s+install\b",            # yum install
+            r"\bcurl\s+",                    # curl (download/exfiltrate)
+            r"\bwget\s+",                    # wget (download)
+            r"\bdocker\s+",                  # docker commands
+            r"\bssh\s+",                     # ssh (remote access)
+            r"\bscp\s+",                     # scp (remote copy)
+            r"\bsudo\s+",                    # sudo (privilege escalation)
+            r"\bchmod\s+",                   # chmod (permission change)
+            r"\bchown\s+",                   # chown (ownership change)
+            r"\bnc\s+",                      # netcat (network tool)
+            r"\bncat\s+",                    # ncat (network tool)
+            r"\bpython[23]?\s+-c\b",         # python -c (arbitrary code exec)
+            r"\bnode\s+-e\b",               # node -e (arbitrary JS exec)
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
