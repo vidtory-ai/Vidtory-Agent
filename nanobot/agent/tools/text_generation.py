@@ -16,6 +16,7 @@ from nanobot.providers.text_generation import (
     TextGenerationError,
     VidtoryTextGenerationClient,
 )
+from nanobot.security.request_policy import evaluate_request, is_resident_designer_profile
 
 
 class TextGenerationToolConfig(Base):
@@ -64,6 +65,7 @@ class TextGenerationTool(Tool):
             workspace=ctx.workspace,
             config=getattr(ctx.config, "text_generation", None) or TextGenerationToolConfig(),
             provider_config=provider_config,
+            capability_profile=getattr(ctx.config, "capability_profile", "standard"),
         )
 
     def __init__(
@@ -72,10 +74,12 @@ class TextGenerationTool(Tool):
         workspace: str | Path,
         config: TextGenerationToolConfig,
         provider_config: Any | None = None,
+        capability_profile: str = "standard",
     ) -> None:
         self.workspace = Path(workspace).expanduser()
         self.config = config
         self.provider_config = provider_config
+        self.capability_profile = capability_profile
 
     @property
     def name(self) -> str:
@@ -105,6 +109,15 @@ class TextGenerationTool(Tool):
         start_images: list[str] | None = None,
         **kwargs: Any,
     ) -> str:
+        if is_resident_designer_profile(self.capability_profile):
+            policy = evaluate_request(self.capability_profile, prompt)
+            if policy.blocked:
+                return (
+                    "Error: text generation prompt blocked by resident_designer "
+                    f"security policy ({policy.reason})"
+                )
+            if policy.redacted_text and policy.redacted_text.strip():
+                prompt = policy.redacted_text
         client = self._provider_client()
 
         try:

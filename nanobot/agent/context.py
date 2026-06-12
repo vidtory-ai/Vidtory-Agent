@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+from nanobot.security.request_policy import is_resident_designer_profile
 from nanobot.session.goal_state import goal_state_runtime_lines
 from nanobot.utils.helpers import (
     current_time_str,
@@ -28,9 +29,16 @@ class ContextBuilder:
     _MAX_HISTORY_CHARS = 32_000  # hard cap on recent history section size
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
 
-    def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        timezone: str | None = None,
+        disabled_skills: list[str] | None = None,
+        capability_profile: str = "standard",
+    ):
         self.workspace = workspace
         self.timezone = timezone
+        self.capability_profile = capability_profile
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace, disabled_skills=set(disabled_skills) if disabled_skills else None)
 
@@ -42,6 +50,9 @@ class ContextBuilder:
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity(channel=channel)]
+
+        if is_resident_designer_profile(self.capability_profile):
+            parts.append(render_template("agent/resident_designer_policy.md"))
 
         bootstrap = self._load_bootstrap_files()
         if bootstrap:

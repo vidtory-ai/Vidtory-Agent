@@ -6,15 +6,16 @@ x-common-config: &common-config
     - "${VIDTORY_DATA_DIR:-C:/Users/vidto/.vidtoryagent}:/home/vidtoryagent/.vidtoryagent"
   cap_drop:
     - ALL
-  cap_add:
-    - SYS_ADMIN
   security_opt:
-    - apparmor=unconfined
-    - seccomp=unconfined
-  user: root
+    - no-new-privileges:true
+  user: "1000:1000"
+  read_only: true
+  tmpfs:
+    - /tmp:size=128m,mode=1777
   environment:
     - PYTHONIOENCODING=utf-8
     - PYTHONUNBUFFERED=1
+    - NANOBOT_CAPABILITY_PROFILE=resident_designer
 
 services:
   # ── Telegram Bot (main service) ──────────────────────────────────────────
@@ -25,8 +26,8 @@ services:
     command: ["gateway"]
     restart: unless-stopped
     ports:
-      - "18790:18790"
-      - "8765:8765"
+      - "127.0.0.1:18790:18790"
+      - "127.0.0.1:8765:8765"
     healthcheck:
       test: ["CMD-SHELL", "vidtoryagent status || exit 1"]
       interval: 30s

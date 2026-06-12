@@ -6,19 +6,21 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.path_utils import is_under
 from nanobot.agent.tools.schema import (
     ArraySchema,
     IntegerSchema,
     StringSchema,
     tool_parameters_schema,
 )
+from nanobot.config.paths import get_media_dir
 from nanobot.config.schema import Base
 from nanobot.providers.video_generation import (
     VideoGenerationError,
     VidtoryVideoGenerationClient,
 )
+from nanobot.security.request_policy import evaluate_request, is_resident_designer_profile
 
 
 class VideoGenerationToolConfig(Base):
@@ -75,6 +77,7 @@ class VideoGenerationTool(Tool):
             workspace=ctx.workspace,
             config=getattr(ctx.config, "video_generation", None) or VideoGenerationToolConfig(),
             provider_config=provider_config,
+            capability_profile=getattr(ctx.config, "capability_profile", "standard"),
         )
 
     def __init__(
@@ -83,10 +86,12 @@ class VideoGenerationTool(Tool):
         workspace: str | Path,
         config: VideoGenerationToolConfig,
         provider_config: Any | None = None,
+        capability_profile: str = "standard",
     ) -> None:
         self.workspace = Path(workspace).expanduser()
         self.config = config
         self.provider_config = provider_config
+        self.capability_profile = capability_profile
 
     @property
     def name(self) -> str:
@@ -123,6 +128,16 @@ class VideoGenerationTool(Tool):
             resolved = path.resolve(strict=True)
         except OSError as exc:
             raise VideoGenerationError(f"reference image not found: {value}") from exc
+        allowed_roots = [self.workspace.resolve(), get_media_dir().resolve()]
+        if not any(is_under(resolved, root) for root in allowed_roots):
+            raise VideoGenerationError(
+                "reference_images must be inside the workspace or media directory"
+            )
+        if not resolved.is_file():
+            raise VideoGenerationError(f"reference image is not a file: {value}")
+        from nanobot.utils.helpers import detect_image_mime
+        if detect_image_mime(resolved.read_bytes()) is None:
+            raise VideoGenerationError(f"unsupported reference image: {value}")
         return str(resolved)
 
     def _resolve_reference_images(self, values: list[str] | None) -> list[str]:
@@ -139,6 +154,15 @@ class VideoGenerationTool(Tool):
         mode: str | None = None,
         **kwargs: Any,
     ) -> str:
+        if is_resident_designer_profile(self.capability_profile):
+            policy = evaluate_request(self.capability_profile, prompt)
+            if policy.blocked:
+                return (
+                    "Error: video generation prompt blocked by resident_designer "
+                    f"security policy ({policy.reason})"
+                )
+            if policy.redacted_text and policy.redacted_text.strip():
+                prompt = policy.redacted_text
         client = self._provider_client()
 
         try:

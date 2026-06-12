@@ -10,6 +10,10 @@ from nanobot.agent.tools.path_utils import resolve_workspace_path
 from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
 from nanobot.bus.events import OutboundMessage
 from nanobot.config.paths import get_workspace_path
+from nanobot.security.request_policy import (
+    evaluate_request,
+    is_resident_designer_profile,
+)
 
 
 @tool_parameters(
@@ -53,12 +57,14 @@ class MessageTool(Tool, ContextAware):
         default_message_id: str | None = None,
         workspace: str | Path | None = None,
         restrict_to_workspace: bool = False,
+        capability_profile: str = "standard",
     ):
         self._send_callback = send_callback
         self._workspace = (
             Path(workspace).expanduser() if workspace is not None else get_workspace_path()
         )
         self._restrict_to_workspace = restrict_to_workspace
+        self._capability_profile = capability_profile
         self._default_channel: ContextVar[str] = ContextVar(
             "message_default_channel", default=default_channel
         )
@@ -90,6 +96,7 @@ class MessageTool(Tool, ContextAware):
             send_callback=send_callback,
             workspace=ctx.workspace,
             restrict_to_workspace=ctx.config.restrict_to_workspace,
+            capability_profile=getattr(ctx.config, "capability_profile", "standard"),
         )
 
     def set_context(self, ctx: RequestContext) -> None:
@@ -204,6 +211,25 @@ class MessageTool(Tool, ContextAware):
         # conversation via their Reply API, which would route the message
         # to the wrong chat entirely.
         same_target = channel == default_channel and chat_id == default_chat_id
+        if (
+            is_resident_designer_profile(self._capability_profile)
+            and not same_target
+        ):
+            return (
+                "Error: cross-channel and cross-chat sends are disabled by "
+                "the resident_designer security policy"
+            )
+        policy = evaluate_request(self._capability_profile, content)
+        if policy.blocked:
+            return (
+                "Error: message content blocked by resident_designer "
+                f"security policy ({policy.reason})"
+            )
+        if is_resident_designer_profile(self._capability_profile) and not media:
+            return (
+                "Error: text-only message sends are disabled by the "
+                "resident_designer security policy"
+            )
         if same_target:
             message_id = message_id or self._default_message_id.get()
         else:

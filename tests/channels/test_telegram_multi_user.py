@@ -1,17 +1,19 @@
-import asyncio
-import json
-import shutil
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.telegram import TelegramChannel, TelegramConfig, TelegramKeyStore
-from nanobot.config.paths import get_data_dir, get_workspace_path
-from nanobot.session.manager import SessionManager
+
+
+@pytest.fixture
+def isolated_customer_db(tmp_path, monkeypatch):
+    from nanobot.db.customer_db import CustomerDatabase
+
+    db = CustomerDatabase(tmp_path / "customers.db")
+    monkeypatch.setattr("nanobot.db.customer_db._db_instance", db)
+    yield db
+    db.close()
 
 
 class _FakeMessage:
@@ -47,7 +49,7 @@ class _FakeUpdate:
 
 
 @pytest.mark.asyncio
-async def test_telegram_keystore(tmp_path, monkeypatch) -> None:
+async def test_telegram_keystore(tmp_path, monkeypatch, isolated_customer_db) -> None:
     # Point data_dir to tmp_path
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("nanobot.channels.telegram.get_data_dir", lambda: tmp_path)
@@ -68,7 +70,7 @@ async def test_telegram_keystore(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_telegram_multi_user_welcome_prompt(tmp_path, monkeypatch) -> None:
+async def test_telegram_multi_user_welcome_prompt(tmp_path, monkeypatch, isolated_customer_db) -> None:
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("nanobot.channels.telegram.get_data_dir", lambda: tmp_path)
     config = TelegramConfig(enabled=True, token="123:abc", require_user_api_key=True)
@@ -81,11 +83,11 @@ async def test_telegram_multi_user_welcome_prompt(tmp_path, monkeypatch) -> None
 
     # Check Alice received the welcome prompt
     assert len(update.message.replies) == 1
-    assert "Welcome to Vidtory-Agent" in update.message.replies[0][0]
+    assert "Vidtory API Key" in update.message.replies[0][0]
 
 
 @pytest.mark.asyncio
-async def test_telegram_multi_user_configure_and_clear(tmp_path, monkeypatch) -> None:
+async def test_telegram_multi_user_configure_and_clear(tmp_path, monkeypatch, isolated_customer_db) -> None:
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("nanobot.channels.telegram.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("nanobot.config.paths.get_workspace_path", lambda: tmp_path)
@@ -97,13 +99,13 @@ async def test_telegram_multi_user_configure_and_clear(tmp_path, monkeypatch) ->
 
     # 1. User configures API Key via /apikey
     update_setup = _FakeUpdate("/apikey my-secret-api-key")
-    await channel._on_message(update_setup, None)
-    assert "configured successfully" in update_setup.message.replies[0][0]
+    await channel._on_api_key_management(update_setup, None)
+    assert "Vidtory API Key" in update_setup.message.replies[0][0]
     assert channel.keystore.get_key("12345|alice") == "my-secret-api-key"
 
     # 2. Check /mykey shows the key masked
     update_mykey = _FakeUpdate("/mykey")
-    await channel._on_message(update_mykey, None)
+    await channel._on_api_key_management(update_mykey, None)
     assert "my-sec...-key" in update_mykey.message.replies[0][0]
 
     # Create dummy session file & user workspace to check /clear deletes them
@@ -117,8 +119,8 @@ async def test_telegram_multi_user_configure_and_clear(tmp_path, monkeypatch) ->
 
     # 3. Clear data via /clear
     update_clear = _FakeUpdate("/clear")
-    await channel._on_message(update_clear, None)
-    assert "All data cleared successfully" in update_clear.message.replies[0][0]
+    await channel._on_api_key_management(update_clear, None)
+    assert "API key" in update_clear.message.replies[0][0]
 
     # Check key and files were removed
     assert channel.keystore.get_key("12345|alice") is None
@@ -127,7 +129,7 @@ async def test_telegram_multi_user_configure_and_clear(tmp_path, monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_telegram_multi_user_metadata_injection(tmp_path, monkeypatch) -> None:
+async def test_telegram_multi_user_metadata_injection(tmp_path, monkeypatch, isolated_customer_db) -> None:
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("nanobot.channels.telegram.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("nanobot.config.paths.get_workspace_path", lambda: tmp_path)
@@ -137,6 +139,10 @@ async def test_telegram_multi_user_metadata_injection(tmp_path, monkeypatch) -> 
     bus = MessageBus()
     channel = TelegramChannel(config, bus)
     channel.keystore.set_key("12345", "user-key-789")
+    monkeypatch.setattr(
+        "nanobot.utils.customer_profile.get_onboarding_status",
+        lambda uid: "minimal",
+    )
 
     # Mock _handle_message to verify metadata injection
     inbound_messages = []

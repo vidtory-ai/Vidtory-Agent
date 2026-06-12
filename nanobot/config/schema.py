@@ -291,6 +291,7 @@ class ToolsConfig(Base):
     audio_generation: AudioGenerationToolConfig = Field(
         default_factory=lambda: _lazy_default("nanobot.agent.tools.audio_generation", "AudioGenerationToolConfig"),
     )
+    capability_profile: Literal["standard", "resident_designer"] = "standard"
     restrict_to_workspace: bool = False  # restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
     ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)

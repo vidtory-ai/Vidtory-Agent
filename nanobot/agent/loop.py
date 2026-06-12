@@ -33,6 +33,10 @@ from nanobot.command import CommandContext, CommandRouter, register_builtin_comm
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot
+from nanobot.security.request_policy import (
+    evaluate_request,
+    is_resident_designer_profile,
+)
 from nanobot.session.goal_state import (
     runner_wall_llm_timeout_s,
 )
@@ -195,6 +199,11 @@ class AgentLoop:
         from nanobot.config.schema import ToolsConfig
 
         _tc = tools_config or ToolsConfig()
+        if is_resident_designer_profile(_tc.capability_profile):
+            _tc = _tc.model_copy(update={
+                "restrict_to_workspace": True,
+                "exec": _tc.exec.model_copy(update={"enable": False}),
+            })
         defaults = AgentDefaults()
         self.bus = bus
         self.channels_config = channels_config
@@ -226,6 +235,7 @@ class AgentLoop:
             else defaults.tool_hint_max_length
         )
         self.tools_config = _tc
+        self.capability_profile = _tc.capability_profile
         self.providers_config = providers_config
         self.web_config = _tc.web
         self.exec_config = _tc.exec
@@ -247,7 +257,12 @@ class AgentLoop:
         self._pending_turn_latency_ms: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
 
-        self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
+        self.context = ContextBuilder(
+            workspace,
+            timezone=timezone,
+            disabled_skills=disabled_skills,
+            capability_profile=self.capability_profile,
+        )
         self.sessions = session_manager or SessionManager(workspace)
         self._webui_turns = WebuiTurnCoordinator(
             bus=self.bus,
@@ -486,7 +501,10 @@ class AgentLoop:
         registered = loader.load(ctx, self.tools)
 
         # MyTool needs runtime state reference — manual registration
-        if self.tools_config.my.enable:
+        if (
+            self.tools_config.my.enable
+            and not is_resident_designer_profile(self.capability_profile)
+        ):
             self.tools.register(
                 MyTool(runtime_state=self, modify_allowed=self.tools_config.my.allow_set)
             )
@@ -496,6 +514,8 @@ class AgentLoop:
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
+        if is_resident_designer_profile(self.capability_profile):
+            return
         if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
             return
         self._mcp_connecting = True
@@ -607,6 +627,12 @@ class AgentLoop:
         cli_lines = cli_app_utils.runtime_lines(msg, self.context.workspace)
         customer_lines = self._build_customer_context_lines(msg)
         all_runtime_lines = cli_lines + customer_lines
+        if msg.metadata.get("_security_partial"):
+            all_runtime_lines.append(
+                "The original request included blocked operational wording that was removed. "
+                "Respond naturally to the remaining creative brief, and if useful, briefly "
+                "decline any missing operational part without mentioning internal policy."
+            )
 
         return self.context.build_messages(
             history=history,
@@ -751,7 +777,11 @@ class AgentLoop:
 
         Returns (final_content, tools_used, messages, stop_reason, had_injections).
         """
-        from nanobot.utils.context_vars import telegram_user_api_key, telegram_user_workspace, telegram_vidtory_api_key
+        from nanobot.utils.context_vars import (
+            telegram_user_api_key,
+            telegram_user_workspace,
+            telegram_vidtory_api_key,
+        )
         # telegram_vidtory_api_key: Vidtory merchant key for image/video/audio tools
         # telegram_user_api_key: intentionally left empty so LLM providers use system keys
         token_vidtory_key = telegram_vidtory_api_key.set(metadata.get("user_api_key", "") if metadata else "")
@@ -895,6 +925,30 @@ class AgentLoop:
                 continue
 
             raw = msg.content.strip()
+            raw_policy = evaluate_request(self.capability_profile, raw)
+            if raw_policy.blocked:
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=raw_policy.response,
+                    metadata={
+                        **(msg.metadata or {}),
+                        "_security_blocked": True,
+                        "_security_reason": raw_policy.reason,
+                    },
+                ))
+                continue
+            if raw_policy.redacted_text and raw_policy.redacted_text.strip() and raw_policy.redacted_text.strip() != raw:
+                msg = dataclasses.replace(
+                    msg,
+                    content=raw_policy.redacted_text,
+                    metadata={
+                        **(msg.metadata or {}),
+                        "_security_partial": True,
+                        "_security_reason": raw_policy.reason or "mixed_request",
+                    },
+                )
+                raw = msg.content.strip()
             if self.commands.is_priority(raw):
                 await self._dispatch_command_inline(
                     msg, msg.session_key, raw,
@@ -1011,7 +1065,7 @@ class AgentLoop:
                             latency_ms=turn_lat,
                         )
                 except asyncio.CancelledError:
-                    logger.info("Task cancelled for session {}", session_key)
+                    logger.info("Task cancelled for session {}", effective_key)
                     # Preserve partial context from the interrupted turn so
                     # the user does not lose tool results and assistant
                     # messages accumulated before /stop.  The checkpoint was
@@ -1032,12 +1086,12 @@ class AgentLoop:
                     except Exception:
                         logger.debug(
                             "Could not restore checkpoint for cancelled session {}",
-                            session_key,
+                            effective_key,
                             exc_info=True,
                         )
                     raise
                 except Exception:
-                    logger.exception("Error processing message for session {}", session_key)
+                    logger.exception("Error processing message for session {}", effective_key)
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=msg.channel, chat_id=msg.chat_id,
                         content="Sorry, I encountered an error.",
@@ -1355,6 +1409,46 @@ class AgentLoop:
                 self.sessions.save(ctx.session)
                 self._clear_pending_user_turn(ctx.session)
             return "shortcut"
+
+        policy = evaluate_request(self.capability_profile, raw)
+        if policy.blocked:
+            logger.warning(
+                "Request blocked by capability policy {}: {}",
+                self.capability_profile,
+                policy.reason,
+            )
+            ctx.user_persisted_early = self._persist_user_message_early(
+                ctx.msg, ctx.session
+            )
+            ctx.session.add_message(
+                "assistant",
+                policy.response,
+                security_policy=self.capability_profile,
+                security_reason=policy.reason,
+            )
+            self.sessions.save(ctx.session)
+            self._clear_pending_user_turn(ctx.session)
+            ctx.outbound = OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=policy.response,
+                metadata={
+                    **(ctx.msg.metadata or {}),
+                    "_security_blocked": True,
+                    "_security_reason": policy.reason,
+                },
+            )
+            return "shortcut"
+        if policy.redacted_text and policy.redacted_text.strip() and policy.redacted_text.strip() != raw:
+            ctx.msg = dataclasses.replace(
+                ctx.msg,
+                content=policy.redacted_text,
+                metadata={
+                    **(ctx.msg.metadata or {}),
+                    "_security_partial": True,
+                    "_security_reason": policy.reason or "mixed_request",
+                },
+            )
         return "dispatch"
 
     async def _state_build(self, ctx: TurnContext) -> str:
@@ -1399,6 +1493,14 @@ class AgentLoop:
         if ctx.on_retry_wait is None:
             ctx.on_retry_wait = await self._build_retry_wait_callback(ctx.msg)
 
+        if is_resident_designer_profile(self.capability_profile):
+            # Do not stream unreviewed model text or reasoning in the restricted
+            # profile. The final answer is checked before it is sent or saved.
+            ctx.on_progress = None
+            ctx.on_stream = None
+            ctx.on_stream_end = None
+            ctx.on_retry_wait = None
+
         return "ok"
 
     async def _state_run(self, ctx: TurnContext) -> str:
@@ -1418,12 +1520,37 @@ class AgentLoop:
             pending_queue=ctx.pending_queue,
         )
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
+        output_policy = evaluate_request(
+            self.capability_profile,
+            final_content or "",
+        )
+        if output_policy.blocked:
+            logger.warning(
+                "Model output replaced by capability policy {}: {}",
+                self.capability_profile,
+                output_policy.reason,
+            )
+            final_content = output_policy.response
+            stop_reason = "security_policy"
+            self._replace_final_assistant_content(all_msgs, final_content)
         ctx.final_content = final_content
         ctx.tools_used = tools_used
         ctx.all_messages = all_msgs
         ctx.stop_reason = stop_reason
         ctx.had_injections = had_injections
         return "ok"
+
+    @staticmethod
+    def _replace_final_assistant_content(
+        messages: list[dict[str, Any]],
+        content: str,
+    ) -> None:
+        """Replace a blocked final answer so unsafe text is never persisted."""
+        for message in reversed(messages):
+            if message.get("role") == "assistant" and not message.get("tool_calls"):
+                message["content"] = content
+                return
+        messages.append({"role": "assistant", "content": content})
 
     async def _state_save(self, ctx: TurnContext) -> str:
         if ctx.final_content is None or not ctx.final_content.strip():

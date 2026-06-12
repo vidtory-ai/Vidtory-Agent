@@ -76,7 +76,7 @@ def test_tool_context_defaults():
 
 # --- ToolLoader tests ---
 
-from nanobot.agent.tools.loader import ToolLoader, _SKIP_MODULES
+from nanobot.agent.tools.loader import _SKIP_MODULES, ToolLoader
 
 
 def test_skip_modules_excludes_infrastructure():
@@ -235,7 +235,7 @@ def test_exec_tool_create():
 
 
 def test_web_tools_config_cls():
-    from nanobot.agent.tools.web import WebSearchTool, WebFetchTool, WebToolsConfig
+    from nanobot.agent.tools.web import WebFetchTool, WebSearchTool, WebToolsConfig
     assert WebSearchTool.config_key == "web"
     assert WebSearchTool.config_cls() is WebToolsConfig
     assert WebFetchTool.config_key == "web"
@@ -324,7 +324,7 @@ def test_my_tool_enabled():
 
 
 def test_mcp_wrappers_not_discoverable():
-    from nanobot.agent.tools.mcp import MCPToolWrapper, MCPResourceWrapper, MCPPromptWrapper
+    from nanobot.agent.tools.mcp import MCPPromptWrapper, MCPResourceWrapper, MCPToolWrapper
     assert MCPToolWrapper._plugin_discoverable is False
     assert MCPResourceWrapper._plugin_discoverable is False
     assert MCPPromptWrapper._plugin_discoverable is False
@@ -366,8 +366,9 @@ def test_config_defaults():
     assert config.tools.web.search.provider == "duckduckgo"
     assert config.tools.my.enable is True
     assert config.tools.my.allow_set is False
-    assert config.tools.image_generation.enabled is False
+    assert config.tools.image_generation.enabled is True
     assert config.tools.cli_apps.enable is True
+    assert config.tools.capability_profile == "standard"
     assert config.tools.restrict_to_workspace is False
 
 

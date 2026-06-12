@@ -10,6 +10,7 @@ from loguru import logger
 
 from nanobot.agent.tools.base import Tool
 from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.security.request_policy import is_tool_allowed
 
 _SKIP_MODULES = frozenset({
     "base", "schema", "registry", "context", "loader", "config",
@@ -96,6 +97,16 @@ class ToolLoader:
                     if not tool_cls.enabled(ctx):
                         continue
                     tool = tool_cls.create(ctx)
+                    if not is_tool_allowed(
+                        getattr(ctx.config, "capability_profile", "standard"),
+                        tool.name,
+                    ):
+                        logger.info(
+                            "Tool {} disabled by capability profile {}",
+                            tool.name,
+                            getattr(ctx.config, "capability_profile", "standard"),
+                        )
+                        continue
                     if registry.has(tool.name):
                         if is_plugin_source and tool.name in builtin_names:
                             logger.warning(

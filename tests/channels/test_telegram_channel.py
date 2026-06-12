@@ -196,10 +196,8 @@ async def test_start_creates_separate_pools_with_proxy(monkeypatch) -> None:
     assert builder.get_updates_request_value is poll_req
     assert callable(app.updater.start_polling_kwargs["error_callback"])
     assert any(cmd.command == "status" for cmd in app.bot.commands)
-    assert any(cmd.command == "history" for cmd in app.bot.commands)
-    assert any(cmd.command == "dream" for cmd in app.bot.commands)
-    assert any(cmd.command == "dream_log" for cmd in app.bot.commands)
-    assert any(cmd.command == "dream_restore" for cmd in app.bot.commands)
+    assert any(cmd.command == "apikey" for cmd in app.bot.commands)
+    assert any(cmd.command == "help" for cmd in app.bot.commands)
 
 
 @pytest.mark.asyncio
@@ -691,6 +689,32 @@ def test_is_allowed_rejects_invalid_legacy_telegram_sender_shapes() -> None:
     channel = TelegramChannel(TelegramConfig(allow_from=["alice"]), MessageBus())
 
     assert channel.is_allowed("attacker|alice|extra") is False
+    assert channel.is_allowed("not-a-number|alice") is False
+
+
+def test_is_allowed_api_key_mode_stays_open_with_wildcard_or_empty_allowlist() -> None:
+    open_channel = TelegramChannel(
+        TelegramConfig(require_user_api_key=True, allow_from=[]),
+        MessageBus(),
+    )
+    wildcard_channel = TelegramChannel(
+        TelegramConfig(require_user_api_key=True, allow_from=["*"]),
+        MessageBus(),
+    )
+
+    assert open_channel.is_allowed("99999|mallory") is True
+    assert wildcard_channel.is_allowed("99999|mallory") is True
+
+
+def test_is_allowed_api_key_mode_enforces_concrete_allowlist() -> None:
+    channel = TelegramChannel(
+        TelegramConfig(require_user_api_key=True, allow_from=["12345", "alice"]),
+        MessageBus(),
+    )
+
+    assert channel.is_allowed("12345|carol") is True
+    assert channel.is_allowed("99999|alice") is True
+    assert channel.is_allowed("99999|mallory") is False
     assert channel.is_allowed("not-a-number|alice") is False
 
 

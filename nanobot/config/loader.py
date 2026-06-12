@@ -52,8 +52,25 @@ def load_config(config_path: Path | None = None) -> Config:
             logger.warning("Failed to load config from {}: {}", path, e)
             logger.warning("Using default configuration.")
 
+    config = _apply_security_profile_override(config)
     _apply_ssrf_whitelist(config)
     return config
+
+
+def _apply_security_profile_override(config: Config) -> Config:
+    """Apply the deployment-level capability profile override, if configured."""
+    raw = os.environ.get("NANOBOT_CAPABILITY_PROFILE", "").strip()
+    if not raw:
+        return config
+    if raw not in {"standard", "resident_designer"}:
+        logger.warning(
+            "Ignoring invalid NANOBOT_CAPABILITY_PROFILE={!r}",
+            raw,
+        )
+        return config
+    return config.model_copy(update={
+        "tools": config.tools.model_copy(update={"capability_profile": raw}),
+    })
 
 
 def _apply_ssrf_whitelist(config: Config) -> None:

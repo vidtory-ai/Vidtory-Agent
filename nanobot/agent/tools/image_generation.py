@@ -27,11 +27,11 @@ from nanobot.providers.image_generation import (
     ImageGenerationProvider,
     get_image_gen_provider,
 )
+from nanobot.security.request_policy import evaluate_request, is_resident_designer_profile
 from nanobot.utils.context_vars import telegram_customer_profile
 from nanobot.utils.customer_context import (
     build_prompt_brand_suffix,
     get_default_aspect_ratio_for_channel,
-    get_customer_logo_url,
 )
 from nanobot.utils.helpers import detect_image_mime
 from nanobot.utils.vidtory_knowledge import (
@@ -112,6 +112,7 @@ class ImageGenerationTool(Tool, ContextAware):
             config=ctx.config.image_generation,
             provider_configs=ctx.image_generation_provider_configs,
             send_callback=send_callback,
+            capability_profile=getattr(ctx.config, "capability_profile", "standard"),
         )
 
     def __init__(
@@ -122,10 +123,12 @@ class ImageGenerationTool(Tool, ContextAware):
         provider_config: ProviderConfig | None = None,
         provider_configs: dict[str, ProviderConfig] | None = None,
         send_callback: Callable[[OutboundMessage], Awaitable[None]] | None = None,
+        capability_profile: str = "standard",
     ) -> None:
         self.workspace = Path(workspace).expanduser()
         self.config = config
         self.provider_configs = dict(provider_configs or {})
+        self.capability_profile = capability_profile
         # BUG FIX: was hardcoding "openrouter" — now uses the actual provider name
         if provider_config is not None and self.config.provider not in self.provider_configs:
             self.provider_configs[self.config.provider] = provider_config
@@ -225,6 +228,15 @@ class ImageGenerationTool(Tool, ContextAware):
         count: int | None = None,
         **kwargs: Any,
     ) -> str:
+        if is_resident_designer_profile(self.capability_profile):
+            policy = evaluate_request(self.capability_profile, prompt)
+            if policy.blocked:
+                return (
+                    "Error: image generation prompt blocked by resident_designer "
+                    f"security policy ({policy.reason})"
+                )
+            if policy.redacted_text and policy.redacted_text.strip():
+                prompt = policy.redacted_text
         client = self._provider_client()
         if client is None:
             return f"Error: unsupported image generation provider '{self.config.provider}'"

@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.path_utils import is_under
 from nanobot.agent.tools.schema import (
     BooleanSchema,
     StringSchema,
     tool_parameters_schema,
 )
 from nanobot.config.schema import Base
+from nanobot.config.paths import get_media_dir
 from nanobot.providers.watermark_removal import (
     WatermarkRemovalError,
     VidtoryWatermarkRemovalClient,
@@ -103,6 +105,13 @@ class WatermarkRemovalTool(Tool):
             resolved = path.resolve(strict=True)
         except OSError as exc:
             raise WatermarkRemovalError(f"Image file not found: {value}") from exc
+        allowed_roots = [self.workspace.resolve(), get_media_dir().resolve()]
+        if not any(is_under(resolved, root) for root in allowed_roots):
+            raise WatermarkRemovalError(
+                "image_path must be inside the workspace or media directory"
+            )
+        if not resolved.is_file():
+            raise WatermarkRemovalError(f"Image file not found: {value}")
         return str(resolved)
 
     async def execute(

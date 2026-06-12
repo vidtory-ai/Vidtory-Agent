@@ -1322,11 +1322,14 @@ For API keys, tokens, and other secrets, see [Environment Variables for Secrets]
 | `tools.restrictToWorkspace` | `false` | When `true`, restricts **all** agent tools (shell, file read/write/edit, list) to the workspace directory. Prevents path traversal and out-of-scope access. |
 | `tools.exec.sandbox` | `""` | Sandbox backend for shell commands. Set to `"bwrap"` to wrap exec calls in a [bubblewrap](https://github.com/containers/bubblewrap) sandbox — the process can only see the workspace (read-write) and media directory (read-only); config files and API keys are hidden. Automatically enables `restrictToWorkspace` for file tools. **Linux only** — requires `bwrap` installed (`apt install bubblewrap`; pre-installed in the Docker image). Not available on macOS or Windows (bwrap depends on Linux kernel namespaces). |
 | `tools.exec.enable` | `true` | When `false`, the shell `exec` tool is not registered at all. Use this to completely disable shell command execution. |
+| `tools.capabilityProfile` | `"standard"` | Set to `"resident_designer"` for a capability-restricted, intent-aware creative policy. This forces workspace restriction, disables shell execution and MCP connections, registers only approved creative tools, blocks prompt injection and actionable technical operations, and filters prohibited model output before delivery. Technical subjects remain allowed as context for advertising, illustrations, awareness content, and other creative work. |
+
+Deployments can force this setting with `NANOBOT_CAPABILITY_PROFILE=resident_designer`.
 | `tools.exec.timeout` | `60` | Default hard timeout in seconds for shell commands. Config values may exceed the per-call tool cap; set `0` to disable the hard timeout for trusted long-running commands. |
 | `tools.exec.pathAppend` | `""` | Extra directories to append to `PATH` when running shell commands (e.g. `/usr/sbin` for `ufw`). |
 | `channels.*.allowFrom` | omitted | Access control per channel. Omit to use pairing-only mode; set `["*"]` to allow everyone; or list specific user IDs. See [Pairing](#pairing) for details. |
 
-**Docker security**: The official Docker image runs as a non-root user (`nanobot`, UID 1000) with bubblewrap pre-installed. When using `docker-compose.yml`, the container drops all Linux capabilities except `SYS_ADMIN` (required for bwrap's namespace isolation).
+**Docker security**: The official Docker image runs as a non-root user (UID 1000). The hardened `docker-compose.yml` uses a read-only root filesystem, enables `no-new-privileges`, and drops all Linux capabilities.
 
 
 ## Pairing

@@ -208,6 +208,20 @@ class TestBundledToolContract:
         assert "## General Tool Contract" in prompt
         assert "Do not use `exec` as a universal workaround" in prompt
 
+    def test_resident_designer_policy_is_injected_by_profile(self, tmp_path):
+        builder = _builder(tmp_path, capability_profile="resident_designer")
+        prompt = builder.build_system_prompt()
+
+        assert "# Enforced Resident Designer Policy" in prompt
+        assert "Do not perform or provide actionable code execution" in prompt
+        assert "Do not reject a request merely because it mentions developers" in prompt
+
+    def test_standard_profile_omits_resident_designer_policy(self, tmp_path):
+        builder = _builder(tmp_path)
+        prompt = builder.build_system_prompt()
+
+        assert "# Enforced Resident Designer Policy" not in prompt
+
 
 # ---------------------------------------------------------------------------
 # _build_user_content

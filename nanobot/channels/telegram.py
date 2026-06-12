@@ -355,17 +355,26 @@ class TelegramChannel(BaseChannel):
 
     def is_allowed(self, sender_id: str) -> bool:
         """Preserve Telegram's legacy id|username allowlist matching."""
+        allow_list = getattr(self.config, "allow_from", [])
         if getattr(self.config, "require_user_api_key", False):
-            return True
+            if not allow_list or "*" in allow_list:
+                return True
+            return self._matches_telegram_allowlist(sender_id, allow_list)
 
         if super().is_allowed(sender_id):
             return True
 
-        allow_list = getattr(self.config, "allow_from", [])
         if not allow_list or "*" in allow_list:
             return False
 
+        return self._matches_telegram_allowlist(sender_id, allow_list)
+
+    @staticmethod
+    def _matches_telegram_allowlist(sender_id: str, allow_list: list[str]) -> bool:
         sender_str = str(sender_id)
+        if sender_str in allow_list:
+            return True
+
         if sender_str.count("|") != 1:
             return False
 
