@@ -146,10 +146,20 @@ class VidtoryVideoGenerationClient:
                     if not result_url:
                         raise VideoGenerationError("Vidtory job completed but did not return a result URL")
 
-                    # Return the CDN URL directly — avoids large binary download.
-                    # Telegram Bot API accepts HTTP(S) URLs directly for video.
+                    media_response = await client.get(result_url)
+                    try:
+                        media_response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        detail = media_response.text[:500]
+                        raise VideoGenerationError(
+                            f"Vidtory video download failed: {detail}"
+                        ) from exc
+                    if not media_response.content:
+                        raise VideoGenerationError(
+                            "Vidtory video download returned an empty file"
+                        )
                     return GeneratedVideoResponse(
-                        video_bytes=b"",
+                        video_bytes=media_response.content,
                         video_url=result_url,
                         raw=status_payload,
                     )

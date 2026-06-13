@@ -30,6 +30,10 @@ _WEB_SEARCH_PROVIDER_OPTIONS: tuple[dict[str, str], ...] = (
 _WEB_SEARCH_PROVIDER_BY_NAME = {
     provider["name"]: provider for provider in _WEB_SEARCH_PROVIDER_OPTIONS
 }
+_IMAGE_OAUTH_PROVIDERS = {"openai_codex"}
+_IMAGE_PROVIDER_LABELS = {
+    "openai_codex": "OpenAI Codex",
+}
 
 _IMAGE_GENERATION_ASPECT_RATIOS = {
     "1:1",
@@ -105,15 +109,20 @@ def _image_generation_provider_rows(config: Any) -> list[dict[str, Any]]:
     for name in image_gen_provider_names():
         spec = find_by_name(name)
         provider_config = getattr(config.providers, name, None)
-        configured = (
-            _provider_configured_for_settings(spec, provider_config)
-            if spec is not None and provider_config is not None
-            else bool(getattr(provider_config, "api_key", None))
-        )
+        if spec is not None and provider_config is not None:
+            configured = _provider_configured_for_settings(spec, provider_config)
+        elif name in _IMAGE_OAUTH_PROVIDERS:
+            configured = True
+        else:
+            configured = bool(getattr(provider_config, "api_key", None))
         rows.append(
             {
                 "name": name,
-                "label": spec.label if spec is not None else name,
+                "label": (
+                    spec.label
+                    if spec is not None
+                    else _IMAGE_PROVIDER_LABELS.get(name, name)
+                ),
                 "configured": configured,
                 "api_key_hint": _mask_secret_hint(
                     getattr(provider_config, "api_key", None)
@@ -179,6 +188,9 @@ def settings_payload(*, requires_restart: bool = False) -> dict[str, Any]:
             if provider["name"] == image_config.provider
         ),
         None,
+    )
+    image_provider_configured = bool(
+        selected_image_provider and selected_image_provider["configured"]
     )
     model_presets = [
         {
@@ -250,11 +262,9 @@ def settings_payload(*, requires_restart: bool = False) -> dict[str, Any]:
             },
         },
         "image_generation": {
-            "enabled": image_config.enabled,
+            "enabled": image_config.enabled and image_provider_configured,
             "provider": image_config.provider,
-            "provider_configured": bool(
-                selected_image_provider and selected_image_provider["configured"]
-            ),
+            "provider_configured": image_provider_configured,
             "model": image_config.model,
             "default_aspect_ratio": image_config.default_aspect_ratio,
             "default_image_size": image_config.default_image_size,
@@ -400,6 +410,13 @@ def update_provider_settings(query: QueryParams) -> dict[str, Any]:
     provider_config = getattr(config.providers, spec.name, None)
     if provider_config is None:
         raise WebUISettingsError("unknown provider")
+    image_config = config.tools.image_generation
+    image_provider_was_active = (
+        image_config.enabled
+        and image_config.provider == spec.name
+        and get_image_gen_provider(spec.name) is not None
+        and _provider_configured_for_settings(spec, provider_config)
+    )
 
     changed = False
     if "api_key" in query or "apiKey" in query:
@@ -418,13 +435,7 @@ def update_provider_settings(query: QueryParams) -> dict[str, Any]:
 
     if changed:
         save_config(config)
-    image_config = config.tools.image_generation
-    restart_required = (
-        changed
-        and image_config.enabled
-        and image_config.provider == spec.name
-        and get_image_gen_provider(spec.name) is not None
-    )
+    restart_required = changed and image_provider_was_active
     return settings_payload(requires_restart=restart_required)
 
 

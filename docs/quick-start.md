@@ -43,12 +43,7 @@ uv tool upgrade nanobot-ai
 nanobot --version
 ```
 
-**Using WhatsApp?** Rebuild the local bridge after upgrading:
-
-```bash
-rm -rf ~/.nanobot/bridge
-nanobot channels login whatsapp
-```
+**Using WhatsApp?** The legacy bridge is not bundled in this Telegram-first tree.
 
 ## Quick Start
 

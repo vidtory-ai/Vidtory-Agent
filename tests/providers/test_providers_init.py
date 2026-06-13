@@ -5,33 +5,23 @@ from __future__ import annotations
 import importlib
 import sys
 
+import pytest
+
 
 def test_importing_providers_package_is_lazy(monkeypatch) -> None:
     monkeypatch.delitem(sys.modules, "nanobot.providers", raising=False)
     monkeypatch.delitem(sys.modules, "nanobot.providers.anthropic_provider", raising=False)
     monkeypatch.delitem(sys.modules, "nanobot.providers.openai_compat_provider", raising=False)
-    monkeypatch.delitem(sys.modules, "nanobot.providers.openai_codex_provider", raising=False)
-    monkeypatch.delitem(sys.modules, "nanobot.providers.github_copilot_provider", raising=False)
-    monkeypatch.delitem(sys.modules, "nanobot.providers.azure_openai_provider", raising=False)
-    monkeypatch.delitem(sys.modules, "nanobot.providers.bedrock_provider", raising=False)
 
     providers = importlib.import_module("nanobot.providers")
 
     assert "nanobot.providers.anthropic_provider" not in sys.modules
     assert "nanobot.providers.openai_compat_provider" not in sys.modules
-    assert "nanobot.providers.openai_codex_provider" not in sys.modules
-    assert "nanobot.providers.github_copilot_provider" not in sys.modules
-    assert "nanobot.providers.azure_openai_provider" not in sys.modules
-    assert "nanobot.providers.bedrock_provider" not in sys.modules
     assert providers.__all__ == [
         "LLMProvider",
         "LLMResponse",
         "AnthropicProvider",
         "OpenAICompatProvider",
-        "OpenAICodexProvider",
-        "GitHubCopilotProvider",
-        "AzureOpenAIProvider",
-        "BedrockProvider",
     ]
 
 
@@ -46,7 +36,23 @@ def test_explicit_provider_import_still_works(monkeypatch) -> None:
     assert "nanobot.providers.anthropic_provider" in sys.modules
 
 
-def test_openai_codex_supports_progress_deltas() -> None:
-    from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [
+        ("azure-openai", "deployment-name"),
+        ("bedrock", "anthropic.claude-sonnet"),
+        ("github-copilot", "github-copilot/gpt-4.1"),
+        ("openai-codex", "openai-codex/gpt-5"),
+    ],
+)
+def test_removed_provider_backends_fail_with_actionable_error(provider, model) -> None:
+    from nanobot.config.schema import Config
+    from nanobot.providers.factory import make_provider
 
-    assert OpenAICodexProvider.supports_progress_deltas is True
+    config = Config.model_validate({
+        "agents": {"defaults": {"provider": provider, "model": model}},
+    })
+
+    normalized = provider.replace("-", "_")
+    with pytest.raises(ValueError, match=rf"{normalized}.*not available"):
+        make_provider(config)

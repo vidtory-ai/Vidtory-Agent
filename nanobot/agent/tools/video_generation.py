@@ -21,6 +21,11 @@ from nanobot.providers.video_generation import (
     VidtoryVideoGenerationClient,
 )
 from nanobot.security.request_policy import evaluate_request, is_resident_designer_profile
+from nanobot.utils.artifacts import (
+    ArtifactError,
+    store_generated_video_artifact,
+    store_remote_video_artifact,
+)
 
 
 class VideoGenerationToolConfig(Base):
@@ -101,7 +106,7 @@ class VideoGenerationTool(Tool):
     def description(self) -> str:
         return (
             "Generate cinematic videos from text prompts or starting image frames via Vidtory API. "
-            "Returns a CDN video URL. Deliver to user via the message tool."
+            "Returns a persistent video artifact for delivery or follow-up use."
         )
 
     def _provider_client(self) -> VidtoryVideoGenerationClient:
@@ -176,21 +181,35 @@ class VideoGenerationTool(Tool):
                 mode=mode,
             )
 
-            # Return CDN URL directly — no local storage
-            video_url = response.video_url
-            if not video_url:
-                return "Error: Video generation did not return a URL"
+            if response.video_bytes:
+                artifact = store_generated_video_artifact(
+                    response.video_bytes,
+                    prompt=prompt,
+                    model=self.config.model,
+                    source_images=refs,
+                    provider=self.config.provider,
+                )
+            elif response.video_url:
+                artifact = store_remote_video_artifact(
+                    response.video_url,
+                    prompt=prompt,
+                    model=self.config.model,
+                    source_images=refs,
+                    provider=self.config.provider,
+                )
+            else:
+                return "Error: Video generation did not return media"
 
             return json.dumps(
                 {
-                    "video_url": video_url,
+                    "artifacts": [artifact],
                     "next_step": (
-                        "Call the message tool with this URL in the media parameter "
+                        "Call the message tool with this artifact path in the media parameter "
                         "to deliver the video to the user."
                     ),
                 },
                 ensure_ascii=False,
             )
 
-        except (VideoGenerationError, OSError) as exc:
+        except (ArtifactError, VideoGenerationError, OSError) as exc:
             return f"Error: {exc}"

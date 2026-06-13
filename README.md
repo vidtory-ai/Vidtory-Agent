@@ -228,32 +228,65 @@ nanobot agent
 - Want to run nanobot in chat apps like Telegram, Discord, WeChat or Feishu? See [Chat Apps](./docs/chat-apps.md)
 - Want Docker or Linux service deployment? See [Deployment](./docs/deployment.md)
 
-## 🌐 WebUI
+## Telegram Media Bot
 
-The WebUI ships **inside the published wheel** — no extra build step. Just enable the WebSocket channel and open it in your browser.
+This fork is focused on Telegram-first creative automation: brand-aware chat,
+product image generation, video generation, customer profiles, and reusable
+media artifacts. The React/Vite WebUI frontend is not bundled in this build.
 
-<p align="center">
-  <img src="images/nanobot_webui.png" alt="nanobot webui preview" width="900">
-</p>
+Use the Telegram channel plus the image/video tools for day-to-day operation.
+For OpenAI-compatible model routing, use `custom` for CLIProxyAPI and
+`deepseek` with an `apiBase` override for ds2api.
 
-**1. Enable the WebSocket channel in `~/.nanobot/config.json`**
+Example `~/.vidtoryagent/config.json` core:
 
 ```json
-{ "channels": { "websocket": { "enabled": true } } }
+{
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "${TELEGRAM_BOT_TOKEN}",
+      "allowFrom": ["*"],
+      "streaming": true
+    }
+  },
+  "providers": {
+    "custom": {
+      "apiKey": "${CLIPROXYAPI_KEY}",
+      "apiBase": "${CLIPROXYAPI_BASE}"
+    },
+    "deepseek": {
+      "apiKey": "${DS2API_KEY}",
+      "apiBase": "${DS2API_BASE}"
+    },
+    "vidtory": {
+      "apiKey": "${VIDTORY_API_KEY}",
+      "apiBase": "https://bapi.vidtory.net"
+    }
+  },
+  "modelPresets": {
+    "creative_gpt54": {
+      "provider": "custom",
+      "model": "gpt-5.4",
+      "contextWindowTokens": 131072
+    },
+    "deepseek_text": {
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro-nothinking"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "modelPreset": "creative_gpt54",
+      "fallbackModels": ["deepseek_text"]
+    }
+  },
+  "tools": {
+    "imageGeneration": { "enabled": true },
+    "videoGeneration": { "enabled": true }
+  }
+}
 ```
-
-**2. Start the gateway**
-
-```bash
-nanobot gateway
-```
-
-**3. Open the WebUI**
-
-Visit [`http://127.0.0.1:8765`](http://127.0.0.1:8765) in your browser. To open it from another device on your LAN, see [WebUI docs → LAN access](./webui/README.md#access-from-another-device-lan).
-
-> [!TIP]
-> Working on the WebUI itself? Check out [`webui/README.md`](./webui/README.md) for the Vite dev server (HMR) workflow.
 
 ## 🏗️ Architecture
 

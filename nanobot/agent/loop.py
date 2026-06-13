@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 import os
 import time
-from contextlib import AsyncExitStack, nullcontext, suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -25,7 +25,6 @@ from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.self import MyTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.cli_apps import utils as cli_app_utils
@@ -285,18 +284,18 @@ class AgentLoop:
         )
         self._unified_session = unified_session
         self._max_messages = max_messages if max_messages > 0 else 120
-        # Number of messages (not turns) to feed into each LLM call.
-        # Default 20 = 10 user+assistant turns — enough to maintain context
-        # for multi-step creative projects without hitting token limits.
-        # Vidtory has a 1M token context window so we can afford more history.
-        # NANOBOT_LLM_HISTORY_MESSAGES env var overrides at runtime.
+        # NANOBOT_LLM_HISTORY_MESSAGES can explicitly narrow the configured
+        # replay window for deployments that need a smaller prompt.
         _env_hist = os.environ.get("NANOBOT_LLM_HISTORY_MESSAGES", "").strip()
         try:
-            self._llm_history_messages: int = max(2, int(_env_hist)) if _env_hist else 20
+            self._llm_history_messages: int = (
+                max(2, int(_env_hist)) if _env_hist else self._max_messages
+            )
         except (ValueError, TypeError):
-            self._llm_history_messages = 20
+            self._llm_history_messages = self._max_messages
         self._running = False
         self._mcp_connected = False
+        self._mcp_stacks: dict[str, Any] = {}
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._background_tasks: list[asyncio.Task] = []
         self._session_locks: dict[str, asyncio.Lock] = {}

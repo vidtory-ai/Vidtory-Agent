@@ -28,6 +28,12 @@ from nanobot.providers.image_generation import (
     get_image_gen_provider,
 )
 from nanobot.security.request_policy import evaluate_request, is_resident_designer_profile
+from nanobot.utils.artifacts import (
+    ArtifactError,
+    generated_image_tool_result,
+    store_generated_image_artifact,
+    store_remote_image_artifact,
+)
 from nanobot.utils.context_vars import telegram_customer_profile
 from nanobot.utils.customer_context import (
     build_prompt_brand_suffix,
@@ -260,8 +266,10 @@ class ImageGenerationTool(Tool, ContextAware):
 
         try:
             refs = self._resolve_reference_images(reference_images)
-            image_urls: list[str] = []
-            while len(image_urls) < requested:
+            artifacts: list[dict[str, Any]] = []
+            delivery_paths: list[str] = []
+            while len(artifacts) < requested:
+                artifact_count_before_request = len(artifacts)
                 # Build generate() kwargs — pass logo_url only when the
                 # provider supports it (VidtoryImageGenerationClient).
                 gen_kwargs: dict[str, Any] = dict(
@@ -277,16 +285,36 @@ class ImageGenerationTool(Tool, ContextAware):
                     logger.info("Vidtory provider: injecting logo_url into API call")
 
                 response = await client.generate(**gen_kwargs)
-                # Collect remote CDN URLs directly — no local storage
                 for url in (response.image_urls or []):
-                    image_urls.append(url)
-                    if len(image_urls) >= requested:
+                    if len(artifacts) >= requested:
                         break
-                # base64 images (non-Vidtory providers): still need to decode to send
+                    artifact = store_remote_image_artifact(
+                        url,
+                        prompt=optimized_prompt,
+                        model=self.config.model,
+                        source_images=refs,
+                        save_dir=self.config.save_dir,
+                        provider=self.config.provider,
+                    )
+                    artifacts.append(artifact)
+                    delivery_paths.append(artifact["path"])
                 for image_data_url in response.images:
-                    image_urls.append(image_data_url)
-                    if len(image_urls) >= requested:
+                    if len(artifacts) >= requested:
                         break
+                    artifact = store_generated_image_artifact(
+                        image_data_url,
+                        prompt=optimized_prompt,
+                        model=self.config.model,
+                        source_images=refs,
+                        save_dir=self.config.save_dir,
+                        provider=self.config.provider,
+                    )
+                    artifacts.append(artifact)
+                    delivery_paths.append(artifact["path"])
+                if len(artifacts) == artifact_count_before_request:
+                    raise ImageGenerationError(
+                        "image generation provider returned no images"
+                    )
 
             # ── Record task + build design note ──────────────────────────
             task_id = ""
@@ -329,7 +357,7 @@ class ImageGenerationTool(Tool, ContextAware):
                         prompt_used=prompt[:500],
                         enhanced_prompt=optimized_prompt[:500],
                         design_note=design_note[:1000],
-                        result_url=image_urls[0] if image_urls else "",
+                        result_url=delivery_paths[0] if delivery_paths else "",
                     )
                     # Also record in generation_history for backward compat
                     db.record_generation(
@@ -338,30 +366,30 @@ class ImageGenerationTool(Tool, ContextAware):
                         prompt=prompt,
                         enhanced_prompt=optimized_prompt,
                         model=self.config.model,
-                        result_url=image_urls[0] if image_urls else "",
+                        result_url=delivery_paths[0] if delivery_paths else "",
                     )
             except Exception as exc:
                 logger.debug("Task recording/design note failed (non-fatal): {}", exc)
 
             # Auto-send images directly via bus so LLM doesn't need to call message tool
             ctx = _image_gen_request_ctx.get()
-            if ctx and self._send_callback and image_urls:
+            if ctx and self._send_callback and delivery_paths:
                 try:
                     outbound = OutboundMessage(
                         channel=ctx.channel,
                         chat_id=ctx.chat_id,
                         content="",
-                        media=image_urls,
+                        media=delivery_paths,
                         metadata=dict(ctx.metadata or {}),
                     )
                     await self._send_callback(outbound)
                     logger.info(
                         "ImageGenerationTool: auto-sent {} image(s) to {}:{}",
-                        len(image_urls), ctx.channel, ctx.chat_id,
+                        len(delivery_paths), ctx.channel, ctx.chat_id,
                     )
                     result = {
                         "status": "sent",
-                        "count": len(image_urls),
+                        "count": len(delivery_paths),
                     }
                     if task_id:
                         result["task_id"] = task_id
@@ -370,21 +398,15 @@ class ImageGenerationTool(Tool, ContextAware):
                     return json.dumps(result, ensure_ascii=False)
                 except Exception as send_exc:
                     logger.warning("ImageGenerationTool: auto-send failed: {}", send_exc)
-                    # Fall through to returning URLs for LLM to deliver manually
+                    # Fall through to returning artifacts for manual delivery.
 
-            result = {
-                "image_urls": image_urls,
-                "next_step": (
-                    "Call the message tool with these URLs in the media parameter "
-                    "to deliver the images to the user."
-                ),
-            }
+            result = json.loads(generated_image_tool_result(artifacts))
             if task_id:
                 result["task_id"] = task_id
             if design_note:
                 result["design_note"] = design_note
             return json.dumps(result, ensure_ascii=False)
-        except (ImageGenerationError, OSError) as exc:
+        except (ArtifactError, ImageGenerationError, OSError) as exc:
             return f"Error: {exc}"
 
     # Technical keywords that indicate the user's prompt is already professionally written.

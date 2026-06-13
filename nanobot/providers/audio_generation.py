@@ -14,9 +14,16 @@ class AudioGenerationError(RuntimeError):
 
 class GeneratedAudioResponse:
     """Audio returned by the provider."""
-    def __init__(self, audio_url: str, raw: dict[str, Any]):
-        self.audio_url = audio_url   # CDN URL — no local download
-        self.raw = raw
+
+    def __init__(
+        self,
+        audio_url: str = "",
+        raw: dict[str, Any] | None = None,
+        audio_bytes: bytes = b"",
+    ):
+        self.audio_bytes = audio_bytes
+        self.audio_url = audio_url
+        self.raw = raw or {}
 
 
 class VidtoryAudioGenerationClient:
@@ -118,8 +125,20 @@ class VidtoryAudioGenerationClient:
                     if not result_url:
                         raise AudioGenerationError("Vidtory job completed but did not return a result URL")
 
-                    # Return CDN URL directly — no local download
+                    media_response = await client.get(result_url)
+                    try:
+                        media_response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        detail = media_response.text[:500]
+                        raise AudioGenerationError(
+                            f"Vidtory audio download failed: {detail}"
+                        ) from exc
+                    if not media_response.content:
+                        raise AudioGenerationError(
+                            "Vidtory audio download returned an empty file"
+                        )
                     return GeneratedAudioResponse(
+                        audio_bytes=media_response.content,
                         audio_url=result_url,
                         raw=status_payload,
                     )

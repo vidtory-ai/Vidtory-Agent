@@ -41,6 +41,7 @@ dependencies = [
     "openai>=2.8.0",
     "tiktoken>=0.12.0,<1.0.0",
     "jinja2>=3.1.0,<4.0.0",
+    "dulwich>=0.22.0,<1.0.0",
     "pyyaml>=6.0,<7.0.0",
     "pypdf>=5.0.0,<6.0.0",
     "python-docx>=1.1.0,<2.0.0",
@@ -85,22 +86,12 @@ build-backend = "hatchling.build"
 [tool.hatch.metadata]
 allow-direct-references = true
 
-[tool.hatch.build.hooks.custom]
-# Implementation lives in the conventional `hatch_build.py` at the repo root.
-
 [tool.hatch.build]
 include = [
     "nanobot/**/*.py",
     "nanobot/templates/**/*.md",
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
-    "nanobot/web/dist/**/*",
-]
-# nanobot/web/dist/ is produced by `cd webui && bun run build` and is
-# git-ignored. List it as an artifact so hatch ships it in both wheel and
-# sdist even though VCS does not track it.
-artifacts = [
-    "nanobot/web/dist/**/*",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -112,8 +103,6 @@ packages = ["nanobot"]
 [tool.hatch.build.targets.sdist]
 include = [
     "nanobot/",
-    "nanobot/web/dist/",
-    "hatch_build.py",
     "README.md",
     "LICENSE",
     "pyproject.toml",

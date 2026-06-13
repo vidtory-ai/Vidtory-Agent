@@ -18,6 +18,11 @@ from nanobot.providers.audio_generation import (
     AudioGenerationError,
     VidtoryAudioGenerationClient,
 )
+from nanobot.utils.artifacts import (
+    ArtifactError,
+    store_generated_audio_artifact,
+    store_remote_audio_artifact,
+)
 
 
 class AudioGenerationToolConfig(Base):
@@ -51,7 +56,7 @@ class AudioGenerationToolConfig(Base):
     )
 )
 class AudioGenerationTool(Tool):
-    """Generate voice/speech audio (TTS) via Vidtory API. Returns a CDN audio URL."""
+    """Generate voice/speech audio (TTS) via Vidtory API."""
 
     config_key = "audio_generation"
 
@@ -92,7 +97,7 @@ class AudioGenerationTool(Tool):
     def description(self) -> str:
         return (
             "Generate high-quality voice/speech audio (TTS) from a text script using Vidtory's AI voice models. "
-            "Returns a CDN audio URL. Deliver to user via the message tool."
+            "Returns a persistent audio artifact for delivery or follow-up use."
         )
 
     def _provider_client(self) -> VidtoryAudioGenerationClient:
@@ -124,20 +129,36 @@ class AudioGenerationTool(Tool):
                 language_code=language_code or self.config.default_language,
             )
 
-            # Return CDN URL directly — no local storage
-            if not response.audio_url:
-                return "Error: Audio generation did not return a URL"
+            selected_voice_id = voice_id or self.config.default_voice_id
+            if response.audio_bytes:
+                artifact = store_generated_audio_artifact(
+                    response.audio_bytes,
+                    prompt=prompt,
+                    model=self.config.model,
+                    voice_id=selected_voice_id,
+                    provider=self.config.provider,
+                )
+            elif response.audio_url:
+                artifact = store_remote_audio_artifact(
+                    response.audio_url,
+                    prompt=prompt,
+                    model=self.config.model,
+                    voice_id=selected_voice_id,
+                    provider=self.config.provider,
+                )
+            else:
+                return "Error: Audio generation did not return media"
 
             return json.dumps(
                 {
-                    "audio_url": response.audio_url,
+                    "artifacts": [artifact],
                     "next_step": (
-                        "Call the message tool with this URL in the media parameter "
+                        "Call the message tool with this artifact path in the media parameter "
                         "to deliver the audio clip to the user."
                     ),
                 },
                 ensure_ascii=False,
             )
 
-        except (AudioGenerationError, OSError) as exc:
+        except (ArtifactError, AudioGenerationError, OSError) as exc:
             return f"Error: {exc}"

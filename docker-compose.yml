@@ -27,7 +27,6 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:18790:18790"
-      - "127.0.0.1:8765:8765"
     healthcheck:
       test: ["CMD-SHELL", "vidtoryagent status || exit 1"]
       interval: 30s

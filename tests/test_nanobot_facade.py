@@ -125,7 +125,9 @@ def test_workspace_override(tmp_path):
     assert bot._loop.workspace == custom_ws
 
 
-def test_sdk_make_provider_uses_github_copilot_backend():
+def test_sdk_make_provider_rejects_removed_github_copilot_backend():
+    import pytest
+
     from nanobot.config.schema import Config
     from nanobot.providers.factory import make_provider
 
@@ -140,10 +142,8 @@ def test_sdk_make_provider_uses_github_copilot_backend():
         }
     )
 
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
-        provider = make_provider(config)
-
-    assert provider.__class__.__name__ == "GitHubCopilotProvider"
+    with pytest.raises(ValueError, match="github_copilot.*not available"):
+        make_provider(config)
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # Image Generation
 
-nanobot can generate and edit images through the `generate_image` tool. In the WebUI, users can enable **Image Generation** from the composer, choose an aspect ratio, and keep iterating on generated images inside the same chat.
+nanobot can generate and edit images through the `generate_image` tool. In Telegram, users can ask naturally, attach reference images, and keep iterating on generated artifacts inside the same chat.
 
 The feature is disabled by default. Enable it in `~/.nanobot/config.json`, configure a supported image provider, then restart the gateway.
 
@@ -28,18 +28,18 @@ See [Provider Notes](#provider-notes) for AIHubMix, MiniMax, Gemini, Ollama, Ste
 > [!TIP]
 > Prefer environment variables for API keys. nanobot resolves `${VAR_NAME}` values from the environment at startup.
 
-## WebUI Usage
+## Telegram Usage
 
-In the WebUI composer:
+In Telegram:
 
-1. Click **Image Generation**.
-2. Choose an aspect ratio: `Auto`, `1:1`, `3:4`, `9:16`, `4:3`, or `16:9`.
-3. Describe the image or the edit you want.
-4. Attach reference images when editing an existing image.
+1. Send a natural request such as "tạo ảnh sản phẩm 9:16 cho Facebook story".
+2. Attach one or more reference images when editing or extending an existing product shot.
+3. Mention aspect ratio or size in the prompt when needed: `1:1`, `3:4`, `9:16`, `4:3`, or `16:9`.
+4. Ask follow-up edits such as "làm nền sáng hơn" or "đổi sang phong cách premium".
 
-Generated images are rendered as assistant media in the chat. Follow-up prompts such as "make it warmer", "change the background", or "try a 16:9 version" can reuse the most recent generated artifact.
+Generated images are sent back as media in the Telegram chat. Follow-up prompts such as "make it warmer", "change the background", or "try a 16:9 version" can reuse the most recent generated artifact.
 
-The WebUI hides provider storage details from the user. The agent sees the saved artifact path internally and can pass it back to `generate_image` as `reference_images` for iterative edits.
+The agent stores generated media as artifacts internally and can pass those paths back to `generate_image` as `reference_images` for iterative edits.
 
 ## Configuration Reference
 

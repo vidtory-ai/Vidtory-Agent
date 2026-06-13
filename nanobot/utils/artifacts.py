@@ -269,3 +269,37 @@ def store_generated_audio_artifact(
         encoding="utf-8",
     )
     return metadata
+
+
+def store_remote_audio_artifact(
+    remote_url: str,
+    *,
+    prompt: str,
+    model: str,
+    voice_id: str | None = None,
+    save_dir: str = "generated",
+    provider: str = "vidtory",
+    created_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Record a remote audio CDN URL as an artifact without downloading it."""
+    now = created_at or datetime.now().astimezone()
+    artifact_id = f"aud_{uuid.uuid4().hex[:12]}"
+    day_dir = ensure_dir(_artifact_root(save_dir) / now.strftime("%Y-%m-%d"))
+    metadata_path = day_dir / f"{artifact_id}.json"
+
+    metadata: dict[str, Any] = {
+        "id": artifact_id,
+        "path": remote_url,
+        "remote_url": remote_url,
+        "mime": "audio/mpeg",
+        "prompt": prompt,
+        "model": model,
+        "provider": provider,
+        "voice_id": voice_id or "",
+        "created_at": now.isoformat(),
+    }
+    metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return metadata

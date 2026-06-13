@@ -11,16 +11,13 @@
 > Official Docker usage currently means building from this repository with the included `Dockerfile`. Docker Hub images under third-party namespaces are not maintained or verified by HKUDS/nanobot; do not mount API keys or bot tokens into them unless you trust the publisher.
 
 > [!IMPORTANT]
-> The gateway and WebSocket channel default to `host: "127.0.0.1"` in `config.json` (set in `nanobot/config/schema.py`). Docker `-p` port forwarding cannot reach a container's loopback interface, so for the host or LAN to reach the exposed ports you must set both binds to `0.0.0.0` in `~/.nanobot/config.json` before starting the container:
+> The gateway defaults to `host: "127.0.0.1"` in `config.json` (set in `nanobot/config/schema.py`). Docker `-p` port forwarding cannot reach a container's loopback interface, so for the host or LAN to reach the exposed port you must set the gateway bind to `0.0.0.0` in `~/.nanobot/config.json` before starting the container:
 >
 > ```json
 > {
->   "gateway":  { "host": "0.0.0.0" },
->   "channels": { "websocket": { "host": "0.0.0.0" } }
+>   "gateway": { "host": "0.0.0.0" }
 > }
 > ```
->
-> When `host` is `0.0.0.0`, the gateway refuses to start unless `token` or `tokenIssueSecret` is also configured on the WebSocket channel — see [`webui/README.md`](../webui/README.md) for details.
 
 ### Docker Compose
 
@@ -53,14 +50,13 @@ vim ~/.nanobot/config.json
 #   - `--cap-drop ALL --cap-add SYS_ADMIN` + unconfined apparmor/seccomp are required
 #     when `tools.exec.sandbox: "bwrap"` is enabled (bwrap needs CAP_SYS_ADMIN for
 #     user namespaces). Without them, `bwrap` exits with `clone3: Operation not permitted`.
-#   - `-p 8765:8765` exposes the WebSocket channel / WebUI alongside the gateway health
-#     endpoint on 18790.
+#   - `-p 18790:18790` exposes the gateway health endpoint.
 docker run \
   --cap-drop ALL --cap-add SYS_ADMIN \
   --security-opt apparmor=unconfined \
   --security-opt seccomp=unconfined \
   -v ~/.nanobot:/home/nanobot/.nanobot \
-  -p 18790:18790 -p 8765:8765 \
+  -p 18790:18790 \
   nanobot gateway
 
 # Or run a single command

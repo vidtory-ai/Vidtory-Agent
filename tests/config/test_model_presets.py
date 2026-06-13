@@ -209,3 +209,47 @@ def test_match_provider_routes_forced_novita_model_api_models() -> None:
 
     assert config.get_provider_name() == "novita"
     assert config.get_api_base() == "https://api.novita.ai/openai"
+
+
+def test_custom_provider_supports_cliproxyapi_gpt54() -> None:
+    config = Config.model_validate({
+        "providers": {
+            "custom": {
+                "apiKey": "cliproxy-key",
+                "apiBase": "http://127.0.0.1:4141/v1",
+            },
+        },
+        "modelPresets": {
+            "creative_gpt54": {
+                "model": "gpt-5.4",
+                "provider": "custom",
+                "contextWindowTokens": 131072,
+            },
+        },
+        "agents": {"defaults": {"modelPreset": "creative_gpt54"}},
+    })
+
+    assert config.get_provider_name() == "custom"
+    assert config.get_api_key() == "cliproxy-key"
+    assert config.get_api_base() == "http://127.0.0.1:4141/v1"
+
+
+def test_deepseek_provider_supports_ds2api_override() -> None:
+    config = Config.model_validate({
+        "providers": {
+            "deepseek": {
+                "apiKey": "ds2api-key",
+                "apiBase": "http://127.0.0.1:3000/v1",
+            },
+        },
+        "agents": {
+            "defaults": {
+                "model": "deepseek-v4-pro-nothinking",
+                "provider": "deepseek",
+            },
+        },
+    })
+
+    assert config.get_provider_name() == "deepseek"
+    assert config.get_api_key() == "ds2api-key"
+    assert config.get_api_base() == "http://127.0.0.1:3000/v1"

@@ -1,7 +1,7 @@
 ---
 name: memory
 description: Two-layer memory system with Dream-managed knowledge files.
-always: false
+always: true
 ---
 
 # Memory

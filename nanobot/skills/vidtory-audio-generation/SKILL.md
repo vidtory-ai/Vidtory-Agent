@@ -1,7 +1,7 @@
 ---
 name: vidtory-audio-generation
 description: Convert text scripts into high-quality spoken audio voiceovers (TTS) using Vidtory's AI voice models.
-always: false
+always: true
 ---
 
 # Vidtory Audio Generation (TTS)

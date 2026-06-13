@@ -39,15 +39,30 @@ def _make_provider_core(
     """Create a plain LLM provider without failover wrapping."""
     resolved = _resolve_model_preset(config, preset_name=preset_name, preset=preset)
     model = model or resolved.model
+    requested_provider = (
+        resolved.provider
+        if resolved.provider and resolved.provider != "auto"
+        else model.split("/", 1)[0]
+    )
+    requested_provider = requested_provider.lower().replace("-", "_")
+    unavailable = {"openai_codex", "azure_openai", "github_copilot", "bedrock"}
+    if requested_provider in unavailable:
+        raise ValueError(
+            f"Provider '{requested_provider}' is not available in this build. "
+            "Use an OpenAI-compatible, Anthropic, or Vidtory provider."
+        )
     provider_name = config.get_provider_name(model, preset=resolved)
     p = config.get_provider(model, preset=resolved)
     spec = find_by_name(provider_name) if provider_name else None
     backend = spec.backend if spec else "openai_compat"
 
-    if backend == "azure_openai":
-        if not p or not p.api_key or not p.api_base:
-            raise ValueError("Azure OpenAI requires api_key and api_base in config.")
-    elif backend == "openai_compat" and not model.startswith("bedrock/"):
+    if backend in unavailable:
+        raise ValueError(
+            f"Provider backend '{backend}' is not available. "
+            f"Only 'openai_compat', 'anthropic', and 'vidtory' are supported."
+        )
+
+    if backend == "openai_compat" and not model.startswith("bedrock/"):
         needs_key = not (p and p.api_key)
         exempt = spec and (spec.is_oauth or spec.is_local or spec.is_direct)
         if needs_key and not exempt:
@@ -57,23 +72,7 @@ def _make_provider_core(
         # Validation is deferred to request time inside VidtoryLLMProvider.
         pass
 
-    if backend == "openai_codex":
-        from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-
-        provider = OpenAICodexProvider(default_model=model)
-    elif backend == "azure_openai":
-        from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
-
-        provider = AzureOpenAIProvider(
-            api_key=p.api_key,
-            api_base=p.api_base,
-            default_model=model,
-        )
-    elif backend == "github_copilot":
-        from nanobot.providers.github_copilot_provider import GitHubCopilotProvider
-
-        provider = GitHubCopilotProvider(default_model=model)
-    elif backend == "anthropic":
+    if backend == "anthropic":
         from nanobot.providers.anthropic_provider import AnthropicProvider
 
         provider = AnthropicProvider(
@@ -82,19 +81,11 @@ def _make_provider_core(
             default_model=model,
             extra_headers=p.extra_headers if p else None,
         )
-    elif backend == "bedrock":
-        from nanobot.providers.bedrock_provider import BedrockProvider
-
-        provider = BedrockProvider(
-            api_key=p.api_key if p else None,
-            api_base=p.api_base if p else None,
-            default_model=model,
-            region=getattr(p, "region", None) if p else None,
-            profile=getattr(p, "profile", None) if p else None,
-            extra_body=p.extra_body if p else None,
-        )
     elif backend == "vidtory":
-        from nanobot.providers.vidtory_llm_provider import VidtoryLLMProvider, _DEFAULT_WORKER_ID
+        from nanobot.providers.vidtory_llm_provider import (
+            _DEFAULT_WORKER_ID,
+            VidtoryLLMProvider,
+        )
 
         # Allow overriding workerId via providers.vidtory.extra_body.workerId in config
         extra_body = (p.extra_body or {}) if p else {}

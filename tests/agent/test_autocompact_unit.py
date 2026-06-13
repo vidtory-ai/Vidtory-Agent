@@ -204,6 +204,7 @@ class TestCheckExpired:
         mock_sm.list_sessions.return_value = [{"key": "cli:old", "updated_at": old_ts}]
         ac.sessions = mock_sm
         scheduler = MagicMock()
+        scheduler.side_effect = lambda coro: coro.close()
         ac.check_expired(scheduler)
         scheduler.assert_called_once()
         assert "cli:old" in ac._archiving

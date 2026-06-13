@@ -14,8 +14,7 @@ Start here for setup, everyday usage, and deployment.
 | Chat apps | [`chat-apps.md`](./chat-apps.md) | Connect nanobot to Telegram, Discord, WeChat, and more |
 | Agent social network | [`agent-social-network.md`](./agent-social-network.md) | Join external agent communities from nanobot |
 | Configuration | [`configuration.md`](./configuration.md) | Providers, tools, channels, MCP, and runtime settings |
-| Image generation | [`image-generation.md`](./image-generation.md) | Configure image providers, WebUI image mode, and generated artifacts |
-| WebUI | [`../webui/README.md`](../webui/README.md) | Open the bundled browser UI; LAN access; Vite dev server for contributors |
+| Image generation | [`image-generation.md`](./image-generation.md) | Configure image providers, Telegram delivery, and generated artifacts |
 | Multiple instances | [`multiple-instances.md`](./multiple-instances.md) | Run isolated bots with separate configs and workspaces |
 | CLI reference | [`cli-reference.md`](./cli-reference.md) | Core CLI commands and common entrypoints |
 | In-chat commands | [`chat-commands.md`](./chat-commands.md) | Slash commands and periodic task behavior |
@@ -31,6 +30,5 @@ Use these when you want deeper customization, integration, or extension details.
 | Memory | [`memory.md`](./memory.md) | How nanobot stores, consolidates, and restores memory |
 | Python SDK | [`python-sdk.md`](./python-sdk.md) | Use nanobot programmatically from Python |
 | Channel plugin guide | [`channel-plugin-guide.md`](./channel-plugin-guide.md) | Build and test custom chat channel plugins |
-| WebSocket channel | [`websocket.md`](./websocket.md) | Real-time WebSocket access and protocol details |
 | Custom tools | [`my-tool.md`](./my-tool.md) | Inspect and tune runtime state with the `my` tool |
 

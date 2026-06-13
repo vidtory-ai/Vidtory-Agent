@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 
 def _default_webui_dist() -> Path | None:
-    """Return the absolute path to the bundled webui dist directory if it exists."""
+    """Return an optional static WebSocket UI dist directory if one is mounted."""
     try:
         import nanobot.web as web_pkg  # type: ignore[import-not-found]
     except ImportError:
