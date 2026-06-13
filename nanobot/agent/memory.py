@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
     from nanobot.session.manager import SessionManager
 
+from nanobot.agent.search_memory import BM25Memory
 
 # ---------------------------------------------------------------------------
 # MemoryStore — pure file I/O layer
@@ -58,6 +59,7 @@ class MemoryStore:
         self.soul_file = workspace / "SOUL.md"
         self.user_file = workspace / "USER.md"
         self._cursor_file = self.memory_dir / ".cursor"
+        self.search_memory = BM25Memory(workspace)
         self._dream_cursor_file = self.memory_dir / ".dream_cursor"
         self._corruption_logged = False  # rate-limit non-int cursor warning
         self._oversize_logged = False  # rate-limit oversized-entry warning
@@ -633,7 +635,7 @@ class Consolidator:
             return truncate_text(text, budget * 4)
 
     async def archive(self, messages: list[dict]) -> str | None:
-        """Summarize messages via LLM and append to history.jsonl.
+        """Summarize messages via LLM and append to history.jsonl and BM25Memory.
 
         Returns the summary text on success, None if nothing to archive.
         """
@@ -661,6 +663,12 @@ class Consolidator:
                 raise RuntimeError(f"LLM returned error: {response.content}")
             summary = response.content or "[no summary]"
             self.store.append_history(summary, max_chars=_ARCHIVE_SUMMARY_MAX_CHARS)
+            
+            # Phase 2: Push summary to BM25 Memory for fast text retrieval
+            import uuid
+            doc_id = f"summary_{uuid.uuid4().hex[:8]}"
+            self.store.search_memory.add_memory(doc_id, summary, meta={"type": "summary"})
+            
             return summary
         except Exception:
             logger.warning("Consolidation LLM call failed, raw-dumping to history")

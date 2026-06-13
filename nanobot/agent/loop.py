@@ -102,6 +102,7 @@ class TurnContext:
 
     user_persisted_early: bool = False
     save_skip: int = 0
+    reflexion_attempts: int = 0
 
     outbound: OutboundMessage | None = None
 
@@ -584,6 +585,7 @@ class AgentLoop:
         session: Session,
         history: list[dict[str, Any]],
         pending_summary: str | None,
+        intent: str = "general",
     ) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
         cli_lines = cli_app_utils.runtime_lines(msg, self.context.workspace)
@@ -606,6 +608,7 @@ class AgentLoop:
             session_summary=pending_summary,
             session_metadata=session.metadata,
             current_runtime_lines=all_runtime_lines,
+            intent=intent,
         )
 
     @staticmethod
@@ -1444,8 +1447,22 @@ class AgentLoop:
             self.llm_runtime(),
         )
 
+        from nanobot.agent.router import IntentRouter
+        router = IntentRouter(self.provider, self.model)
+        content_for_intent = str(ctx.msg.content) if ctx.msg.content else ""
+        
+        # Phase 3: Speed Optimization - Intent Caching
+        # Only classify if intent is unknown or user sends a long message that might shift context
+        cached_intent = ctx.session.metadata.get("current_intent")
+        if cached_intent and len(content_for_intent.split()) < 30:
+            intent_value = cached_intent
+        else:
+            intent_enum = await router.classify(content_for_intent)
+            intent_value = intent_enum.value
+            ctx.session.metadata["current_intent"] = intent_value
+            
         ctx.initial_messages = self._build_initial_messages(
-            ctx.msg, ctx.session, ctx.history, ctx.pending_summary
+            ctx.msg, ctx.session, ctx.history, ctx.pending_summary, intent=intent_value
         )
         ctx.user_persisted_early = self._persist_user_message_early(
             ctx.msg, ctx.session
