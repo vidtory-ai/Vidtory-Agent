@@ -3,7 +3,9 @@ from types import SimpleNamespace
 import pytest
 
 from nanobot.bus.queue import MessageBus
-from nanobot.channels.telegram import TelegramChannel, TelegramConfig, TelegramKeyStore
+from nanobot.channels.telegram.channel import TelegramChannel
+from nanobot.channels.telegram.config import TelegramConfig
+from nanobot.channels.telegram.keystore import TelegramKeyStore
 
 
 @pytest.fixture
@@ -52,7 +54,6 @@ class _FakeUpdate:
 async def test_telegram_keystore(tmp_path, monkeypatch, isolated_customer_db) -> None:
     # Point data_dir to tmp_path
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
-    monkeypatch.setattr("nanobot.channels.telegram.get_data_dir", lambda: tmp_path)
 
     keystore = TelegramKeyStore()
     assert keystore.get_key("12345|alice") is None
@@ -72,7 +73,6 @@ async def test_telegram_keystore(tmp_path, monkeypatch, isolated_customer_db) ->
 @pytest.mark.asyncio
 async def test_telegram_multi_user_welcome_prompt(tmp_path, monkeypatch, isolated_customer_db) -> None:
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
-    monkeypatch.setattr("nanobot.channels.telegram.get_data_dir", lambda: tmp_path)
     config = TelegramConfig(enabled=True, token="123:abc", require_user_api_key=True)
     bus = MessageBus()
     channel = TelegramChannel(config, bus)
@@ -89,9 +89,8 @@ async def test_telegram_multi_user_welcome_prompt(tmp_path, monkeypatch, isolate
 @pytest.mark.asyncio
 async def test_telegram_multi_user_configure_and_clear(tmp_path, monkeypatch, isolated_customer_db) -> None:
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
-    monkeypatch.setattr("nanobot.channels.telegram.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("nanobot.config.paths.get_workspace_path", lambda: tmp_path)
-    monkeypatch.setattr("nanobot.channels.telegram.get_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.channels.telegram.mixins.commands.get_workspace_path", lambda: tmp_path)
 
     config = TelegramConfig(enabled=True, token="123:abc", require_user_api_key=True)
     bus = MessageBus()
@@ -131,9 +130,8 @@ async def test_telegram_multi_user_configure_and_clear(tmp_path, monkeypatch, is
 @pytest.mark.asyncio
 async def test_telegram_multi_user_metadata_injection(tmp_path, monkeypatch, isolated_customer_db) -> None:
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
-    monkeypatch.setattr("nanobot.channels.telegram.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("nanobot.config.paths.get_workspace_path", lambda: tmp_path)
-    monkeypatch.setattr("nanobot.channels.telegram.get_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.channels.telegram.mixins.commands.get_workspace_path", lambda: tmp_path)
 
     config = TelegramConfig(enabled=True, token="123:abc", require_user_api_key=True)
     bus = MessageBus()
