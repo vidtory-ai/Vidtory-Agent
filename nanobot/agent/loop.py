@@ -1437,17 +1437,20 @@ class AgentLoop:
         # - Image returned as artifact (not auto-sent) → feedback + delivery_message numbered choices
         # - Image auto-sent by tool already → no media in outbound; numbered choices on text follow-up
         # - No image → numbered choice buttons for non-image multi-option responses
+        _FEEDBACK_ROW = ["Đúng ý", "Cần chỉnh"]
         if generated_media:
-            # Artifact image: attach feedback buttons; also numbered shortcuts if delivery has suggestions
+            # Artifact image (not auto-sent): feedback + numbered shortcuts on same message.
             choice_buttons = (
                 extract_numbered_choice_buttons(final_content)
                 if is_resident_designer_profile(self.capability_profile)
                 else []
             )
-            outbound_buttons: list[list[str]] = [["Đúng ý", "Cần chỉnh"]] + choice_buttons
+            outbound_buttons: list[list[str]] = [_FEEDBACK_ROW] + choice_buttons
         elif delivery_message and is_resident_designer_profile(self.capability_profile):
-            # Auto-sent image: text follow-up carries numbered suggestion shortcuts
-            outbound_buttons = extract_numbered_choice_buttons(final_content)
+            # Auto-sent image: text follow-up has numbered shortcuts + feedback below.
+            # Layout: Row 1=[1][2][3]  Row 2=[Đúng ý][Cần chỉnh]
+            choice_buttons = extract_numbered_choice_buttons(final_content)
+            outbound_buttons = choice_buttons + [_FEEDBACK_ROW] if choice_buttons else [_FEEDBACK_ROW]
         else:
             outbound_buttons = (
                 extract_numbered_choice_buttons(final_content)

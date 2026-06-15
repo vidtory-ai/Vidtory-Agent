@@ -764,7 +764,17 @@ class ImageGenerationTool(Tool, ContextAware):
                 )
         has_request_media = bool(request_media_paths)
 
-        if original_user_content:
+        # Decide when to skip clarification:
+        # - Callback: user already answered a numbered suggestion → generate immediately.
+        # - Revision without new media: user is editing a previous image from session
+        #   history (e.g. "chỉnh bản này sáng hơn") → generate immediately.
+        # - Revision WITH new uploaded media: user is combining/merging new images
+        #   (e.g. "ghép 2 ảnh này lại") → still ask for creative direction (< 35 words).
+        is_callback_request = bool(ctx and ctx.metadata.get("is_callback"))
+        is_revision = _is_revision_prompt(original_user_content)
+        skip_clarification = is_callback_request or (is_revision and not has_request_media)
+
+        if original_user_content and not skip_clarification:
             # 1. Always try intelligent context-aware check using LLM first.
             #    Pass media_paths so the LLM can ground suggestions in uploaded visuals.
             clarification = await self._check_vague_request_with_llm(
@@ -772,33 +782,35 @@ class ImageGenerationTool(Tool, ContextAware):
                 media_paths=request_media_paths or None,
             )
 
-            # 2. Fall back to local rules when LLM returns nothing.
-            if not clarification and not has_request_media:
-                # Text-only: use acronym / vague-purpose detection.
-                clarification = _ambiguous_image_request_clarification(
-                    original_user_content
-                )
-
-            if not clarification and has_request_media:
-                # Multi-image + short/vague request: show universal direction picker
-                # so the user can choose the creative axis before generation starts.
+            # 2. Local fallback when LLM returns nothing.
+            #    Rule: any request under 35 words is considered vague regardless of
+            #    whether images are attached — we always want direction before generating.
+            if not clarification:
                 word_count = len(original_user_content.split())
-                is_short_request = word_count <= 12
-                if is_short_request:
-                    vague_purpose = _is_vague_text(original_user_content) or "thiết kế"
-                    from nanobot.utils.image_delivery import universal_direction_labels
-                    suggs = universal_direction_labels()
-                    clarification = (
-                        f"Để tạo ảnh {vague_purpose} đẹp và đúng ý, "
-                        "bạn muốn hình ảnh thể hiện gì?\n\n"
-                        f"1️⃣ {suggs[0]}\n"
-                        f"2️⃣ {suggs[1]}\n"
-                        f"3️⃣ {suggs[2]}\n\n"
-                        "Nếu muốn, trả lời theo mẫu:\n"
-                        "• Hướng ảnh: ...\n"
-                        "• Dòng chữ trên ảnh: ...\n"
-                        "• Tỷ lệ: 1:1 / 9:16 / 16:9"
-                    )
+                if word_count < 35:
+                    if not has_request_media:
+                        # Text-only: try acronym / vague-purpose detection first.
+                        clarification = _ambiguous_image_request_clarification(
+                            original_user_content
+                        )
+
+                    # Universal direction picker for ALL short requests (< 35 words)
+                    # that haven't been caught by local or LLM rules.
+                    if not clarification:
+                        vague_purpose = _is_vague_text(original_user_content) or "thiết kế"
+                        from nanobot.utils.image_delivery import universal_direction_labels
+                        suggs = universal_direction_labels()
+                        clarification = (
+                            f"Để tạo ảnh {vague_purpose} đẹp và đúng ý, "
+                            "bạn muốn hình ảnh thể hiện gì?\n\n"
+                            f"1️⃣ {suggs[0]}\n"
+                            f"2️⃣ {suggs[1]}\n"
+                            f"3️⃣ {suggs[2]}\n\n"
+                            "Nếu muốn, trả lời theo mẫu:\n"
+                            "• Hướng ảnh: ...\n"
+                            "• Dòng chữ trên ảnh: ...\n"
+                            "• Tỷ lệ: 1:1 / 9:16 / 16:9"
+                        )
 
             if clarification:
                 logger.info(
