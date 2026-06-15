@@ -268,6 +268,25 @@ def test_prompt_requests_no_logo() -> None:
     assert _prompt_requests_no_logo("tạo ảnh có logo") is False
 
 
+def test_ambiguous_image_request_allows_explicitly_resolved_meaning() -> None:
+    from nanobot.agent.tools.image_generation import (
+        _ambiguous_image_request_clarification,
+    )
+
+    assert (
+        _ambiguous_image_request_clarification(
+            "Tạo poster tuyển dụng BE - Backend Engineer"
+        )
+        is None
+    )
+    assert (
+        _ambiguous_image_request_clarification(
+            "Tạo poster quảng cáo cho thương hiệu be"
+        )
+        is None
+    )
+
+
 @pytest.mark.asyncio
 async def test_find_last_generated_image_from_metadata(tmp_path: Path) -> None:
     from nanobot.agent.tools.context import RequestContext
@@ -570,6 +589,147 @@ async def test_execute_revision_merges_all_request_media_ahead_of_llm_references
 
 
 @pytest.mark.asyncio
+async def test_execute_revision_uses_latest_session_image_over_stale_llm_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+
+    old_ref = tmp_path / "old-be-poster.png"
+    old_ref.write_bytes(PNG_BYTES)
+    latest_ref = tmp_path / "latest-be-poster.png"
+    latest_ref.write_bytes(PNG_BYTES)
+
+    session = Session(key="telegram:123")
+    session.add_message(
+        "tool",
+        json.dumps({"artifacts": [{"path": str(old_ref.resolve())}]}),
+        name="generate_image",
+    )
+    session.add_message(
+        "tool",
+        json.dumps({"artifacts": [{"path": str(latest_ref.resolve())}]}),
+        name="generate_image",
+    )
+
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions(),
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            message_id="msg_latest",
+            session_key="telegram:123",
+            metadata={},
+        )
+    )
+
+    await tool.execute(
+        prompt="Từ ảnh trên sửa chữ thành tuyển dụng FE",
+        reference_images=[str(old_ref.resolve())],
+    )
+
+    assert FakeImageClient.instances[0].calls[0]["reference_images"] == [
+        str(latest_ref.resolve())
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execute_blocks_ambiguous_original_request_before_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            message_id="msg_ambiguous",
+            session_key="telegram:123",
+            metadata={"original_user_content": "tạo ảnh poster quảng cáo BE cho tôi"},
+        )
+    )
+
+    result = await tool.execute(
+        prompt=(
+            "Poster tuyển dụng Backend Engineer với mã nguồn, sơ đồ hệ thống, "
+            "phong cách công nghệ hiện đại"
+        )
+    )
+
+    assert result.startswith("Clarification required:")
+    assert "Backend Engineer" in result
+    assert "thương hiệu be" in result
+    assert FakeImageClient.instances == []
+
+
+def test_apply_customer_context_uses_profile_logo_when_indexed_logo_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.utils.context_vars import telegram_customer_profile
+
+    tool = ImageGenerationTool(
+        workspace=Path("."),
+        config=ImageGenerationToolConfig(enabled=True, provider="vidtory"),
+    )
+    profile = {
+        "telegramUserId": "user123",
+        "preferences": {"communicationLanguage": "vi"},
+        "brand": {"logoUrl": "https://b2b.vidtory.net/assets/profile-logo.png"},
+    }
+
+    class FakeDB:
+        def get_logo_url(self, uid):
+            return None
+
+    monkeypatch.setattr("nanobot.db.customer_db.get_db", FakeDB)
+    token = telegram_customer_profile.set(profile)
+    try:
+        _, _, logo_url = tool._apply_customer_context("Tạo poster tuyển dụng")
+    finally:
+        telegram_customer_profile.reset(token)
+
+    assert logo_url == "https://b2b.vidtory.net/assets/profile-logo.png"
+
+
+@pytest.mark.asyncio
 async def test_auto_delivery_includes_lazy_feedback_buttons(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -608,7 +768,55 @@ async def test_auto_delivery_includes_lazy_feedback_buttons(
     )
 
     await tool.execute(prompt="Tạo ảnh sản phẩm")
-
+ 
     assert sent[-1].buttons == [["Đúng ý", "Cần chỉnh"], ["Tạo biến thể"]]
+ 
+ 
+@pytest.mark.asyncio
+async def test_execute_blocks_general_vague_request_before_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+ 
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+ 
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            message_id="msg_vague",
+            session_key="telegram:123",
+            metadata={"original_user_content": "tạo ảnh poster tuyển vị trí kế toán cho công ty"},
+        )
+    )
+ 
+    from nanobot.utils.context_vars import telegram_customer_profile
+    token = telegram_customer_profile.set(None)
+    try:
+        result = await tool.execute(
+            prompt="Poster tuyển dụng kế toán chuyên nghiệp cho công ty"
+        )
+    finally:
+        telegram_customer_profile.reset(token)
+ 
+    assert "tuyển dụng" in result
+    assert "Chuyên nghiệp tin cậy" in result
+    assert "trả lời theo mẫu" in result.lower()
+    assert FakeImageClient.instances == []
 
 

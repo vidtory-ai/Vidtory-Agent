@@ -540,6 +540,7 @@ class AgentLoop:
         message_id: str | None = None, metadata: dict | None = None,
         session_key: str | None = None,
         media: list[str] | None = None,
+        original_user_content: str | None = None,
     ) -> None:
         """Update context for all tools that need routing info."""
         from nanobot.agent.tools.context import ContextAware, RequestContext
@@ -554,6 +555,8 @@ class AgentLoop:
         merged_meta = dict(metadata or {})
         if media is not None:
             merged_meta["media"] = media
+        if original_user_content is not None:
+            merged_meta["original_user_content"] = original_user_content
 
         request_ctx = RequestContext(
             channel=channel,
@@ -1231,6 +1234,7 @@ class AgentLoop:
             channel, chat_id, msg.metadata.get("message_id"),
             msg.metadata, session_key=key,
             media=msg.media,
+            original_user_content=msg.content,
         )
         _hist_kwargs: dict[str, Any] = {
             "max_messages": self._llm_history_messages,
@@ -1520,6 +1524,7 @@ class AgentLoop:
             ctx.msg.metadata,
             session_key=ctx.session_key,
             media=ctx.msg.media,
+            original_user_content=ctx.msg.content,
         )
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):

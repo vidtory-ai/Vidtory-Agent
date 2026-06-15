@@ -298,6 +298,129 @@ def _is_revision_prompt(prompt: str) -> bool:
     return any(kw in prompt_lower for kw in revision_keywords)
 
 
+def _references_latest_image(prompt: str) -> bool:
+    """Return True when the request explicitly points to the most recent image."""
+    prompt_lower = prompt.lower()
+    latest_image_markers = (
+        "ảnh trên",
+        "hình trên",
+        "ảnh vừa tạo",
+        "hình vừa tạo",
+        "ảnh vừa rồi",
+        "hình vừa rồi",
+        "bản trên",
+        "bản vừa tạo",
+        "như trên",
+        "above image",
+        "image above",
+        "last image",
+        "latest image",
+    )
+    return any(marker in prompt_lower for marker in latest_image_markers)
+
+
+def _is_vague_text(prompt: str) -> str | None:
+    """Helper to detect if a prompt is vague and return the matched purpose category."""
+    prompt_lower = prompt.lower()
+    
+    # Define vague purpose patterns
+    # Each pattern maps to the Vietnamese purpose term
+    vague_patterns = [
+        (r"\btuy\u1ec3n d\u1ee5ng\b|\btuy\u1ec3n v\u1ecb tr\xed\b|\btuy\u1ec3n k\u1ebf to\xe1n\b|\btuy\u1ec3n nh\xe2n vi\xean\b", "tuyển dụng"),
+        (r"\btuy\u1ec3n sinh\b", "tuyển sinh"),
+        (r"\bqu\u1ea3ng c\xe1o\b|\bthu h\xfat kh\xe1ch\b", "quảng cáo"),
+        (r"\bvinh danh\b", "vinh danh"),
+        (r"\btri \xe2n\b", "tri ân"),
+        (r"\bk\u1ef7 ni\u1ec7m\b", "kỷ niệm"),
+        (r"\bs\u1ef1 ki\u1ec7n\b|\bh\u1ed9i ngh\u1ecb\b|\bkhai gi\u1ea3ng\b", "sự kiện"),
+        (r"\bch\xe0o m\u1eebng\b", "chào mừng"),
+        (r"\bgi\u1ea3i th\u01b0\u1eddng\b|\bth\xe0nh t\xedch\b", "giải thưởng"),
+    ]
+    
+    # Check for visual subject indicators that make the prompt clear.
+    subject_indicators = (
+        "con ", "chú ", "người ", "sinh viên", "học sinh", "thầy cô", "giáo viên",
+        "bàn ", "ghế ", "máy tính", "laptop", "điện thoại", "sản phẩm", "ly ", "tách ",
+        "đứng ", "ngồi ", "nằm ", "cười ", "nhìn ", "chụp ", "phong cách", "background",
+        "nền ", "studio", "ngoài trời", "trong phòng", "vẽ ", "tô ", "màu "
+    )
+    
+    words = [w for w in re.split(r"\s+", prompt) if w]
+    
+    for pattern, purpose in vague_patterns:
+        if re.search(pattern, prompt_lower):
+            has_subject = any(indicator in prompt_lower for indicator in subject_indicators)
+            if not has_subject or len(words) < 8:
+                return purpose
+                
+    if re.search(r"\b(?:t\u1ea1o \u1ea3nh|thi\u1ebft k\u1ebf|t\u1ea1o poster)\b", prompt_lower):
+        if len(words) < 8 and not any(indicator in prompt_lower for indicator in subject_indicators):
+            return "thiết kế"
+            
+    return None
+
+
+def _ambiguous_image_request_clarification(prompt: str) -> str | None:
+    """Require clarification for short role/brand acronyms with multiple meanings or general vague requests."""
+    if not prompt or _is_revision_prompt(prompt):
+        return None
+    prompt_lower = prompt.lower()
+    
+    # 1. First, check if the prompt explicitly resolves the BE ambiguity
+    be_resolved = any(
+        resolved_term in prompt_lower
+        for resolved_term in (
+            "backend engineer",
+            "thương hiệu be",
+            "brand be",
+        )
+    )
+    
+    # 2. Check for BE acronym match and prompt keywords
+    acronym_match = re.search(r"\bBE\b", prompt, flags=re.IGNORECASE)
+    has_image_keywords = bool(re.search(
+        r"\b(?:ảnh|hình|poster|banner|thiết kế|quảng cáo|tuyển dụng|image|design|ad)\b",
+        prompt,
+        flags=re.IGNORECASE,
+    ))
+    
+    if acronym_match and has_image_keywords and not be_resolved:
+        return (
+            "Clarification required: Cụm viết tắt trong yêu cầu có thể được hiểu theo nhiều cách. "
+            "Vui lòng hỏi khách chọn một hướng trước khi tạo ảnh:\n"
+            "1. Poster tuyển dụng Backend Engineer\n"
+            "2. Poster quảng cáo cho thương hiệu be\n"
+            "3. Ý nghĩa khác, khách mô tả thêm"
+        )
+        
+    # 3. Check for general vague requests
+    # If the user explicitly resolved BE as Backend Engineer or brand be, it is a resolved request, not vague.
+    vague_purpose = _is_vague_text(prompt) if not be_resolved else None
+    if vague_purpose:
+        from nanobot.utils.brand_intelligence import build_creative_suggestions
+        industry = ""
+        try:
+            profile = telegram_customer_profile.get()
+            if profile:
+                industry = str((profile.get("business") or {}).get("industry") or "")
+        except Exception:
+            pass
+            
+        suggestions = build_creative_suggestions(prompt, industry)
+        return (
+            f"Để tạo ảnh {vague_purpose} đẹp và đúng ý, bạn muốn hình ảnh thể hiện gì?\n\n"
+            f"1️⃣ {suggestions[0]}\n"
+            f"2️⃣ {suggestions[1]}\n"
+            f"3️⃣ {suggestions[2]}\n\n"
+            "Nếu muốn, trả lời theo mẫu:\n"
+            "• Hướng ảnh: ...\n"
+            "• Dòng chữ trên ảnh: ...\n"
+            "• Tỷ lệ: 1:1 / 9:16 / 16:9"
+        )
+        
+    return None
+
+
 def _prompt_requests_no_logo(prompt: str) -> bool:
     """Check if the user explicitly requested to omit the logo."""
     prompt_lower = prompt.lower()
@@ -373,6 +496,7 @@ class ImageGenerationTool(Tool, ContextAware):
             send_callback=send_callback,
             capability_profile=getattr(ctx.config, "capability_profile", "standard"),
             sessions=getattr(ctx, "sessions", None),
+            provider_snapshot_loader=getattr(ctx, "provider_snapshot_loader", None),
         )
 
     def __init__(
@@ -385,6 +509,7 @@ class ImageGenerationTool(Tool, ContextAware):
         send_callback: Callable[[OutboundMessage], Awaitable[None]] | None = None,
         capability_profile: str = "standard",
         sessions: Any | None = None,
+        provider_snapshot_loader: Callable[[], Any] | None = None,
     ) -> None:
         self.workspace = Path(workspace).expanduser()
         self.config = config
@@ -395,6 +520,7 @@ class ImageGenerationTool(Tool, ContextAware):
             self.provider_configs[self.config.provider] = provider_config
         self._send_callback = send_callback
         self.sessions = sessions
+        self.provider_snapshot_loader = provider_snapshot_loader
 
     @property
     def name(self) -> str:
@@ -480,6 +606,91 @@ class ImageGenerationTool(Tool, ContextAware):
         # Dedup while preserving order — LLM may pass the same image path twice
         return list(dict.fromkeys(resolved))
 
+    async def _check_vague_request_with_llm(self, prompt: str) -> str | None:
+        """Call the LLM dynamically to analyze request vagueness and generate suggestions."""
+        if not self.provider_snapshot_loader:
+            return None
+
+        try:
+            profile_info = ""
+            try:
+                profile = telegram_customer_profile.get()
+                if profile:
+                    biz = profile.get("business") or {}
+                    brand = profile.get("brand") or {}
+                    profile_info = (
+                        f"- Tên thương hiệu: {biz.get('businessName') or biz.get('name') or ''}\n"
+                        f"- Ngành nghề: {biz.get('industry') or ''}\n"
+                        f"- Phong cách thương hiệu: {brand.get('brandStyle') or brand.get('style') or ''}\n"
+                        f"- Màu sắc: {brand.get('colorPalette') or ''}\n"
+                    )
+            except Exception:
+                pass
+
+            snapshot = self.provider_snapshot_loader()
+            llm = snapshot.provider
+            model = snapshot.model
+
+            system_prompt = (
+                "Bạn là chuyên gia thiết kế và phân tích yêu cầu thiết kế đồ họa của Vidtory.\n"
+                "Nhiệm vụ của bạn là đánh giá xem yêu cầu tạo ảnh/thiết kế của khách hàng có bị MƠ HỒ (vague) hay không.\n\n"
+                "Thông tin thương hiệu khách hàng (sử dụng để đề xuất cho phù hợp ngữ cảnh):\n"
+                f"{profile_info}\n"
+                "Tiêu chuẩn đánh giá:\n"
+                "- Mơ hồ (vague): Khách chỉ nêu mục đích/chủ đề sử dụng chung chung (ví dụ: 'tạo ảnh tuyển sinh', 'poster quảng cáo', 'ảnh tuyển kế toán', 'ảnh kỷ niệm', 'ảnh tri ân') "
+                "mà CHƯA có bất kỳ mô tả hình ảnh, chủ thể cụ thể nào (nhân vật, đồ vật, hành động, cảnh vật, bố cục, style cụ thể).\n"
+                "- Rõ ràng: Khách đã nêu chủ thể cụ thể (ví dụ: 'một chú mèo nằm trên ghế sofa', 'nhóm nhân viên công sở đang họp trước màn hình', 'ly cà phê latte art bốc khói').\n\n"
+                "Nếu yêu cầu của khách là RÕ RÀNG, hoặc là yêu cầu chỉnh sửa ảnh cũ (revision/edit như 'sửa ảnh trên', 'chỉnh ảnh vừa rồi'), hoặc khách chỉ trả lời ngắn chọn phương án, hãy trả về JSON với `is_vague: false`.\n\n"
+                "Nếu yêu cầu MƠ HỒ (vague):\n"
+                "1. Xác định mục đích sử dụng (ví dụ: 'tuyển dụng', 'quảng cáo', 'tuyển sinh', 'tri ân').\n"
+                "2. Đề xuất 3 hướng/phong cách sáng tạo cụ thể (ngắn gọn, tối đa 5-7 từ mỗi hướng, thích hợp hiển thị làm nút bấm) để khách lựa chọn, dựa trên thông tin thương hiệu của khách hàng nêu trên nếu có.\n\n"
+                "Phản hồi của bạn PHẢI là một chuỗi JSON hợp lệ duy nhất có cấu trúc sau, không kèm bất kỳ giải thích nào:\n"
+                "{\n"
+                "  \"is_vague\": true,\n"
+                "  \"purpose\": \"mục đích sử dụng (tiếng Việt)\",\n"
+                "  \"suggestions\": [\"Gợi ý 1\", \"Gợi ý 2\", \"Gợi ý 3\"]\n"
+                "}"
+            )
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Yêu cầu khách hàng: \"{prompt}\""}
+            ]
+
+            response = await llm.chat(
+                messages=messages,
+                model=model,
+                temperature=0.1,
+                max_tokens=300
+            )
+
+            content = (response.content or "").strip()
+            if content.startswith("```"):
+                content = re.sub(r"^```(?:json)?\n", "", content)
+                content = re.sub(r"\n```$", "", content)
+
+            data = json.loads(content)
+            if data.get("is_vague"):
+                purpose = data.get("purpose") or "thiết kế"
+                suggs = data.get("suggestions") or []
+                if len(suggs) < 3:
+                    suggs = suggs + ["Tối giản tinh tế", "Hiện đại chuyên nghiệp", "Năng động sáng tạo"][:3-len(suggs)]
+
+                return (
+                    f"Để tạo ảnh {purpose} đẹp và đúng ý, bạn muốn hình ảnh thể hiện gì?\n\n"
+                    f"1️⃣ {suggs[0]}\n"
+                    f"2️⃣ {suggs[1]}\n"
+                    f"3️⃣ {suggs[2]}\n\n"
+                    "Nếu muốn, trả lời theo mẫu:\n"
+                    "• Hướng ảnh: ...\n"
+                    "• Dòng chữ trên ảnh: ...\n"
+                    "• Tỷ lệ: 1:1 / 9:16 / 16:9"
+                )
+        except Exception as e:
+            logger.warning("LLM vague request check failed or timed out: {}", e)
+
+        return None
+
     async def execute(
         self,
         prompt: str,
@@ -499,6 +710,38 @@ class ImageGenerationTool(Tool, ContextAware):
                 )
             if policy.redacted_text and policy.redacted_text.strip():
                 prompt = policy.redacted_text
+
+        ctx = _image_gen_request_ctx.get()
+        original_user_content = (
+            str(ctx.metadata.get("original_user_content") or "").strip()
+            if ctx
+            else ""
+        )
+        has_request_media = bool(
+            ctx
+            and (
+                self._valid_context_media(ctx.metadata.get("reply_media"))
+                or self._valid_context_media(ctx.metadata.get("current_media"))
+                or self._valid_context_media(ctx.metadata.get("media"))
+            )
+        )
+        if original_user_content and not has_request_media:
+            # 1. Try intelligent context-aware check using LLM first
+            clarification = await self._check_vague_request_with_llm(original_user_content)
+            
+            # 2. Fall back to local rules if LLM didn't return a clarification
+            if not clarification:
+                clarification = _ambiguous_image_request_clarification(
+                    original_user_content
+                )
+                
+            if clarification:
+                logger.info(
+                    "Image generation blocked pending clarification of original request: {}",
+                    original_user_content,
+                )
+                return clarification
+
         client = self._provider_client()
         if client is None:
             return f"Error: unsupported image generation provider '{self.config.provider}'"
@@ -835,11 +1078,20 @@ class ImageGenerationTool(Tool, ContextAware):
             )
 
         merged = list(dict.fromkeys(request_media + list(reference_images or [])))
-        if merged:
+        if request_media:
             return merged
 
-        last_img = self._find_last_generated_image()
-        return [last_img] if last_img else reference_images
+        if _references_latest_image(prompt):
+            last_img = self._find_last_generated_image()
+            if last_img:
+                logger.info(
+                    "Latest-image revision overrides model-selected references: {}",
+                    last_img,
+                )
+                return [last_img]
+
+        if merged:
+            return merged
 
     def _apply_customer_context(self, prompt: str, is_vidtory_provider: bool = False) -> tuple[str, str | None, str | None]:
         """Apply customer brand guidelines and Vidtory professional standards to the prompt.
@@ -936,6 +1188,17 @@ class ImageGenerationTool(Tool, ContextAware):
                             logger.debug("No logo set for user {} — generating without logo overlay", uid)
                 except Exception as _logo_exc:
                     logger.debug("Failed to read logo from DB (non-critical): {}", _logo_exc)
+
+                if not logo_url:
+                    profile_logo = str(
+                        ((profile.get("brand") or {}).get("logoUrl") or "")
+                    ).strip()
+                    if profile_logo:
+                        logo_url = profile_logo
+                        logger.info(
+                            "Brand logo loaded from customer profile fallback: {}",
+                            logo_url,
+                        )
 
                 # If user explicitly requested no logo in prompt, do not use it
                 if logo_url and _prompt_requests_no_logo(prompt):
