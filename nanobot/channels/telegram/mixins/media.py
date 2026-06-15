@@ -1,11 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-from contextlib import suppress
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from nanobot.channels.telegram.channel import TelegramChannel
 
 class TelegramMediaMixin:
     async def _upload_image_to_vidtory_cdn(
@@ -55,7 +49,7 @@ class TelegramMediaMixin:
             return None
 
         try:
-            from nanobot.utils.logo_upload import upload_logo_to_cdn, LogoUploadError
+            from nanobot.utils.logo_upload import upload_logo_to_cdn
 
             cdn_url = await upload_logo_to_cdn(
                 image_source,
@@ -148,19 +142,14 @@ class TelegramMediaMixin:
             return None
 
     async def _flush_media_group(self, key: str) -> None:
-
         """Wait briefly, then forward buffered media-group as one turn."""
-
         try:
-            await asyncio.sleep(0.6)
-            if not (buf := self._media_group_buffers.pop(key, None)):
-                return
-            content = "\n".join(buf["contents"]) or "[empty message]"
-            await self._handle_message(
-                sender_id=buf["sender_id"], chat_id=buf["chat_id"],
-                content=content, media=list(dict.fromkeys(buf["media"])),
-                metadata=buf["metadata"],
-                session_key=buf.get("session_key"),
+            message_kwargs = await self._media_group_collector.wait_and_pop(
+                key,
+                quiet_period=self._media_group_quiet_period,
             )
+            if not message_kwargs:
+                return
+            await self._handle_message(**message_kwargs)
         finally:
             self._media_group_tasks.pop(key, None)

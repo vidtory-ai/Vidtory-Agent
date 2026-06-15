@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import re
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
 
 from telegram import Update
-from nanobot.command.builtin import build_help_text
-from nanobot.config.paths import get_workspace_path
 from telegram.ext import ContextTypes
 
-if TYPE_CHECKING:
-    from nanobot.channels.telegram.channel import TelegramChannel
+from nanobot.channels.telegram.start_messages import (
+    api_key_setup_message,
+    onboarding_choice_message,
+    reply_with_markdown_fallback,
+    returning_customer_message,
+)
+from nanobot.command.builtin import build_help_text
+from nanobot.config.paths import get_workspace_path
+
 
 class TelegramCommandsMixin:
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -20,7 +24,11 @@ class TelegramCommandsMixin:
 
         user = update.effective_user
         sender_id = self._sender_id(user)
-        if not self.is_allowed(sender_id):
+        is_new_api_key_customer = (
+            getattr(self.config, "require_user_api_key", False)
+            and not self.keystore.get_key(sender_id)
+        )
+        if not is_new_api_key_customer and not self.is_allowed(sender_id):
             return
         await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
 
@@ -28,48 +36,25 @@ class TelegramCommandsMixin:
         if getattr(self.config, "require_user_api_key", False):
             key = self.keystore.get_key(sender_id)
             if not key:
-                await update.message.reply_text(
-                    f"👋 *Xin chào {user.first_name}! Chào mừng bạn đến với Vidtory AI.*\n\n"
-                    "🤖 *Vidtory AI* là hệ thống trợ lý thiết kế tự động, đồng hành cùng doanh nghiệp và thương hiệu để tạo ra các ấn phẩm hình ảnh tiếp thị (ảnh sản phẩm, banner quảng cáo, bài viết mạng xã hội) đồng bộ thương hiệu chỉ trong vài giây.\n\n"
-                    "💡 **Giải pháp thiết kế từ Vidtory AI mang lại:**\n"
-                    "• *Đồng nhất thương hiệu:* Tự động nhận diện logo và màu sắc chủ đạo để áp dụng đồng bộ vào mọi ấn phẩm.\n"
-                    "• *Tối ưu hình ảnh tiếp thị:* Định hình phong cách thiết kế riêng biệt cho từng chiến dịch (Brand Marketing hoặc Fashion Studio).\n"
-                    "• *Nhanh chóng & Tiết kiệm:* Tạo ra hình ảnh chất lượng cao ngay lập tức mà không cần qua quy trình chỉnh sửa phức tạp.\n\n"
-                    "--- \n"
-                    "🔑 *Để bắt đầu trải nghiệm, vui lòng kết nối Vidtory API Key của bạn:*\n"
-                    "1. Truy cập: https://app.vidtory.net/settings/api\n"
-                    "2. Sao chép API Key của bạn\n"
-                    "3. Gửi lệnh: `/apikey YOUR_API_KEY` (Ví dụ: `/apikey vidtory_123...`)\n\n"
-                    "_Thiết lập này chỉ cần thực hiện một lần duy nhất và hoàn toàn bảo mật._",
+                await reply_with_markdown_fallback(
+                    update.message,
+                    api_key_setup_message(user.first_name),
                     parse_mode="Markdown",
                     disable_web_page_preview=True,
                 )
                 return
-            await update.message.reply_text(
-                f"👋 *Chào mừng quay trở lại, {user.first_name}!* Hệ thống thiết kế thông minh Vidtory AI đã sẵn sàng phục vụ bạn.\n\n"
-                "🚀 **Bạn muốn thực hiện công việc nào tiếp theo?**\n"
-                "• `/brand` - Xem và quản lý cấu hình thương hiệu (logo, phong cách).\n"
-                "• `/new` - Khởi tạo một phiên thiết kế hình ảnh mới.\n"
-                "• `/help` - Xem danh sách câu lệnh và hướng dẫn chi tiết.\n\n"
-                "Hãy gửi yêu cầu hoặc chọn lệnh để bắt đầu nhé!",
+            await reply_with_markdown_fallback(
+                update.message,
+                returning_customer_message(user.first_name),
                 parse_mode="Markdown",
             )
             return
 
         buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
         reply_markup = self._build_keyboard(buttons)
-        await update.message.reply_text(
-            f"👋 *Xin chào {user.first_name}! Chào mừng bạn đến với Vidtory AI.*\n\n"
-            "🤖 *Vidtory AI* là hệ thống trợ lý thiết kế tự động, đồng hành cùng doanh nghiệp và thương hiệu để tạo ra các ấn phẩm hình ảnh tiếp thị (ảnh sản phẩm, banner quảng cáo, bài viết mạng xã hội) đồng bộ thương hiệu chỉ trong vài giây.\n\n"
-            "💡 **Giải pháp thiết kế từ Vidtory AI mang lại:**\n"
-            "• *Đồng nhất thương hiệu:* Tự động nhận diện logo và màu sắc chủ đạo để áp dụng đồng bộ vào mọi ấn phẩm.\n"
-            "• *Tối ưu hình ảnh tiếp thị:* Định hình phong cách thiết kế riêng biệt cho từng chiến dịch (Brand Marketing hoặc Fashion Studio).\n"
-            "• *Nhanh chóng & Tiết kiệm:* Tạo ra hình ảnh chất lượng cao ngay lập tức mà không cần qua quy trình chỉnh sửa phức tạp.\n\n"
-            "--- \n"
-            "🚀 **Hãy bắt đầu thiết lập nhanh:**\n"
-            "Bạn có thể thiết lập phong cách thương hiệu để AI hiểu chính xác định hướng thiết kế, hoặc trải nghiệm trực tiếp:\n\n"
-            "• Chọn **Bắt đầu khai báo** để thiết lập nhanh Brand Profile (~1 phút).\n"
-            "• Chọn **Dùng ngay** để trực tiếp gửi yêu cầu thiết kế của bạn.",
+        await reply_with_markdown_fallback(
+            update.message,
+            onboarding_choice_message(user.first_name),
             parse_mode="Markdown",
             reply_markup=reply_markup,
         )
@@ -81,7 +66,11 @@ class TelegramCommandsMixin:
             return
         user = update.effective_user
         sender_id = self._sender_id(user)
-        if not self.is_allowed(sender_id):
+        is_new_api_key_customer = (
+            getattr(self.config, "require_user_api_key", False)
+            and not self.keystore.get_key(sender_id)
+        )
+        if not is_new_api_key_customer and not self.is_allowed(sender_id):
             return
         await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
 
@@ -110,7 +99,11 @@ class TelegramCommandsMixin:
         """Dedicated handler for /apikey, /mykey, /clear, /credits, /profile commands."""
         if not update.effective_user:
             return
-        if not self.is_allowed(self._sender_id(update.effective_user)):
+        sender_id = self._sender_id(update.effective_user)
+        if (
+            not getattr(self.config, "require_user_api_key", False)
+            and not self.is_allowed(sender_id)
+        ):
             return
         if update.message:
             await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
@@ -300,16 +293,16 @@ class TelegramCommandsMixin:
                         currency = balance.get("currency", "Credit")
                         business = data.get("businessName", "")
                         lines = [
-                            f"💳 *Tài khoản Vidtory*",
-                            f"",
+                            "💳 *Tài khoản Vidtory*",
+                            "",
                             f"🏢 *{business}*" if business else "",
-                            f"",
+                            "",
                             f"💰 *Credits còn lại:* `{current} {currency}`",
                             f"📥 *Tổng nạp:* `{deposited}`",
                             f"📤 *Đã dùng:* `{spent}`",
                         ]
                         await message.reply_text(
-                            "\n".join(l for l in lines if l is not None),
+                            "\n".join(ln for ln in lines if ln is not None),
                             parse_mode="Markdown"
                         )
                     elif resp.status_code == 401:
@@ -369,10 +362,10 @@ class TelegramCommandsMixin:
         elif cmd == "/setbrand":
             """Quick brand field updater: /setbrand <field> <value>"""
             try:
-                from nanobot.utils.customer_profile import profile_exists
                 from nanobot.agent.tools.customer_profile_tool import UpdateCustomerProfileTool
-                from nanobot.utils.context_vars import telegram_customer_profile
                 from nanobot.db.customer_db import get_db as _get_db
+                from nanobot.utils.context_vars import telegram_customer_profile
+                from nanobot.utils.customer_profile import profile_exists
 
                 uid = sender_id.split("|")[0].strip()
 
@@ -396,7 +389,7 @@ class TelegramCommandsMixin:
                 value = parts[2].strip()
 
                 # Map field aliases → tool parameters
-                FIELD_MAP = {
+                field_map = {
                     "name": "business_name",
                     "ten": "business_name",
                     "brand": "business_name",
@@ -417,9 +410,9 @@ class TelegramCommandsMixin:
                     "kenh": "channels",
                 }
 
-                tool_field = FIELD_MAP.get(field)
+                tool_field = field_map.get(field)
                 if not tool_field:
-                    valid = ", ".join(sorted(set(FIELD_MAP.keys())))
+                    valid = ", ".join(sorted(set(field_map.keys())))
                     await message.reply_text(
                         f"❌ Field `{field}` không hợp lệ.\n\n"
                         f"*Các field hợp lệ:* `{valid}`\n\n"
@@ -444,7 +437,7 @@ class TelegramCommandsMixin:
                     kwargs[tool_field] = value
 
                 tool = UpdateCustomerProfileTool()
-                result = await tool.execute(**kwargs)
+                await tool.execute(**kwargs)
 
                 # Read updated value to confirm
                 updated = db.load_profile(uid)

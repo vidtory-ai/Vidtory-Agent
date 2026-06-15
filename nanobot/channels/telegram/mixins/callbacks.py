@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import TYPE_CHECKING
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.ext import ContextTypes
 
-if TYPE_CHECKING:
-    from nanobot.channels.telegram.channel import TelegramChannel
 
 class TelegramCallbacksMixin:
     def _build_keyboard(self, buttons: list) -> InlineKeyboardMarkup | ReplyKeyboardMarkup | None:
@@ -51,12 +54,12 @@ class TelegramCallbacksMixin:
         if not chat_id:
             self.logger.warning("Callback query without chat_id")
             return
-        if not self.is_allowed(sender_id):
-            return
         if getattr(self.config, "require_user_api_key", False):
             if not self.keystore.get_key(sender_id):
                 await query.answer("Vui lòng cấu hình API Key trước bằng lệnh /apikey", show_alert=True)
                 return
+        if not self.is_allowed(sender_id):
+            return
         button_label = query.data or ""
         await query.answer()
         if query.message:

@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -16,6 +17,12 @@ from nanobot.channels.telegram.format import TELEGRAM_REPLY_CONTEXT_MAX_LEN
 from nanobot.channels.telegram.channel import TelegramChannel
 from nanobot.channels.telegram.config import TelegramConfig
 from nanobot.channels.telegram.models import StreamBuf as _StreamBuf
+from telegram.error import BadRequest
+
+
+async def _wait_until(predicate, *, interval: float = 0.01) -> None:
+    while not predicate():
+        await asyncio.sleep(interval)
 
 
 class _FakeHTTPXRequest:
@@ -1367,6 +1374,75 @@ async def test_on_start_ignores_unauthorized_user_silently() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_start_allows_new_customer_when_api_key_mode_is_enabled() -> None:
+    channel = TelegramChannel(
+        TelegramConfig(
+            enabled=True,
+            token="123:abc",
+            allow_from=["999"],
+            require_user_api_key=True,
+            group_policy="open",
+        ),
+        MessageBus(),
+    )
+    update = _make_telegram_update(text="/start", chat_type="private")
+    update.message.reply_text = AsyncMock()
+    channel._add_reaction = AsyncMock()
+
+    await channel._on_start(update, None)
+
+    update.message.reply_text.assert_awaited_once()
+    assert "/apikey YOUR_API_KEY" in update.message.reply_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_on_start_falls_back_to_plain_text_when_markdown_is_rejected() -> None:
+    channel = TelegramChannel(
+        TelegramConfig(
+            enabled=True,
+            token="123:abc",
+            allow_from=["*"],
+            require_user_api_key=True,
+            group_policy="open",
+        ),
+        MessageBus(),
+    )
+    update = _make_telegram_update(text="/start", chat_type="private")
+    update.message.reply_text = AsyncMock(
+        side_effect=[BadRequest("can't parse entities"), None]
+    )
+    channel._add_reaction = AsyncMock()
+
+    await channel._on_start(update, None)
+
+    assert update.message.reply_text.await_count == 2
+    assert "parse_mode" not in update.message.reply_text.await_args_list[1].kwargs
+
+
+@pytest.mark.asyncio
+async def test_new_customer_chat_gets_api_key_instructions_despite_allowlist() -> None:
+    channel = TelegramChannel(
+        TelegramConfig(
+            enabled=True,
+            token="123:abc",
+            allow_from=["999"],
+            require_user_api_key=True,
+            group_policy="open",
+        ),
+        MessageBus(),
+    )
+    channel._app = _FakeApp(lambda: None)
+    update = _make_telegram_update(text="xin chào", chat_type="private")
+    update.message.reply_text = AsyncMock()
+    channel._add_reaction = AsyncMock()
+
+    await channel._on_message(update, None)
+
+    update.message.reply_text.assert_awaited_once()
+    assert "/apikey YOUR_API_KEY" in update.message.reply_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_on_help_ignores_unauthorized_user_silently() -> None:
     channel = TelegramChannel(
         TelegramConfig(enabled=True, token="123:abc", allow_from=["999"], group_policy="open"),
@@ -1923,3 +1999,106 @@ async def test_add_reaction_triggers_delayed_remove_with_correct_delay() -> None
 
     assert len(delayed_calls) == 1
     assert delayed_calls[0] == ("12345", 999, 5.0)
+
+
+@pytest.mark.asyncio
+async def test_reaction_is_permanent_by_default() -> None:
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc"),
+        MessageBus(),
+    )
+    channel._app = _FakeApp(lambda: None)
+    channel._app.bot.set_message_reaction = AsyncMock(return_value=None)
+    channel._delayed_remove_reaction = AsyncMock()
+
+    await channel._add_reaction("12345", 999, "👀")
+
+    channel._delayed_remove_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_media_group_waits_for_slow_inflight_part_before_flushing() -> None:
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", allow_from=["*"]),
+        MessageBus(),
+    )
+    channel._app = _FakeApp(lambda: None)
+    channel._add_reaction = AsyncMock()
+    channel._media_group_quiet_period = 0.03
+    second_download_started = asyncio.Event()
+    release_second_download = asyncio.Event()
+    handled: list[dict] = []
+
+    async def mock_download(msg, **kwargs):
+        if msg.message_id == 2:
+            second_download_started.set()
+            await release_second_download.wait()
+        path = f"/fake/path/media_{msg.message_id}.png"
+        return [path], [f"[image: {path}]"]
+
+    async def capture_handle(**kwargs):
+        handled.append(kwargs)
+
+    channel._download_message_media = mock_download
+    channel._handle_message = capture_handle
+
+    user = SimpleNamespace(id=12345, username="alice", first_name="Alice")
+    msg1 = SimpleNamespace(
+        chat=SimpleNamespace(type="private", is_forum=False),
+        chat_id=123,
+        text=None,
+        caption="mascot part 1",
+        entities=[],
+        caption_entities=[],
+        reply_to_message=None,
+        photo=[SimpleNamespace(file_id="photo1", file_unique_id="photo1_uniq")],
+        voice=None,
+        audio=None,
+        document=None,
+        location=None,
+        media_group_id="group_abc",
+        message_thread_id=None,
+        message_id=1,
+    )
+    update1 = SimpleNamespace(message=msg1, effective_user=user)
+
+    msg2 = SimpleNamespace(
+        chat=SimpleNamespace(type="private", is_forum=False),
+        chat_id=123,
+        text=None,
+        caption="mascot part 2",
+        entities=[],
+        caption_entities=[],
+        reply_to_message=None,
+        photo=[SimpleNamespace(file_id="photo2", file_unique_id="photo2_uniq")],
+        voice=None,
+        audio=None,
+        document=None,
+        location=None,
+        media_group_id="group_abc",
+        message_thread_id=None,
+        message_id=2,
+    )
+    update2 = SimpleNamespace(message=msg2, effective_user=user)
+
+    await channel._on_message(update1, None)
+    second_task = asyncio.create_task(channel._on_message(update2, None))
+    await second_download_started.wait()
+    await asyncio.sleep(0.08)
+
+    assert handled == []
+
+    release_second_download.set()
+    await second_task
+    await asyncio.wait_for(_wait_until(lambda: len(handled) == 1), timeout=0.3)
+
+    assert handled[0]["media"] == [
+        "/fake/path/media_1.png",
+        "/fake/path/media_2.png",
+    ]
+    assert handled[0]["metadata"]["current_media"] == [
+        "/fake/path/media_1.png",
+        "/fake/path/media_2.png",
+    ]
+    assert "mascot part 1" in handled[0]["content"]
+    assert "mascot part 2" in handled[0]["content"]
