@@ -190,6 +190,7 @@ _PLATFORM_SPECS: dict[str, dict[str, str]] = {
 
 # ── Content-type → photography style mapping ────────────────────────────────
 _CONTENT_TYPE_TO_STYLE: dict[str, str] = {
+    "recruitment": "portrait_professional",
     "product": "product_hero",
     "fashion": "fashion_editorial",
     "food": "food_hero",
@@ -211,6 +212,44 @@ _CONTENT_TYPE_TO_STYLE: dict[str, str] = {
     "fitness": "fitness",
     "pet": "pet",
     "wildlife": "wildlife_nature",
+}
+
+# Topic insight comes before camera/style language. It tells the model what the
+# audience must understand and feel, instead of merely stacking visual keywords.
+_CONTENT_INSIGHTS: dict[str, str] = {
+    "recruitment": "make the role feel credible and aspirational, show authentic team energy, clear information hierarchy, mobile-readable typography zones",
+    "product": "make the main benefit visually obvious at first glance, prioritize product recognition and purchase confidence",
+    "fashion": "sell identity and self-expression through silhouette, attitude, styling coherence, and editorial visual rhythm",
+    "food": "trigger appetite through freshness, texture, steam or gloss, generous portions, and an immediately recognizable hero dish",
+    "beverage": "communicate refreshment through temperature cues, condensation, liquid clarity, and a strong flavor signal",
+    "cosmetic": "build trust through cleanliness, texture evidence, ingredient or efficacy cues, and premium tactile detail",
+    "portrait": "create human trust through natural expression, confident posture, clear eye contact, and believable skin texture",
+    "interior": "help viewers imagine living in the space through scale, circulation, daylight, material warmth, and functional zones",
+    "real_estate": "increase perceived value through spaciousness, natural light, accurate geometry, lifestyle context, and trustworthy detail",
+    "tech": "make innovation understandable through one clear use case, precise materials, functional detail, and controlled futuristic accents",
+    "jewelry": "signal craftsmanship and rarity through gemstone fire, metal finish, scale clarity, and restrained luxury",
+    "kids": "communicate safety, joy, age suitability, and simple product interaction in a warm parent-trusted setting",
+    "fitness": "show attainable progress, controlled movement, product utility, and energetic but credible performance",
+    "pet": "create affection and trust through expressive eyes, natural behavior, safety, and a clean caring environment",
+    "wildlife": "preserve authentic behavior, habitat context, natural light, and respectful documentary realism",
+}
+
+_CONTENT_INSIGHTS_VI: dict[str, str] = {
+    "recruitment": "insight ứng viên: vị trí phải đáng tin và đáng khao khát, thể hiện năng lượng đội ngũ chân thực, phân cấp thông tin rõ, vùng chữ dễ đọc trên điện thoại",
+    "product": "insight mua hàng: lợi ích chính phải hiểu ngay từ cái nhìn đầu tiên, sản phẩm dễ nhận diện và tạo cảm giác đáng tin để ra quyết định",
+    "fashion": "insight thời trang: bán bản sắc và khả năng thể hiện cá tính qua phom dáng, thần thái, phối đồ và nhịp hình editorial",
+    "food": "insight ẩm thực: kích thích vị giác bằng độ tươi, kết cấu, hơi nóng hoặc độ bóng, khẩu phần hấp dẫn và món chính nhận ra ngay",
+    "beverage": "insight đồ uống: truyền cảm giác mát hoặc ấm qua nhiệt độ, giọt ngưng tụ, độ trong của chất lỏng và tín hiệu hương vị",
+    "cosmetic": "insight làm đẹp: xây niềm tin bằng cảm giác sạch, bằng chứng kết cấu, thành phần hoặc công dụng và chi tiết cao cấp",
+    "portrait": "insight con người: tạo niềm tin qua biểu cảm tự nhiên, tư thế tự tin, ánh mắt rõ và kết cấu da chân thực",
+    "interior": "insight không gian: giúp người xem hình dung mình đang sống ở đó qua tỷ lệ, lối đi, ánh sáng, vật liệu và công năng",
+    "real_estate": "insight bất động sản: tăng giá trị cảm nhận bằng độ thoáng, ánh sáng tự nhiên, hình học chính xác và bối cảnh sống đáng tin",
+    "tech": "insight công nghệ: làm đổi mới trở nên dễ hiểu bằng một tình huống sử dụng rõ, vật liệu chính xác và chi tiết chức năng",
+    "jewelry": "insight trang sức: thể hiện tay nghề và độ hiếm qua ánh đá, hoàn thiện kim loại, tỷ lệ rõ và sự sang trọng tiết chế",
+    "kids": "insight trẻ em: truyền tải an toàn, niềm vui, độ phù hợp lứa tuổi và cách sử dụng đơn giản trong bối cảnh phụ huynh tin cậy",
+    "fitness": "insight thể thao: cho thấy tiến bộ có thể đạt được, chuyển động chuẩn, công dụng rõ và năng lượng đáng tin",
+    "pet": "insight thú cưng: tạo yêu mến và tin cậy qua ánh mắt, hành vi tự nhiên, sự an toàn và môi trường chăm sóc sạch",
+    "wildlife": "insight thiên nhiên: giữ hành vi chân thực, bối cảnh sinh cảnh, ánh sáng tự nhiên và tinh thần tư liệu tôn trọng",
 }
 
 # ── Universal quality suffixes always appended ───────────────────────────────
@@ -337,6 +376,10 @@ _PHOTOGRAPHY_STYLES_VI: dict[str, str] = {
 
 # ── Content type keyword detection ───────────────────────────────────────────
 _CONTENT_TYPE_KEYWORDS: dict[str, list[str]] = {
+    "recruitment": [
+        "recruitment", "hiring", "job opening", "career", "candidate",
+        "tuyển dụng", "tuyển nhân sự", "việc làm", "ứng viên", "vị trí tuyển",
+    ],
     "food": [
         "food", "dish", "meal", "cuisine", "plate", "restaurant", "dessert",
         "snack", "cake", "bread", "noodle", "rice", "salad", "soup",
@@ -463,6 +506,17 @@ def _get_styles_vi() -> dict[str, str]:
     return {**_PHOTOGRAPHY_STYLES_VI, **_overrides.get("photography_styles_vi", {})}
 
 
+def get_content_insight(content_type: str | None, *, lang: str | None = None) -> str | None:
+    """Return the audience/communication insight for a detected topic."""
+    if not content_type:
+        return None
+    if lang == "vi":
+        insights = {**_CONTENT_INSIGHTS_VI, **_overrides.get("content_insights_vi", {})}
+    else:
+        insights = {**_CONTENT_INSIGHTS, **_overrides.get("content_insights", {})}
+    return insights.get(content_type)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -522,8 +576,12 @@ def build_professional_prompt_suffix(
 
     detected = content_type or detect_content_type(prompt)
     style = get_style_for_content(detected)
+    insight = get_content_insight(detected)
 
     parts: list[str] = []
+
+    if insight:
+        parts.append(insight)
 
     if style:
         parts.append(style)
@@ -546,6 +604,7 @@ def _build_professional_prompt_suffix_vi(
 ) -> str:
     """Vietnamese version of build_professional_prompt_suffix."""
     detected = content_type or detect_content_type(prompt)
+    insight = get_content_insight(detected, lang="vi")
 
     # Get Vietnamese style if available, fallback to original English
     style: str | None = None
@@ -556,6 +615,9 @@ def _build_professional_prompt_suffix_vi(
             style = styles_vi.get(style_key) or _get_styles().get(style_key)
 
     parts: list[str] = []
+
+    if insight:
+        parts.append(insight)
 
     if style:
         parts.append(style)

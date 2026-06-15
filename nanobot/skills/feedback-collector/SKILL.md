@@ -8,17 +8,21 @@ always: false
 
 ## When to Collect Feedback
 
-After EVERY content generation, prompt the customer for feedback.
+After every content generation, use the built-in buttons:
+`Đúng ý`, `Cần chỉnh`, `Tạo biến thể`. The same labels may be typed manually.
+Do not add a second generic feedback question when the buttons are already shown.
 
 ### Key change: `task_id` tracking
 After `generate_image` returns, you will see a `task_id` in the response (e.g. `gen-abc123def456`).
 **Use this task_id when recording feedback** — it connects the feedback to the specific generation.
 
 ### Positive signals (mark as APPROVED):
+- "Đúng ý", "ưng ý"
 - 👍, "đẹp", "ok", "được", "thích", "tuyệt", "perfect", "great"
 - Customer uses the content (shares, downloads)
 
 ### Negative signals (mark as REJECTED):
+- "Cần chỉnh", "chưa đúng ý"
 - 👎, "chưa", "không", "xấu", "sai", "lại", "chỉnh"
 - Customer asks for changes
 

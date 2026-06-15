@@ -19,8 +19,8 @@ from nanobot.security.request_policy import (
 @tool_parameters(
     tool_parameters_schema(
         content=StringSchema(
-            "Message content for proactive or cross-channel delivery. "
-            "Do not use this for a normal reply in the current chat."
+            "Message content for proactive delivery, attachments, or a current-chat "
+            "reply that needs interactive buttons."
         ),
         channel=StringSchema(
             "Optional target channel for cross-channel/proactive delivery. "
@@ -143,10 +143,11 @@ class MessageTool(Tool, ContextAware):
     def description(self) -> str:
         return (
             "Proactively send a message to a user/channel, optionally with file attachments. "
-            "Use this for reminders, cross-channel delivery, or explicit proactive sends. "
-            "Do not use this for the normal reply in the current chat: answer naturally instead. "
+            "Use this for reminders, cross-channel delivery, explicit proactive sends, "
+            "or a current-chat reply that needs buttons or media. "
+            "For an ordinary text-only reply, answer naturally instead. "
             "If channel/chat_id would target the current runtime conversation, do not call this tool "
-            "unless the user explicitly asked you to proactively send an existing file attachment. "
+            "unless you are attaching media or presenting interactive choices. "
             "When generate_image creates images in the current chat, use the message tool "
             "with the artifact paths in the media parameter to deliver the images to the user. "
             "For proactive attachment delivery, use the 'media' parameter with file paths. "

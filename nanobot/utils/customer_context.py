@@ -12,8 +12,33 @@ This enables the agent to automatically:
 
 from __future__ import annotations
 
-import re
 from typing import Any
+
+
+def _dedupe_descriptors(values: list[str]) -> list[str]:
+    """Remove exact and subsumed style phrases while preserving useful order."""
+    result: list[str] = []
+    normalized: list[str] = []
+    for raw in values:
+        value = str(raw).strip()
+        key = " ".join(value.casefold().split())
+        key_words = set(key.split())
+        if not key or any(
+            key == existing or key_words < set(existing.split())
+            for existing in normalized
+        ):
+            continue
+
+        keep_pairs = [
+            (existing_value, existing_key)
+            for existing_value, existing_key in zip(result, normalized, strict=True)
+            if not set(existing_key.split()) < key_words
+        ]
+        result = [pair[0] for pair in keep_pairs]
+        normalized = [pair[1] for pair in keep_pairs]
+        result.append(value)
+        normalized.append(key)
+    return result
 
 
 
@@ -178,13 +203,11 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
         lbl_secondary = "màu phụ"
         lbl_accent = "màu điểm nhấn"
         lbl_avoid = "tránh"
-        lbl_logo = "thương hiệu có logo"
     else:
         lbl_primary = "primary color"
         lbl_secondary = "secondary color"
         lbl_accent = "accent color"
         lbl_avoid = "avoid"
-        lbl_logo = "brand has logo available"
 
     # ── Collect from layered brand memory (takes precedence) ────────────
     mem_parts: list[str] = []
@@ -253,13 +276,22 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
     # Industry-based photography style fallback
     if not brand.get("photographyStyle") and not any("photography" in p.lower() for p in parts):
         industry = (profile.get("business") or {}).get("industry", "").lower()
-        industry_style_hints: dict[str, str] = {
-            "food-beverage": "food editorial photography",
-            "beauty": "beauty product photography",
-            "fashion": "fashion editorial photography",
-            "real-estate": "architectural photography",
-            "tech": "technology product photography",
-        }
+        if lang == "vi":
+            industry_style_hints: dict[str, str] = {
+                "food-beverage": "nhiếp ảnh ẩm thực editorial",
+                "beauty": "nhiếp ảnh sản phẩm làm đẹp",
+                "fashion": "nhiếp ảnh thời trang editorial",
+                "real-estate": "nhiếp ảnh kiến trúc",
+                "tech": "nhiếp ảnh sản phẩm công nghệ",
+            }
+        else:
+            industry_style_hints = {
+                "food-beverage": "food editorial photography",
+                "beauty": "beauty product photography",
+                "fashion": "fashion editorial photography",
+                "real-estate": "architectural photography",
+                "tech": "technology product photography",
+            }
         for key, hint in industry_style_hints.items():
             if key in industry:
                 parts.append(hint)
@@ -273,14 +305,10 @@ def build_prompt_brand_suffix(profile: dict[str, Any]) -> str:
     if avoid:
         avoid_str = f", {lbl_avoid}: {', '.join(avoid)}"
 
+    parts = _dedupe_descriptors(parts)
     if not parts:
         return ""
     suffix = ", ".join(parts) + avoid_str
-
-    # Note about logo availability
-    logo_url = (brand.get("logoUrl") or "").strip()
-    if logo_url:
-        suffix += f", {lbl_logo}"
 
     return suffix
 

@@ -82,8 +82,8 @@ def detect_language(text: str) -> str:
 
     # Common unaccented Vietnamese words
     vi_words = {
-        "mot", "con", "vit", "vang", "co", "xanh", "ho", "yen", "tinh", "cua", 
-        "dep", "lam", "tao", "anh", "bo", "cuc", "mau", "sac", "san", "pham", 
+        "mot", "con", "vit", "vang", "co", "xanh", "ho", "yen", "tinh", "cua",
+        "dep", "lam", "tao", "anh", "bo", "cuc", "mau", "sac", "san", "pham",
         "nang", "dong", "tieng", "viet", "khong", "co", "quan", "ca", "phe"
     }
     words = re.findall(r"\b\w+\b", text_lower)
@@ -150,19 +150,22 @@ def get_target_text_language(prompt: str, customer_lang: str | None = None) -> s
     if "in german" in prompt_lower or "bằng tiếng đức" in prompt_lower or "chữ tiếng đức" in prompt_lower:
         return "de"
 
-    # Fallback to customer language preference if available, else detect from prompt
-    if customer_lang:
-        return customer_lang
-
-    return detect_language(prompt)
+    # The current request language wins when it contains a meaningful language
+    # signal. Profile preference is only a fallback for one-word/neutral briefs.
+    detected = detect_language(prompt)
+    if len(re.findall(r"\b\w+\b", prompt, flags=re.UNICODE)) >= 2 or detected in {
+        "ja", "ko", "zh", "ru",
+    }:
+        return detected
+    return customer_lang or detected
 
 
 def build_language_instruction(target_lang: str) -> str:
     """Build the text language instruction for the prompt."""
     instructions = {
         "vi": (
-            "IMPORTANT: All text, typography, or words appearing in the image MUST be written in Vietnamese "
-            "(LƯU Ý QUAN TRỌNG: Tất cả chữ/text trong ảnh PHẢI viết bằng tiếng Việt, KHÔNG dùng tiếng Anh)."
+            "Không tự thêm nội dung chữ ngoài yêu cầu. "
+            "Mọi chữ xuất hiện trong ảnh phải bằng tiếng Việt, đúng chính tả và dễ đọc; không dùng tiếng Anh."
         ),
         "ja": (
             "IMPORTANT: All text, typography, or words appearing in the image MUST be written in Japanese "
@@ -197,6 +200,69 @@ def build_language_instruction(target_lang: str) -> str:
         )
     }
     return instructions.get(target_lang, "")
+
+
+def build_exact_text_instruction(quoted_texts: list[str], target_lang: str) -> str:
+    """Require quoted strings to be rendered verbatim in the target language."""
+    if not quoted_texts:
+        return ""
+    if target_lang == "vi":
+        exact = ", ".join(f"“{text}”" for text in quoted_texts)
+        return f"Hiển thị chính xác nguyên văn: {exact}; không dịch, không đổi dấu hoặc chính tả."
+    exact = ", ".join(f"'{text}'" for text in quoted_texts)
+    return f"IMPORTANT: Render the exact text {exact} without translating it."
+
+
+def build_logo_instruction(target_lang: str) -> str:
+    """Describe the protected logo asset without duplicating bilingual guidance."""
+    if target_lang == "vi":
+        return (
+            "Logo thương hiệu là ảnh tham chiếu cuối cùng. Chèn đúng logo này vào vị trí sạch, "
+            "tự nhiên và chuyên nghiệp; giữ nguyên hình dáng, cấu trúc, tỷ lệ và chi tiết logo, "
+            "không vẽ lại, không biến dạng, không thay thế bằng chữ mô phỏng."
+        )
+    return (
+        "The brand logo is the final reference image. Place this exact logo in a clean, natural, "
+        "professional position. Preserve its shape, structure, proportions, and details; do not "
+        "redraw, deform, or replace it with simulated lettering."
+    )
+
+
+def build_layout_instruction(target_lang: str) -> str:
+    """Return one compact layout rule in the prompt's language."""
+    if target_lang == "vi":
+        return (
+            "Bố cục sạch, thoáng, chuyên nghiệp; phân cấp thị giác rõ ràng, khoảng cách cân đối, "
+            "độ tương phản tốt; tránh chi tiết thừa và cảm giác chật chội."
+        )
+    return (
+        "Use a clean, spacious, professional composition with clear visual hierarchy, balanced "
+        "spacing, and strong contrast. Avoid clutter and unnecessary elements."
+    )
+
+
+def build_multi_image_instruction(target_lang: str) -> str:
+    """Tell the model to use every content reference without bilingual duplication."""
+    if target_lang == "vi":
+        return (
+            "Sử dụng đầy đủ tất cả ảnh tham chiếu nội dung theo đúng vai trò trong yêu cầu; "
+            "không bỏ sót ảnh nào và kết hợp các yếu tố một cách tự nhiên."
+        )
+    return (
+        "Use every content reference image according to its role in the request. "
+        "Do not omit any image, and combine the relevant elements naturally."
+    )
+
+
+def customer_language_preference() -> str | None:
+    """Return the active customer's preferred communication language."""
+    try:
+        profile = telegram_customer_profile.get()
+        if profile:
+            return (profile.get("preferences") or {}).get("communicationLanguage")
+    except Exception:
+        pass
+    return None
 
 
 def extract_quoted_texts(prompt: str) -> list[str]:
@@ -468,12 +534,9 @@ class ImageGenerationTool(Tool, ContextAware):
                 except Exception as pe:
                     logger.debug("Failed to send progress update: {}", pe)
 
-        # Auto-fill reference_images for revision/edit requests when empty
-        if not reference_images and _is_revision_prompt(prompt):
-            last_img = self._find_last_generated_image()
-            if last_img:
-                logger.info("Auto-injecting last generated image as reference_images: {}", last_img)
-                reference_images = [last_img]
+        # Images attached to the current message or replied-to message are
+        # authoritative for edits, even if the LLM omitted or reordered them.
+        reference_images = self._merge_revision_references(prompt, reference_images)
 
         # Apply Vidtory professional standards + customer brand guidelines
         is_vidtory = (self.config.provider == "vidtory")
@@ -482,10 +545,11 @@ class ImageGenerationTool(Tool, ContextAware):
 
         # Append multi-image instruction if multiple reference images are provided
         if reference_images and len(reference_images) > 1:
-            multi_image_instruction = (
-                "IMPORTANT: Multiple reference images are provided. You MUST reference, combine, and incorporate visual elements, subjects, or contexts from ALL of these reference images into the generated output. Do NOT ignore any of them. "
-                "LƯU Ý QUAN TRỌNG: Nhiều ảnh tham chiếu đã được cung cấp. Bạn BẮT BUỘC phải tham chiếu, kết hợp và đưa các yếu tố hình ảnh, chủ thể hoặc bối cảnh từ TẤT CẢ các ảnh tham chiếu này vào sản phẩm được tạo ra. KHÔNG được bỏ qua bất kỳ ảnh tham chiếu nào."
+            target_lang = get_target_text_language(
+                prompt,
+                customer_language_preference(),
             )
+            multi_image_instruction = build_multi_image_instruction(target_lang)
             optimized_prompt = f"{optimized_prompt}. {multi_image_instruction}"
 
         # Log logo status for traceability
@@ -613,6 +677,7 @@ class ImageGenerationTool(Tool, ContextAware):
                         content="",
                         media=delivery_paths,
                         metadata=dict(ctx.metadata or {}),
+                        buttons=[["Đúng ý", "Cần chỉnh"], ["Tạo biến thể"]],
                     )
                     await self._send_callback(outbound)
                     logger.info(
@@ -717,10 +782,60 @@ class ImageGenerationTool(Tool, ContextAware):
                     if isinstance(h_media, list) and h_media:
                         logger.info("Found last generated image from assistant media: {}", h_media[-1])
                         return h_media[-1]
+
+                # Check 2c: A previously uploaded user image. This supports a
+                # follow-up such as "từ ảnh trên hãy sửa..." without a reply.
+                if role == "user" and msg.get("media"):
+                    h_media = msg.get("media")
+                    if isinstance(h_media, list) and h_media:
+                        logger.info("Found previous user image from session media: {}", h_media[-1])
+                        return h_media[-1]
         except Exception as exc:
             logger.warning("Error finding last generated image: {}", exc)
             
         return None
+
+    @staticmethod
+    def _valid_context_media(values: Any) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        return [
+            value
+            for value in values
+            if isinstance(value, str)
+            and value
+            and (
+                value.startswith(("http://", "https://"))
+                or Path(value).is_file()
+            )
+        ]
+
+    def _merge_revision_references(
+        self,
+        prompt: str,
+        reference_images: list[str] | None,
+    ) -> list[str] | None:
+        """Make current and replied-to images authoritative for edit requests."""
+        if not _is_revision_prompt(prompt):
+            return reference_images
+
+        ctx = _image_gen_request_ctx.get()
+        request_media: list[str] = []
+        if ctx:
+            reply_media = self._valid_context_media(ctx.metadata.get("reply_media"))
+            current_media = self._valid_context_media(ctx.metadata.get("current_media"))
+            request_media = (
+                reply_media + current_media
+                if reply_media or current_media
+                else self._valid_context_media(ctx.metadata.get("media"))
+            )
+
+        merged = list(dict.fromkeys(request_media + list(reference_images or [])))
+        if merged:
+            return merged
+
+        last_img = self._find_last_generated_image()
+        return [last_img] if last_img else reference_images
 
     def _apply_customer_context(self, prompt: str, is_vidtory_provider: bool = False) -> tuple[str, str | None, str | None]:
         """Apply customer brand guidelines and Vidtory professional standards to the prompt.
@@ -748,14 +863,7 @@ class ImageGenerationTool(Tool, ContextAware):
         logo_url: str | None = None
 
         # ── Detect customer language preference ──────────────────────────────
-        customer_lang: str | None = None
-        try:
-            profile = telegram_customer_profile.get()
-            if profile:
-                prefs = profile.get("preferences") or {}
-                customer_lang = prefs.get("communicationLanguage")
-        except Exception:
-            pass
+        customer_lang = customer_language_preference()
 
         # ── Detect target language (explicit or auto-detected) ──────────
         target_lang = get_target_text_language(prompt, customer_lang)
@@ -806,10 +914,9 @@ class ImageGenerationTool(Tool, ContextAware):
                 aspect_ratio = get_default_aspect_ratio_for_channel(profile)
 
                 # ── Step 4: Brand logo URL ────────────────────────────────────
-                # Logo is stored by /setlogo into the DB column `logo_url`.
-                # get_customer_logo_url(profile) reads brand.logoUrl from profile
-                # JSON which is NOT populated by /setlogo — so we must read
-                # directly from the DB column as the authoritative source.
+                # Read the indexed DB column as the authoritative logo source.
+                # Profile JSON is kept in sync, but the indexed value avoids
+                # stale in-memory profile data during a logo-change turn.
                 try:
                     uid = str(
                         profile.get("telegramUserId")
@@ -833,20 +940,7 @@ class ImageGenerationTool(Tool, ContextAware):
 
                 # ── Step 5: Logo preservation guard & instructions ────────────
                 if logo_url:
-                    logo_instruction = (
-                        "IMPORTANT BRAND LOGO INSTRUCTION: The brand logo is provided as the last reference image in the input list. "
-                        "You MUST integrate this exact brand logo into the generated image. "
-                        "Keep the logo design, shape, and structure completely unchanged and intact — DO NOT mutate, redraw, or modify the logo. "
-                        "Note that in some contexts, the logo can be rendered in solid white or solid black to fit the aesthetic of the environment, but the shape and structure of the logo must never be altered or deformed. "
-                        "Integrate the logo naturally, harmoniously, and professionally in a suitable location in the layout "
-                        "(for example: displayed on a TV screen, computer monitor, projector screen, printed on the character's clothing/uniform, on product packaging, or in a subtle clean corner of the image). "
-                        "The placement should be clean and artistic, avoiding clutter. "
-                        "LƯU Ý QUAN TRỌNG VỀ LOGO THƯƠNG HIỆU: Ảnh logo thương hiệu được cung cấp là ảnh tham chiếu cuối cùng trong danh sách. "
-                        "Bạn BẮT BUỘC phải chèn logo thương hiệu này vào hình ảnh được tạo một cách chính xác, giữ nguyên thiết kế và hình dáng gốc của logo, TUYỆT ĐỐI không vẽ lại, không làm thay đổi hay biến dạng cấu trúc logo. "
-                        "Có thể chuyển màu logo sang màu trắng trơn hoặc đen trơn nếu cần thiết để hài hòa với màu sắc của bối cảnh/bố cục xung quanh, nhưng kết cấu thiết kế không được biến dạng. "
-                        "Hãy chèn logo một cách tự nhiên, hài hòa và chuyên nghiệp ở một vị trí phù hợp trong bố cục (ví dụ: hiển thị trên màn hình tivi, màn hình máy tính, máy chiếu, in trên áo/đồng phục của nhân vật, trên bao bì sản phẩm, hoặc đặt ở một góc tinh tế của ảnh) để tạo nét nhận diện tinh tế, sang trọng."
-                    )
-                    enriched = f"{enriched}. {logo_instruction}"
+                    enriched = f"{enriched}. {build_logo_instruction(target_lang)}"
 
                     if self._prompt_has_watermark_keywords(prompt):
                         logo_guard = (
@@ -874,22 +968,14 @@ class ImageGenerationTool(Tool, ContextAware):
             logger.debug("Language text instruction injected into prompt: %s", target_lang)
 
         quoted_texts = extract_quoted_texts(prompt)
-        if quoted_texts:
-            quoted_str = ", ".join(f"'{q}'" for q in quoted_texts)
-            enriched = f"{enriched}. IMPORTANT: Render the exact text {quoted_str} without translating it."
-            logger.debug("Preserve quoted text instruction injected: %s", quoted_str)
+        exact_text_instruction = build_exact_text_instruction(quoted_texts, target_lang)
+        if exact_text_instruction:
+            enriched = f"{enriched}. {exact_text_instruction}"
+            logger.debug("Preserve quoted text instruction injected")
 
         # ── Step 7: General professional layout standards ───────────────────
         # Append standard guidelines to keep layout clean, minimal, and uncluttered
-        design_standard = (
-            "DESIGN LAYOUT STANDARD: Maintain a clean, professional, and minimalist layout. "
-            "Avoid cluttering the image with excessive elements, crowded characters, or unnecessary details. "
-            "Focus on a clean composition with high aesthetic quality. "
-            "TIÊU CHUẨN BỐ CỤC THIẾT KẾ: Đảm bảo bố cục sạch sẽ, chuyên nghiệp và thoáng đãng. "
-            "Tránh nhồi nhét quá nhiều chi tiết thừa, quá nhiều người hoặc quá nhiều màn hình gây rối mắt. "
-            "Tập trung vào tính tối giản, tinh tế và tính nghệ thuật cao."
-        )
-        enriched = f"{enriched}. {design_standard}"
+        enriched = f"{enriched}. {build_layout_instruction(target_lang)}"
 
         return enriched, aspect_ratio, logo_url
 
