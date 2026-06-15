@@ -18,6 +18,7 @@ Public API (unchanged from file-based version)
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ from loguru import logger
 
 # Configurable feedback pattern threshold (default: 2 same complaints → auto-update)
 FEEDBACK_PATTERN_THRESHOLD = int(os.environ.get("VIDTORY_FEEDBACK_THRESHOLD", "2"))
+APPROVED_PROMPT_THRESHOLD = int(os.environ.get("VIDTORY_APPROVED_PROMPT_THRESHOLD", "3"))
 
 
 # ---------------------------------------------------------------------------
@@ -57,63 +59,6 @@ def get_onboarding_status(user_id: str) -> str:
     return (profile.get("onboarding") or {}).get("status", "none")
 
 
-def get_profile_completeness(profile: dict[str, Any]) -> int:
-    """Calculate profile completeness as a percentage (0-100).
-
-    Checks presence of key brand fields:
-    - Business: name (10), industry (10), description (5)
-    - Brand: style (10), colors (15 = 5 each), moodKeywords (5),
-             photographyStyle (5), logoUrl (10)
-    - Audience: gender (5), ageRange (5), segment (5)
-    - Channels: primary (10)
-    - Preferences: communicationLanguage (5)
-    """
-    score = 0
-
-    business = profile.get("business") or {}
-    if business.get("name", "").strip():
-        score += 10
-    if business.get("industry", "").strip():
-        score += 10
-    if business.get("description", "").strip():
-        score += 5
-
-    brand = profile.get("brand") or {}
-    if brand.get("style", "").strip():
-        score += 10
-    palette = brand.get("colorPalette") or {}
-    if palette.get("primary"):
-        score += 5
-    if palette.get("secondary"):
-        score += 5
-    if palette.get("accent"):
-        score += 5
-    if brand.get("moodKeywords"):
-        score += 5
-    if brand.get("photographyStyle", "").strip():
-        score += 5
-    if (brand.get("logoUrl") or "").strip():
-        score += 10
-
-    audience = profile.get("audience") or {}
-    if audience.get("gender"):
-        score += 5
-    if audience.get("ageRange"):
-        score += 5
-    if audience.get("segment"):
-        score += 5
-
-    channels = profile.get("contentChannels") or {}
-    if channels.get("primary"):
-        score += 10
-
-    prefs = profile.get("preferences") or {}
-    if prefs.get("communicationLanguage"):
-        score += 5
-
-    return min(score, 100)
-
-
 def get_logo_url(user_id: str) -> str:
     """Return the logo URL for this user, or empty string."""
     return _db().get_logo_url(user_id)
@@ -126,6 +71,83 @@ def set_logo_url(user_id: str, url: str) -> bool:
     Returns True on success.
     """
     return _db().set_logo_url(user_id, url)
+
+
+async def set_logo_and_refresh_identity(
+    user_id: str,
+    url: str,
+    *,
+    image_bytes: bytes | None = None,
+) -> dict[str, Any]:
+    """Set a new logo and infer a fresh visual identity from it when possible."""
+    saved = _db().set_logo_url(user_id, url)
+    result = {"saved": saved, "identity_refreshed": False}
+    if not saved or not url:
+        return result
+
+    data = image_bytes
+    if data is None and "vidtory.net" in url.lower():
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(follow_redirects=True, timeout=5.0) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                if len(response.content) <= 5 * 1024 * 1024:
+                    data = response.content
+        except Exception as exc:
+            logger.debug("Logo identity fetch skipped for {}: {}", user_id, exc)
+
+    if not data:
+        return result
+
+    try:
+        from nanobot.utils.brand_intelligence import analyze_logo_bytes, apply_logo_identity
+
+        profile = load_profile(user_id)
+        if not profile:
+            return result
+        analysis = analyze_logo_bytes(data)
+        apply_logo_identity(profile, analysis, logo_url=url)
+        if not save_profile(user_id, profile):
+            return result
+
+        source = f"logo_inference:{datetime.now(timezone.utc).isoformat()}"
+        brand = profile.get("brand") or {}
+        palette = brand.get("colorPalette") or {}
+        for key in ("primary", "secondary", "accent"):
+            if palette.get(key):
+                _db().set_memory(
+                    user_id,
+                    layer="core",
+                    key=f"color_{key}",
+                    value=palette[key],
+                    source=source,
+                    force=True,
+                )
+        _db().set_memory(
+            user_id, layer="core", key="logo", value=url, source=source, force=True
+        )
+        for key, value in (
+            ("aesthetic", brand.get("style")),
+            ("mood_reference", ", ".join(brand.get("moodKeywords") or [])),
+            ("photography_style", brand.get("photographyStyle")),
+        ):
+            if value:
+                _db().set_memory(
+                    user_id,
+                    layer="style",
+                    key=key,
+                    value=value,
+                    source=source,
+                    confidence=float(analysis.get("confidence", 0.0)),
+                    force=True,
+                )
+        result["identity_refreshed"] = True
+        result["analysis"] = analysis
+    except Exception as exc:
+        logger.warning("Failed to infer visual identity from logo for {}: {}", user_id, exc)
+    return result
 
 
 def clear_logo(user_id: str) -> bool:
@@ -224,8 +246,7 @@ def create_minimal_profile(
 def get_profile_completeness(profile: dict[str, Any]) -> int:
     """Return a completeness score 0-100 for a customer profile.
 
-    Used by the input validator to determine if onboarding is complete enough
-    for high-quality generation.
+    This is the legacy generation-readiness score used by validators.
     """
     score = 0
     business = profile.get("business") or {}
@@ -262,6 +283,15 @@ def get_profile_completeness(profile: dict[str, Any]) -> int:
         score += 10
 
     return min(score, 100)
+
+
+def get_onboarding_completeness(profile: dict[str, Any]) -> int:
+    """Return completeness for the adaptive onboarding fields."""
+    from nanobot.utils.brand_intelligence import get_profile_gaps
+
+    total_fields = 11
+    missing = len(get_profile_gaps(profile))
+    return round((total_fields - missing) / total_fields * 100)
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +381,8 @@ def update_learning(
     })
 
     changed = False
+    approval_occurrences = 0
+    rejection_occurrences = 0
 
     if rating == "approved":
         # Always reload learning data fresh to avoid stale read-then-write
@@ -358,11 +390,23 @@ def update_learning(
         learning = fresh.get("learningData", learning) if fresh else learning
         learning["approvedCount"] = learning.get("approvedCount", 0) + 1
         profile["learningData"] = learning
-        # Track best performing prompt
+        # Promote only repeated approvals. A single approval is useful evidence,
+        # but not enough to become a durable best-performing pattern.
         if prompt:
             best = learning.setdefault("bestPerformingPrompts", [])
             similar = [p for p in best if isinstance(p, str) and p[:50] == prompt[:50]]
-            if not similar and len(best) < 10:
+            prior_approvals = sum(
+                1
+                for item in _db().get_feedback_list(user_id)
+                if item.get("rating") == "approved"
+                and str(item.get("original_prompt") or "")[:200] == prompt[:200]
+            )
+            approval_occurrences = prior_approvals + 1
+            if (
+                approval_occurrences >= APPROVED_PROMPT_THRESHOLD
+                and not similar
+                and len(best) < 10
+            ):
                 best.append(prompt[:200])
                 changed = True
         if not changed:
@@ -379,12 +423,14 @@ def update_learning(
         changed = True  # always save the incremented counter
 
         if feedback_text:
-            occurrence_count = _db().count_feedback_occurrences(user_id, feedback_text)
+            rejection_occurrences = (
+                _db().count_feedback_occurrences(user_id, feedback_text) + 1
+            )
 
             common = learning.setdefault("commonFeedback", [])
 
             # >= FEEDBACK_PATTERN_THRESHOLD same complaints -> add to commonFeedback (silent auto-update)
-            if occurrence_count >= FEEDBACK_PATTERN_THRESHOLD:
+            if rejection_occurrences >= FEEDBACK_PATTERN_THRESHOLD:
                 normalized = feedback_text.strip().lower()[:100]
                 existing = [str(f).lower()[:100] for f in common]
                 if normalized not in existing and len(common) < 10:
@@ -397,7 +443,7 @@ def update_learning(
 
             # Update avoidList if complaint maps to a visual keyword
             avoid_keywords = _extract_avoid_keywords(feedback_text)
-            if avoid_keywords:
+            if avoid_keywords and rejection_occurrences >= FEEDBACK_PATTERN_THRESHOLD:
                 brand = profile.setdefault("brand", {})
                 avoid = brand.setdefault("avoidList", [])
                 for kw in avoid_keywords:
@@ -430,7 +476,7 @@ def update_learning(
                         value=kw,
                         source=source,
                         confidence=min(
-                            _db().count_feedback_occurrences(user_id, feedback_text) / 5.0,
+                            rejection_occurrences / 5.0,
                             1.0,
                         ),
                     )
@@ -443,7 +489,7 @@ def update_learning(
                     value=normalized,
                     source=source,
                     confidence=min(
-                        _db().count_feedback_occurrences(user_id, feedback_text) / 5.0,
+                        rejection_occurrences / 5.0,
                         1.0,
                     ),
                 )
@@ -452,10 +498,16 @@ def update_learning(
                 # Write approved prompt pattern as positive preference
                 db.set_memory(
                     user_id, layer="preference",
-                    key=f"good_prompt_{hash(prompt[:50]) % 10000:04d}",
+                    key=(
+                        "good_prompt_"
+                        + hashlib.sha256(prompt[:50].encode("utf-8")).hexdigest()[:8]
+                    ),
                     value=prompt[:150],
                     source=source,
-                    confidence=0.7,
+                    confidence=min(
+                        approval_occurrences / APPROVED_PROMPT_THRESHOLD,
+                        1.0,
+                    ),
                 )
         except Exception:
             pass  # Non-fatal — profile_json remains source of truth
@@ -468,6 +520,53 @@ def update_learning(
         comment=feedback_text,
         original_prompt=prompt,
     )
+    if rating == "rejected" and feedback_text:
+        try:
+            patterns = _db().get_global_feedback_patterns(min_users=5, limit=20)
+            normalized = feedback_text.strip().lower()[:60]
+            if any(item.get("feedback") == normalized for item in patterns):
+                logger.warning(
+                    "GLOBAL_FEEDBACK_PATTERN: '{}' reported by >=5 customers; "
+                    "admin review required",
+                    normalized,
+                )
+        except Exception:
+            pass
+
+
+def record_latest_task_feedback(
+    user_id: str,
+    *,
+    rating: str,
+    feedback_text: str = "",
+) -> dict[str, Any]:
+    """Attach a lightweight chat/button response to the user's latest task."""
+    tasks = _db().get_recent_tasks(user_id, limit=1)
+    if not tasks:
+        return {"recorded": False, "reason": "no_recent_task"}
+
+    task = tasks[0]
+    task_id = str(task.get("task_id") or "")
+    prompt = str(task.get("prompt_used") or task.get("brief") or "")
+    update_learning(
+        user_id,
+        rating=rating,
+        prompt=prompt,
+        feedback_text=feedback_text,
+        generation_id=task_id,
+    )
+
+    if rating == "approved":
+        _db().update_task_score(
+            task_id,
+            score_brand_compliance=4.0,
+            first_pass_accepted=True,
+        )
+        _db().complete_task(task_id)
+    elif rating == "rejected":
+        _db().increment_task_revisions(task_id)
+
+    return {"recorded": True, "task_id": task_id, "rating": rating}
 
 
 # ---------------------------------------------------------------------------

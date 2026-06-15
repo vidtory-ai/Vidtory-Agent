@@ -514,7 +514,7 @@ class CustomerDatabase:
                 """,
                 (uid, needle),
             ).fetchone()
-        return max(row["cnt"] if row else 0, 1)
+        return row["cnt"] if row else 0
 
     def get_feedback_list(self, user_id: str, limit: int = 100) -> list[dict[str, Any]]:
         """Return recent feedback records for *user_id*."""
@@ -526,6 +526,30 @@ class CustomerDatabase:
                 ORDER BY created_at DESC LIMIT ?
                 """,
                 (uid, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_global_feedback_patterns(
+        self,
+        *,
+        min_users: int = 5,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return rejected feedback shared by multiple distinct customers."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT LOWER(SUBSTR(TRIM(comment), 1, 60)) AS feedback,
+                       COUNT(DISTINCT user_id) AS customer_count,
+                       COUNT(*) AS occurrence_count
+                FROM feedback
+                WHERE rating = 'rejected' AND TRIM(comment) <> ''
+                GROUP BY LOWER(SUBSTR(TRIM(comment), 1, 60))
+                HAVING COUNT(DISTINCT user_id) >= ?
+                ORDER BY customer_count DESC, occurrence_count DESC
+                LIMIT ?
+                """,
+                (max(1, min_users), max(1, limit)),
             ).fetchall()
         return [dict(row) for row in rows]
 

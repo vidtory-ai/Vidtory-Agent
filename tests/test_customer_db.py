@@ -209,6 +209,17 @@ class TestFeedback:
         count = tmp_db.count_feedback_occurrences("user1", "too dark")
         assert count >= 2
 
+    def test_global_feedback_patterns_count_distinct_customers(self, tmp_db):
+        for index in range(5):
+            tmp_db.append_feedback(
+                f"user{index}",
+                rating="rejected",
+                comment="text too small",
+            )
+        patterns = tmp_db.get_global_feedback_patterns(min_users=5)
+        assert patterns[0]["feedback"] == "text too small"
+        assert patterns[0]["customer_count"] == 5
+
     def test_feedback_is_per_user(self, tmp_db):
         tmp_db.append_feedback("user1", rating="approved")
         tmp_db.append_feedback("user2", rating="rejected")
@@ -513,6 +524,11 @@ class TestCustomerProfilePublicAPI:
         cp.update_learning("user1", rating="approved", prompt="a great prompt")
         p = cp.load_profile("user1")
         assert p["learningData"]["approvedCount"] == 1
+        assert p["learningData"]["bestPerformingPrompts"] == []
+
+        cp.update_learning("user1", rating="approved", prompt="a great prompt")
+        cp.update_learning("user1", rating="approved", prompt="a great prompt")
+        p = cp.load_profile("user1")
         assert "a great prompt"[:200] in p["learningData"]["bestPerformingPrompts"]
 
     def test_update_learning_rejected_pattern(self, tmp_db, monkeypatch):
@@ -644,6 +660,36 @@ class TestLogoPublicAPI:
         assert "logoUrl" in profile["brand"]
         assert profile["brand"]["logoUrl"] == ""
 
+    @pytest.mark.asyncio
+    async def test_set_logo_refreshes_visual_identity_without_resetting_business(
+        self, tmp_db, sample_profile, monkeypatch
+    ):
+        monkeypatch.setattr("nanobot.db.customer_db._db_instance", tmp_db)
+        from io import BytesIO
+        from PIL import Image
+        from nanobot.utils import customer_profile as cp
+
+        sample_profile["business"]["name"] = "Keep Me"
+        sample_profile["audience"]["ageRange"] = "25-34"
+        tmp_db.save_profile("user1", sample_profile)
+
+        image = Image.new("RGB", (100, 100), "#1565C0")
+        payload = BytesIO()
+        image.save(payload, format="PNG")
+
+        result = await cp.set_logo_and_refresh_identity(
+            "user1",
+            "https://b2b.vidtory.net/logo.png",
+            image_bytes=payload.getvalue(),
+        )
+
+        profile = cp.load_profile("user1")
+        assert result["identity_refreshed"] is True
+        assert profile["business"]["name"] == "Keep Me"
+        assert profile["audience"]["ageRange"] == "25-34"
+        assert profile["brand"]["style"] == "corporate"
+        assert profile["brand"]["colorPalette"]["primary"] == "#1565C0"
+
 
 # ===========================================================================
 # Feedback Pattern Threshold
@@ -660,22 +706,40 @@ class TestFeedbackThreshold:
         cp.create_minimal_profile("user1")
         # Use a feedback text that does NOT map to avoid keywords
         # so we only test the commonFeedback threshold behavior.
-        # NOTE: count_feedback_occurrences counts ALREADY-STORED records,
-        # and append_feedback runs AFTER the check. So we need threshold+1
-        # total calls for threshold to be met.
-        cp.update_learning("user1", rating="rejected", feedback_text="text too small")
         cp.update_learning("user1", rating="rejected", feedback_text="text too small")
         cp.update_learning("user1", rating="rejected", feedback_text="text too small")
 
         p = cp.load_profile("user1")
-        # commonFeedback should be empty — only 2 prior records when 3rd call checks
+        # Two occurrences are still below the configured threshold of three.
         assert "text too small" not in [str(f) for f in (p.get("learningData") or {}).get("commonFeedback", [])]
 
-        # Fourth call: 3 prior records >= threshold 3 → triggers
+        # Third occurrence reaches the threshold and is learned immediately.
         cp.update_learning("user1", rating="rejected", feedback_text="text too small")
         p = cp.load_profile("user1")
         common = (p.get("learningData") or {}).get("commonFeedback", [])
         assert any("text too small" in str(f) for f in common)
+
+
+class TestLatestTaskFeedback:
+    def test_record_latest_task_feedback_updates_learning_and_task(self, tmp_db, monkeypatch):
+        monkeypatch.setattr("nanobot.db.customer_db._db_instance", tmp_db)
+        from nanobot.utils import customer_profile as cp
+
+        cp.create_minimal_profile("user1")
+        tmp_db.create_task(
+            "user1",
+            task_id="task-latest",
+            prompt_used="clean product poster",
+            enhanced_prompt="clean product poster, premium lighting",
+        )
+
+        result = cp.record_latest_task_feedback("user1", rating="approved")
+
+        assert result["recorded"] is True
+        assert result["task_id"] == "task-latest"
+        profile = cp.load_profile("user1")
+        assert profile["learningData"]["approvedCount"] == 1
+        assert tmp_db.get_task("task-latest")["first_pass_accepted"] == 1
 
 
 # ===========================================================================
@@ -711,8 +775,8 @@ class TestBrandContextWithLogo:
         logo_lines = [l for l in lines if "Brand Logo" in l]
         assert len(logo_lines) == 0
 
-    def test_brand_suffix_mentions_logo(self):
-        """build_prompt_brand_suffix should note logo availability."""
+    def test_brand_suffix_does_not_duplicate_logo_instruction(self):
+        """Logo availability is carried as an asset, not repeated in style keywords."""
         from nanobot.utils.customer_context import build_prompt_brand_suffix
 
         profile = {
@@ -723,7 +787,7 @@ class TestBrandContextWithLogo:
             },
         }
         suffix = build_prompt_brand_suffix(profile)
-        assert "brand has logo available" in suffix
+        assert "logo" not in suffix.lower()
 
     def test_brand_suffix_no_logo_mention(self):
         """build_prompt_brand_suffix should not mention logo when absent."""
@@ -738,6 +802,18 @@ class TestBrandContextWithLogo:
         }
         suffix = build_prompt_brand_suffix(profile)
         assert "logo" not in suffix.lower()
+
+    def test_brand_suffix_removes_subsumed_style_keywords(self):
+        from nanobot.utils.customer_context import build_prompt_brand_suffix
+
+        profile = {
+            "brand": {
+                "style": "modern energetic",
+                "moodKeywords": ["modern", "energetic"],
+            },
+        }
+
+        assert build_prompt_brand_suffix(profile) == "modern energetic"
 
 
 # ===========================================================================
