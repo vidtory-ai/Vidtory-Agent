@@ -708,6 +708,26 @@ class CustomerDatabase:
             result.setdefault(d["layer"], []).append(d)
         return result
 
+    def get_memory_candidates(
+        self,
+        user_id: str,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return a bounded high-confidence candidate set for relevance ranking."""
+        uid = user_id.split("|")[0].strip()
+        safe_limit = min(max(int(limit), 1), 500)
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM brand_memory
+                WHERE user_id = ?
+                ORDER BY is_locked DESC, confidence DESC, updated_at DESC
+                LIMIT ?
+                """,
+                (uid, safe_limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def delete_memory(self, user_id: str, layer: str, key: str) -> bool:
         """Delete a brand memory entry. Locked entries require explicit deletion."""
         uid = user_id.split("|")[0].strip()

@@ -229,13 +229,11 @@ def build_prompt_brand_suffix(
         layer = str(entry.get("layer") or "").strip().lower()
         if not value or key == "logo":
             continue
-        # Skip best_prompt/good_prompt entries: they contain full prompt strings
-        # with specific objects/subjects from past sessions. Injecting them would
-        # cause characters, animals, or scenes from old images to appear in new,
-        # unrelated requests. Only style-neutral entries (colors, mood, feedback)
-        # are safe to inject into the generation prompt.
-        if any(marker in key for marker in ("best_prompt", "good_prompt", "prompt_")):
-            continue
+        # best_prompt entries contain full prompt strings with specific scene objects.
+        # They are blocked from format_customer_context_lines (LLM reads them and may
+        # naively copy scene objects). However, build_prompt_brand_suffix already uses
+        # select_relevant_memory with query overlap filtering — unrelated best_prompts
+        # are naturally excluded. Relevant ones provide useful layout/style hints.
         if key in memory_color_keys:
             parts.append(f"{memory_color_keys[key]} {value}")
         elif any(marker in key for marker in ("avoid", "must_not", "feedback")):

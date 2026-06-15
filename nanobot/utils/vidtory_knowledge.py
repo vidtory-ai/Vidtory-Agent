@@ -23,7 +23,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Content Layer — editable without touching logic
 # ---------------------------------------------------------------------------
@@ -547,6 +546,11 @@ def get_style_for_content(content_type: str | None) -> str | None:
     return _get_styles().get(style_key)
 
 
+def build_universal_prompt_suffix(*, lang: str | None = None) -> str:
+    """Return topic-neutral commercial quality guidance."""
+    return _get_universal_suffix_vi() if lang == "vi" else _get_universal_suffix()
+
+
 def build_professional_prompt_suffix(
     prompt: str,
     content_type: str | None = None,
@@ -688,9 +692,8 @@ Available style presets for professional image generation:
 
 ### Auto-Enhancement
 The `generate_image` tool automatically:
-- Detects content type from the prompt
-- Applies matching professional photography style
-- Appends universal quality suffixes
+- Keeps subject-specific direction with the LLM instead of fixed category routing
+- Appends topic-neutral commercial quality standards
 - Selects customer's preferred aspect ratio
-- Incorporates brand guidelines from customer profile
+- Incorporates only the most relevant brand and learning memory
 """
