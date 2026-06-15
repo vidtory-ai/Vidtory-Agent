@@ -1219,3 +1219,199 @@ async def test_merge_uploaded_images_requires_suggestion_before_generation(
     assert "2️⃣" in result
     assert "3️⃣" in result
     assert FakeImageClient.instances == []
+
+
+@pytest.mark.asyncio
+async def test_execute_callback_uses_last_generated_image_instead_of_session_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+    original_ref = tmp_path / "original.png"
+    original_ref.write_bytes(PNG_BYTES)
+    generated_ref = tmp_path / "generated.png"
+    generated_ref.write_bytes(PNG_BYTES)
+    session = Session(key="telegram:123")
+    session.add_message("user", "Draw Totoro", media=[str(original_ref.resolve())])
+    session.add_message(
+        "tool",
+        json.dumps({"artifacts": [{"path": str(generated_ref.resolve())}]}),
+        name="generate_image",
+    )
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions(),
+    )
+    ctx = RequestContext(
+        channel="telegram",
+        chat_id="123",
+        message_id="msg_callback",
+        session_key="telegram:123",
+        metadata={"is_callback": True}
+    )
+    tool.set_context(ctx)
+    await tool.execute(
+        prompt="Tinh gọn cao cấp",
+        reference_images=None,
+    )
+    fake = FakeImageClient.instances[0]
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["reference_images"] == [str(generated_ref.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_execute_revision_prompt_without_latest_marker_uses_last_generated_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+    original_ref = tmp_path / "original.png"
+    original_ref.write_bytes(PNG_BYTES)
+    generated_ref = tmp_path / "generated.png"
+    generated_ref.write_bytes(PNG_BYTES)
+    session = Session(key="telegram:123")
+    session.add_message("user", "Draw Totoro", media=[str(original_ref.resolve())])
+    session.add_message(
+        "tool",
+        json.dumps({"artifacts": [{"path": str(generated_ref.resolve())}]}),
+        name="generate_image",
+    )
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions(),
+    )
+    ctx = RequestContext(
+        channel="telegram",
+        chat_id="123",
+        message_id="msg_revision",
+        session_key="telegram:123",
+        metadata={}
+    )
+    tool.set_context(ctx)
+    await tool.execute(
+        prompt="Sửa lại cho ánh sáng ấm hơn",
+        reference_images=None,
+    )
+    fake = FakeImageClient.instances[0]
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["reference_images"] == [str(generated_ref.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_execute_callback_uses_new_user_upload_over_older_generated_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: when user uploads a new product image and then taps a callback
+    direction button, the NEW uploaded image must be used as the reference image,
+    NOT the previously generated image from an earlier session turn.
+
+    Bug introduced in commit eff15de: callback case always preferred last_generated
+    over any subsequent user upload, causing Zen Media to receive the wrong image.
+    """
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+
+    # Simulate: 1) old gen image from turn 0, 2) user uploads a new product image in turn 1
+    old_generated = tmp_path / "old-generated.png"
+    old_generated.write_bytes(PNG_BYTES)
+    new_upload = tmp_path / "new-product-photo.png"
+    new_upload.write_bytes(PNG_BYTES)
+
+    session = Session(key="telegram:123")
+    # Turn 0: old generation
+    session.add_message(
+        "tool",
+        json.dumps({"artifacts": [{"path": str(old_generated.resolve())}]}),
+        name="generate_image",
+    )
+    session.add_message("assistant", "Đây là ảnh bạn yêu cầu.")
+    # Turn 1: user uploads NEW product image (AFTER the old generation)
+    session.add_message(
+        "user",
+        "tạo ảnh quảng cáo từ ảnh này",
+        media=[str(new_upload.resolve())],
+    )
+    session.add_message("assistant", "Bạn muốn hướng ảnh nào?\n1. Hiện đại\n2. Tự nhiên\n3. Cao cấp")
+
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions(),
+    )
+
+    # Simulate user tapping "1. Hiện đại" inline button
+    ctx = RequestContext(
+        channel="telegram",
+        chat_id="123",
+        message_id="msg_callback_new_upload",
+        session_key="telegram:123",
+        metadata={
+            "is_callback": True,
+            "button_label": "Hiện đại",
+            "original_user_content": "1",
+        },
+    )
+    tool.set_context(ctx)
+
+    await tool.execute(
+        prompt="Tạo ảnh quảng cáo sản phẩm theo phong cách hiện đại tối giản",
+        reference_images=None,
+    )
+
+    fake = FakeImageClient.instances[0]
+    assert len(fake.calls) == 1
+    # MUST use the new user upload, NOT the old generated image
+    assert fake.calls[0]["reference_images"] == [str(new_upload.resolve())], (
+        "Expected new user upload to be used as reference when user uploaded "
+        f"AFTER last generation. Got: {fake.calls[0]['reference_images']}"
+    )
+
