@@ -100,3 +100,7 @@ HEARTBEAT.md
 USER.md
 memory/
 sessions/
+
+# Temporary test workspaces
+test_workspace2/
+
