@@ -185,7 +185,7 @@ def should_offer_onboarding(profile: dict[str, Any], user_text: str) -> bool:
 def build_creative_suggestions(prompt: str, industry: str = "") -> list[str]:
     """Return three concise, request-specific directions suitable for buttons."""
     value = _plain(f"{prompt} {industry}")
-    if any(term in value for term in ("tuyen dung", "viec lam", "ung vien", "recruit")):
+    if any(term in value for term in ("tuyen dung", "tuyen vi tri", "tuyen", "viec lam", "ung vien", "recruit")):
         if any(term in value for term in ("cong nghe", "technology", "lap trinh", "developer")):
             return ["Công nghệ chuyên nghiệp", "Trẻ trung năng động", "Tối giản dễ đọc"]
         return ["Chuyên nghiệp tin cậy", "Con người gần gũi", "Tối giản dễ đọc"]
