@@ -232,6 +232,14 @@ def test_extract_quoted_texts() -> None:
     assert extract_quoted_texts("Vẽ một con vịt có chữ “Thơm ngon”") == ["Thơm ngon"]
 
 
+def test_extract_replacement_texts_preserves_unquoted_vietnamese_copy() -> None:
+    from nanobot.agent.tools.image_generation import extract_replacement_texts
+
+    assert extract_replacement_texts(
+        "Sửa chữ Nguyễn Minh Toàn thành Luôn Luôn A+"
+    ) == ["Luôn Luôn A+"]
+
+
 def test_apply_customer_context_language_injection() -> None:
     tool = ImageGenerationTool(
         workspace=Path("."),
@@ -252,6 +260,34 @@ def test_apply_customer_context_language_injection() -> None:
     enriched_quotes, _, _ = tool._apply_customer_context('Vẽ con vịt có chữ "Hello"')
     assert "Hiển thị chính xác nguyên văn: “Hello”" in enriched_quotes
     assert "Render the exact text" not in enriched_quotes
+
+
+def test_apply_customer_context_locks_replacement_text_from_original_request() -> None:
+    from nanobot.agent.tools.context import RequestContext
+
+    tool = ImageGenerationTool(
+        workspace=Path("."),
+        config=ImageGenerationToolConfig(enabled=True),
+        provider_config=ProviderConfig(api_key="sk-or-test"),
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            metadata={
+                "original_user_content": (
+                    "Sửa chữ Nguyễn Minh Toàn thành Luôn Luôn A+"
+                )
+            },
+        )
+    )
+
+    enriched, _, _ = tool._apply_customer_context(
+        "Replace the existing name with the requested new headline"
+    )
+
+    assert "Mọi chữ xuất hiện trong ảnh phải bằng tiếng Việt" in enriched
+    assert "Hiển thị chính xác nguyên văn: “Luôn Luôn A+”" in enriched
 
 
 def test_is_revision_prompt() -> None:
@@ -477,6 +513,118 @@ async def test_execute_auto_injects_last_generated_image_on_revision(
     fake = FakeImageClient.instances[0]
     assert len(fake.calls) == 1
     assert fake.calls[0]["reference_images"] == [str(ref.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_execute_numbered_followup_uses_image_from_immediately_previous_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+
+    latest_ref = tmp_path / "latest-poster.png"
+    latest_ref.write_bytes(PNG_BYTES)
+    session = Session(key="telegram:123")
+    session.add_message("user", "Tạo poster mùa hè xanh")
+    session.add_message(
+        "tool",
+        json.dumps({"artifacts": [{"path": str(latest_ref.resolve())}]}),
+        name="generate_image",
+    )
+    session.add_message(
+        "assistant",
+        "Muốn mình làm tiếp:\n1️⃣ Sáng hơn\n2️⃣ Ấm hơn\n3️⃣ Bản 16:9",
+    )
+    session.add_message("user", "1")
+
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions(),
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            message_id="msg_choice",
+            session_key="telegram:123",
+            metadata={"original_user_content": "1"},
+        )
+    )
+
+    await tool.execute(
+        prompt="Tăng ánh sáng tổng thể, giữ bố cục sạch và chuyên nghiệp",
+        reference_images=None,
+    )
+
+    assert FakeImageClient.instances[0].calls[0]["reference_images"] == [
+        str(latest_ref.resolve())
+    ]
+
+
+@pytest.mark.asyncio
+async def test_numbered_followup_does_not_reuse_image_from_older_turn(
+    tmp_path: Path,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+
+    old_ref = tmp_path / "old-poster.png"
+    old_ref.write_bytes(PNG_BYTES)
+    session = Session(key="telegram:123")
+    session.add_message("user", "Tạo poster cũ")
+    session.add_message(
+        "tool",
+        json.dumps({"artifacts": [{"path": str(old_ref.resolve())}]}),
+        name="generate_image",
+    )
+    session.add_message("assistant", "Đã tạo xong")
+    session.add_message("user", "Tạo ảnh sự kiện mới")
+    session.add_message(
+        "assistant",
+        "Bạn chọn hướng nào?\n1️⃣ Lifestyle\n2️⃣ Tối giản\n3️⃣ Năng động",
+    )
+    session.add_message("user", "1")
+
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(enabled=True),
+        sessions=FakeSessions(),
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            session_key="telegram:123",
+            metadata={"original_user_content": "1"},
+        )
+    )
+
+    assert tool._merge_revision_references(
+        "Nhóm sinh viên tình nguyện ngoài trời",
+        None,
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -730,11 +878,12 @@ def test_apply_customer_context_uses_profile_logo_when_indexed_logo_is_missing(
 
 
 @pytest.mark.asyncio
-async def test_auto_delivery_includes_lazy_feedback_buttons(
+async def test_auto_delivery_leaves_followup_buttons_for_text_response(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nanobot.agent.tools.context import RequestContext
+    from nanobot.agent.tools.message import MessageTool
 
     set_config_path(tmp_path / "config.json")
     FakeImageClient.instances = []
@@ -767,9 +916,26 @@ async def test_auto_delivery_includes_lazy_feedback_buttons(
         )
     )
 
-    await tool.execute(prompt="Tạo ảnh sản phẩm")
- 
-    assert sent[-1].buttons == [["Đúng ý", "Cần chỉnh"], ["Tạo biến thể"]]
+    result = json.loads(await tool.execute(prompt="Tạo ảnh sản phẩm"))
+
+    assert sent[-1].buttons == []
+    assert "Do not send the artifact media again" in result["next_step"]
+
+    message_tool = MessageTool(
+        send_callback=capture,
+        capability_profile="resident_designer",
+    )
+    message_tool.set_context(
+        RequestContext(channel="telegram", chat_id="123", metadata={})
+    )
+    await message_tool.execute(
+        content="Đã tạo xong.\n1️⃣ Sáng hơn\n2️⃣ Ấm hơn\n3️⃣ Bản 16:9",
+        media=[result["artifacts"][0]["path"]],
+    )
+
+    assert sum(bool(message.media) for message in sent) == 1
+    assert sent[-1].media == []
+    assert sent[-1].buttons == [["1", "2", "3"]]
  
  
 @pytest.mark.asyncio

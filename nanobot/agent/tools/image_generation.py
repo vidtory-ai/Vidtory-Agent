@@ -14,6 +14,7 @@ from pydantic import Field
 
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import ContextAware, RequestContext
+from nanobot.agent.tools.message import record_generated_media_delivery
 from nanobot.agent.tools.schema import (
     ArraySchema,
     IntegerSchema,
@@ -280,6 +281,34 @@ def extract_quoted_texts(prompt: str) -> list[str]:
             if m.strip():
                 quotes.append(m.strip())
     return quotes
+
+
+def extract_replacement_texts(prompt: str) -> list[str]:
+    """Extract exact copy requested by Vietnamese text-replacement commands."""
+    pattern = re.compile(
+        r"(?:sửa|thay|đổi|chỉnh)\s+"
+        r"(?:(?:dòng|nội\s+dung)\s+)?chữ\b.*?\bthành\s+"
+        r"(?:[\"“'](?P<quoted>[^\"”'\n]+)[\"”']|(?P<plain>[^,;.\n]+))",
+        flags=re.IGNORECASE,
+    )
+    replacements: list[str] = []
+    for match in pattern.finditer(prompt):
+        value = (match.group("quoted") or match.group("plain") or "").strip()
+        value = value.strip("\"'“”‘’ ")
+        if value:
+            replacements.append(value)
+    return replacements
+
+
+def _is_numbered_followup_choice(content: str) -> bool:
+    """Return True for a typed or tapped creative choice such as 1 or 'chọn 2'."""
+    return bool(
+        re.fullmatch(
+            r"\s*(?:(?:chọn|phương\s+án|hướng)\s*)?[1-3]\s*",
+            content or "",
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def _is_revision_prompt(prompt: str) -> bool:
@@ -924,9 +953,9 @@ class ImageGenerationTool(Tool, ContextAware):
                         content="",
                         media=delivery_paths,
                         metadata=dict(ctx.metadata or {}),
-                        buttons=[["Đúng ý", "Cần chỉnh"], ["Tạo biến thể"]],
                     )
                     await self._send_callback(outbound)
+                    record_generated_media_delivery(delivery_paths)
                     logger.info(
                         "ImageGenerationTool: auto-sent {} image(s) to {}:{}",
                         len(delivery_paths), ctx.channel, ctx.chat_id,
@@ -935,6 +964,11 @@ class ImageGenerationTool(Tool, ContextAware):
                         "status": "sent",
                         "count": len(delivery_paths),
                         "artifacts": artifacts,
+                        "next_step": (
+                            "The image is already delivered. Do not send the artifact media again. "
+                            "Reply with a short completion note, the design note, and exactly three "
+                            "numbered follow-up options formatted as 1️⃣, 2️⃣, 3️⃣ so the UI renders buttons."
+                        ),
                     }
                     if task_id:
                         result["task_id"] = task_id
@@ -980,7 +1014,11 @@ class ImageGenerationTool(Tool, ContextAware):
         prompt_lower = prompt.lower()
         return any(kw in prompt_lower for kw in self._DETAILED_PROMPT_KEYWORDS)
 
-    def _find_last_generated_image(self) -> str | None:
+    def _find_last_generated_image(
+        self,
+        *,
+        recent_turn_only: bool = False,
+    ) -> str | None:
         ctx = _image_gen_request_ctx.get()
         if not ctx:
             logger.debug("Cannot find last generated image: request context not available")
@@ -1004,10 +1042,26 @@ class ImageGenerationTool(Tool, ContextAware):
             if not session or not session.messages:
                 return None
             
-            # Scan messages from the newest to oldest
+            # Scan messages from the newest to oldest. For a bare 1/2/3
+            # choice, stop at the prior user-turn boundary so an unrelated
+            # older image is never pulled into a new clarification flow.
+            user_boundaries = 0
             for msg in reversed(session.messages):
                 role = msg.get("role")
                 content = msg.get("content")
+                if role == "user":
+                    user_boundaries += 1
+                    if recent_turn_only and user_boundaries >= 2:
+                        break
+                    if not recent_turn_only and msg.get("media"):
+                        h_media = msg.get("media")
+                        if isinstance(h_media, list) and h_media:
+                            logger.info(
+                                "Found previous user image from session media: {}",
+                                h_media[-1],
+                            )
+                            return h_media[-1]
+                    continue
                 
                 # Check 2a: Tool response from generate_image
                 if role == "tool" and msg.get("name") == "generate_image" and content:
@@ -1030,13 +1084,6 @@ class ImageGenerationTool(Tool, ContextAware):
                         logger.info("Found last generated image from assistant media: {}", h_media[-1])
                         return h_media[-1]
 
-                # Check 2c: A previously uploaded user image. This supports a
-                # follow-up such as "từ ảnh trên hãy sửa..." without a reply.
-                if role == "user" and msg.get("media"):
-                    h_media = msg.get("media")
-                    if isinstance(h_media, list) and h_media:
-                        logger.info("Found previous user image from session media: {}", h_media[-1])
-                        return h_media[-1]
         except Exception as exc:
             logger.warning("Error finding last generated image: {}", exc)
             
@@ -1063,10 +1110,20 @@ class ImageGenerationTool(Tool, ContextAware):
         reference_images: list[str] | None,
     ) -> list[str] | None:
         """Make current and replied-to images authoritative for edit requests."""
-        if not _is_revision_prompt(prompt):
+        ctx = _image_gen_request_ctx.get()
+        original_user_content = (
+            str(ctx.metadata.get("original_user_content") or "").strip()
+            if ctx
+            else ""
+        )
+        numbered_choice = _is_numbered_followup_choice(original_user_content)
+        if not (
+            _is_revision_prompt(prompt)
+            or _is_revision_prompt(original_user_content)
+            or numbered_choice
+        ):
             return reference_images
 
-        ctx = _image_gen_request_ctx.get()
         request_media: list[str] = []
         if ctx:
             reply_media = self._valid_context_media(ctx.metadata.get("reply_media"))
@@ -1081,7 +1138,20 @@ class ImageGenerationTool(Tool, ContextAware):
         if request_media:
             return merged
 
-        if _references_latest_image(prompt):
+        if numbered_choice:
+            last_img = self._find_last_generated_image(recent_turn_only=True)
+            if last_img:
+                logger.info(
+                    "Numbered follow-up choice uses image from previous turn: {}",
+                    last_img,
+                )
+                return [last_img]
+            return merged or None
+
+        if (
+            _references_latest_image(prompt)
+            or _references_latest_image(original_user_content)
+        ):
             last_img = self._find_last_generated_image()
             if last_img:
                 logger.info(
@@ -1092,6 +1162,11 @@ class ImageGenerationTool(Tool, ContextAware):
 
         if merged:
             return merged
+
+        last_img = self._find_last_generated_image()
+        if last_img:
+            logger.info("Revision uses latest generated image: {}", last_img)
+            return [last_img]
 
     def _apply_customer_context(self, prompt: str, is_vidtory_provider: bool = False) -> tuple[str, str | None, str | None]:
         """Apply customer brand guidelines and Vidtory professional standards to the prompt.
@@ -1122,7 +1197,19 @@ class ImageGenerationTool(Tool, ContextAware):
         customer_lang = customer_language_preference()
 
         # ── Detect target language (explicit or auto-detected) ──────────
-        target_lang = get_target_text_language(prompt, customer_lang)
+        ctx = _image_gen_request_ctx.get()
+        original_user_content = (
+            str(ctx.metadata.get("original_user_content") or "").strip()
+            if ctx
+            else ""
+        )
+        language_source = (
+            original_user_content
+            if original_user_content
+            and not _is_numbered_followup_choice(original_user_content)
+            else prompt
+        )
+        target_lang = get_target_text_language(language_source, customer_lang)
 
         # ── Step 1: Vidtory professional prompt enhancement ──────────────────
         # Skip when the user has already written a detailed/professional prompt
@@ -1234,8 +1321,15 @@ class ImageGenerationTool(Tool, ContextAware):
             enriched = f"{enriched}. {lang_instruction}"
             logger.debug("Language text instruction injected into prompt: %s", target_lang)
 
-        quoted_texts = extract_quoted_texts(prompt)
-        exact_text_instruction = build_exact_text_instruction(quoted_texts, target_lang)
+        exact_texts = list(
+            dict.fromkeys(
+                extract_quoted_texts(prompt)
+                + extract_replacement_texts(prompt)
+                + extract_quoted_texts(original_user_content)
+                + extract_replacement_texts(original_user_content)
+            )
+        )
+        exact_text_instruction = build_exact_text_instruction(exact_texts, target_lang)
         if exact_text_instruction:
             enriched = f"{enriched}. {exact_text_instruction}"
             logger.debug("Preserve quoted text instruction injected")

@@ -63,6 +63,7 @@ async def test_video_generation_tool(tmp_path: Path, monkeypatch: pytest.MonkeyP
     payload = json.loads(result)
     assert "artifacts" in payload
     assert len(payload["artifacts"]) == 1
+    assert "exactly three numbered follow-up options" in payload["next_step"]
     artifact = payload["artifacts"][0]
     assert artifact["mime"] == "video/mp4"
     assert Path(artifact["path"]).is_file()

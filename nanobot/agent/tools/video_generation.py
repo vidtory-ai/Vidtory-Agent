@@ -252,7 +252,9 @@ class VideoGenerationTool(Tool, ContextAware):
                     "artifacts": [artifact],
                     "next_step": (
                         "Call the message tool with this artifact path in the media parameter "
-                        "to deliver the video to the user."
+                        "to deliver the video to the user. Include a short completion note "
+                        "and exactly three numbered follow-up options formatted as 1️⃣, 2️⃣, 3️⃣ "
+                        "so the UI renders buttons."
                     ),
                 },
                 ensure_ascii=False,

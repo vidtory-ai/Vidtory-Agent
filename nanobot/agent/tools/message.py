@@ -1,5 +1,6 @@
 """Message tool for sending messages to users."""
 
+import re
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -14,6 +15,35 @@ from nanobot.security.request_policy import (
     evaluate_request,
     is_resident_designer_profile,
 )
+
+_generated_media_delivered_var: ContextVar[tuple[str, ...]] = ContextVar(
+    "generated_media_delivered_in_turn",
+    default=(),
+)
+
+
+def _media_identity(value: str) -> str:
+    if value.startswith(("http://", "https://")):
+        return value
+    try:
+        return str(Path(value).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return value
+
+
+def record_generated_media_delivery(media: list[str]) -> None:
+    """Record media already delivered directly by a generation tool."""
+    previous = _generated_media_delivered_var.get()
+    identities = tuple(_media_identity(str(path)) for path in media if path)
+    _generated_media_delivered_var.set(tuple(dict.fromkeys(previous + identities)))
+
+
+def _numbered_choice_buttons(content: str) -> list[list[str]]:
+    matches = re.findall(r"(?m)^\s*([1-3])\ufe0f?\u20e3\s+\S", content)
+    if matches == ["1", "2", "3"]:
+        return [matches]
+    matches = re.findall(r"(?m)^\s*([1-3])[.)]\s+\S", content)
+    return [matches] if matches == ["1", "2", "3"] else []
 
 
 @tool_parameters(
@@ -114,6 +144,7 @@ class MessageTool(Tool, ContextAware):
         """Reset per-turn send tracking."""
         self._sent_in_turn = False
         self._turn_delivered_media_var.set(())
+        _generated_media_delivered_var.set(())
 
     def turn_delivered_media_paths(self) -> list[str]:
         """Absolute paths attached via this tool to the active chat in the current turn."""
@@ -181,6 +212,8 @@ class MessageTool(Tool, ContextAware):
         from nanobot.utils.helpers import strip_think
 
         content = strip_think(content)
+        if buttons is None and is_resident_designer_profile(self._capability_profile):
+            buttons = _numbered_choice_buttons(content)
 
         if buttons is not None:
             if not isinstance(buttons, list) or any(
@@ -249,6 +282,10 @@ class MessageTool(Tool, ContextAware):
                 media = self._resolve_media(media)
             except (OSError, PermissionError, ValueError) as e:
                 return f"Error: media path is not allowed: {str(e)}"
+            delivered = set(_generated_media_delivered_var.get())
+            media = [path for path in media if _media_identity(path) not in delivered]
+            if not media and not content and not buttons:
+                return "Media already delivered in this turn"
 
         metadata = dict(self._default_metadata.get()) if same_target else {}
         if message_id:

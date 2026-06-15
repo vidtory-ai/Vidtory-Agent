@@ -344,6 +344,42 @@ async def test_message_tool_start_turn_clears_tracked_media(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_message_tool_does_not_resend_media_already_delivered_by_generator(
+    tmp_path,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.agent.tools.message import record_generated_media_delivery
+
+    sent: list[OutboundMessage] = []
+
+    async def _send(msg: OutboundMessage) -> None:
+        sent.append(msg)
+
+    tool = MessageTool(send_callback=_send, capability_profile="resident_designer")
+    tool.set_context(RequestContext(channel="telegram", chat_id="chat-1", metadata={}))
+    tool.start_turn()
+    image = tmp_path / "generated.png"
+    image.write_bytes(b"image")
+    record_generated_media_delivery([str(image.resolve())])
+
+    result = await tool.execute(
+        content=(
+            "Đây là bản đã chỉnh.\n\n"
+            "1️⃣ Sáng hơn\n"
+            "2️⃣ Ấm hơn\n"
+            "3️⃣ Bản 16:9"
+        ),
+        media=[str(image.resolve())],
+    )
+
+    assert result.startswith("Message sent")
+    assert len(sent) == 1
+    assert sent[0].content.startswith("Đây là bản đã chỉnh.")
+    assert sent[0].media == []
+    assert sent[0].buttons == [["1", "2", "3"]]
+
+
+@pytest.mark.asyncio
 async def test_message_tool_cross_target_does_not_track_turn_media(tmp_path) -> None:
     async def _send(msg: OutboundMessage) -> None:
         pass
