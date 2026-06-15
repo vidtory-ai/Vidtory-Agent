@@ -1873,3 +1873,53 @@ async def test_callback_query_ignores_unauthorized_user_before_side_effects() ->
     query.answer.assert_not_awaited()
     query.message.edit_reply_markup.assert_not_awaited()
     channel._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delayed_remove_reaction_uses_config_delay(monkeypatch) -> None:
+    """_delayed_remove_reaction and _add_reaction should respect react_remove_delay in config."""
+    import asyncio
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", react_remove_delay=5.0),
+        MessageBus(),
+    )
+    channel._app = _FakeApp(lambda: None)
+    channel._app.bot.set_message_reaction = AsyncMock(return_value=None)
+
+    sleep_calls = []
+    async def mock_sleep(delay):
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", mock_sleep)
+
+    await channel._delayed_remove_reaction("12345", 999, delay=channel.config.react_remove_delay)
+
+    assert sleep_calls == [5.0]
+    channel._app.bot.set_message_reaction.assert_awaited_once_with(
+        chat_id=12345,
+        message_id=999,
+        reaction=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_add_reaction_triggers_delayed_remove_with_correct_delay() -> None:
+    import asyncio
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", react_remove_delay=5.0, remove_react_emoji=True),
+        MessageBus(),
+    )
+    channel._app = _FakeApp(lambda: None)
+    channel._app.bot.set_message_reaction = AsyncMock(return_value=None)
+
+    delayed_calls = []
+    async def mock_delayed_remove_reaction(chat_id, message_id, delay):
+        delayed_calls.append((chat_id, message_id, delay))
+
+    channel._delayed_remove_reaction = mock_delayed_remove_reaction
+
+    await channel._add_reaction("12345", 999, "👀")
+    await asyncio.sleep(0.01)
+
+    assert len(delayed_calls) == 1
+    assert delayed_calls[0] == ("12345", 999, 5.0)

@@ -16,6 +16,7 @@ class TelegramConfig(Base):
     reply_to_message: bool = False
     react_emoji: str = "👀"
     remove_react_emoji: bool = True
+    react_remove_delay: float = 5.0
     group_policy: Literal["open", "mention"] = "mention"
     connection_pool_size: int = 32
     pool_timeout: float = 5.0
