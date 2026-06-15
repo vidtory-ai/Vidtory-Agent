@@ -96,18 +96,26 @@ class TelegramChannel(
     def is_allowed(self, sender_id: str) -> bool:
         """Preserve Telegram's legacy id|username allowlist matching."""
         allow_list = getattr(self.config, "allow_from", [])
+        allowed = False
         if getattr(self.config, "require_user_api_key", False):
             if not allow_list or "*" in allow_list:
-                return True
-            return self._matches_telegram_allowlist(sender_id, allow_list)
+                allowed = True
+            else:
+                allowed = self._matches_telegram_allowlist(sender_id, allow_list)
+        else:
+            if super().is_allowed(sender_id):
+                allowed = True
+            elif not allow_list or "*" in allow_list:
+                allowed = False
+            else:
+                allowed = self._matches_telegram_allowlist(sender_id, allow_list)
 
-        if super().is_allowed(sender_id):
-            return True
-
-        if not allow_list or "*" in allow_list:
-            return False
-
-        return self._matches_telegram_allowlist(sender_id, allow_list)
+        if not allowed:
+            self.logger.warning(
+                "Access denied for sender {}. Add them to allowFrom list in config.json to grant access.",
+                sender_id
+            )
+        return allowed
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -252,8 +260,10 @@ class TelegramChannel(
         if not msg.metadata.get("_progress", False):
             self._stop_typing(msg.chat_id)
             if reply_to_message_id := msg.metadata.get("message_id"):
-                with suppress(ValueError):
-                    await self._remove_reaction(msg.chat_id, int(reply_to_message_id))
+                if getattr(self.config, "remove_react_emoji", True):
+                    asyncio.create_task(
+                        self._delayed_remove_reaction(msg.chat_id, int(reply_to_message_id), delay=3.0)
+                    )
 
         try:
             chat_id = int(msg.chat_id)
@@ -430,8 +440,10 @@ class TelegramChannel(
                 return
             self._stop_typing(chat_id)
             if reply_to_message_id := meta.get("message_id"):
-                with suppress(ValueError):
-                    await self._remove_reaction(chat_id, int(reply_to_message_id))
+                if getattr(self.config, "remove_react_emoji", True):
+                    asyncio.create_task(
+                        self._delayed_remove_reaction(chat_id, int(reply_to_message_id), delay=3.0)
+                    )
             thread_kwargs = {}
             if message_thread_id := meta.get("message_thread_id"):
                 thread_kwargs["message_thread_id"] = message_thread_id
@@ -610,6 +622,21 @@ class TelegramChannel(
             )
         except Exception as e:
             self.logger.debug("reaction removal failed: {}", e)
+
+    async def _delayed_remove_reaction(self, chat_id: str, message_id: int, delay: float = 3.0) -> None:
+        """Wait for delay seconds, then remove the reaction."""
+        await asyncio.sleep(delay)
+        await self._remove_reaction(chat_id, message_id)
+
+    async def _delete_user_message(self, chat_id: int, message_id: int) -> None:
+        """Safely delete a user's message (e.g. containing an API key)."""
+        if not self._app:
+            return
+        try:
+            await self._app.bot.delete_message(chat_id=chat_id, message_id=message_id)
+            self.logger.info("Deleted API key message {} in chat {}", message_id, chat_id)
+        except Exception as e:
+            self.logger.warning("Failed to delete API key message {}: {}", message_id, e)
 
     async def _typing_loop(self, chat_id: str) -> None:
         """Repeatedly send 'typing' action until cancelled."""

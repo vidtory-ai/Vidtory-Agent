@@ -22,6 +22,7 @@ class TelegramCommandsMixin:
         sender_id = self._sender_id(user)
         if not self.is_allowed(sender_id):
             return
+        await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
 
         # When multi-user API key mode is enabled, guide new users to set up their key.
         if getattr(self.config, "require_user_api_key", False):
@@ -82,6 +83,7 @@ class TelegramCommandsMixin:
         sender_id = self._sender_id(user)
         if not self.is_allowed(sender_id):
             return
+        await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
 
         # When multi-user mode is on and user has no key yet, remind them to set it up.
         if getattr(self.config, "require_user_api_key", False):
@@ -110,6 +112,8 @@ class TelegramCommandsMixin:
             return
         if not self.is_allowed(self._sender_id(update.effective_user)):
             return
+        if update.message:
+            await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
 
         # Always attempt to handle key-management commands.
         # _handle_api_key_commands returns False when require_user_api_key=False,
@@ -181,6 +185,7 @@ class TelegramCommandsMixin:
                 return True
             key = parts[1].strip()
             self.keystore.set_key(sender_id, key)
+            await self._delete_user_message(message.chat_id, message.message_id)
             # Check if user already has a brand profile
             has_profile = False
             try:
@@ -192,7 +197,8 @@ class TelegramCommandsMixin:
             if has_profile:
                 await message.reply_text(
                     "✅ *Đã lưu Vidtory API Key thành công!*\n"
-                    "Bot đang sẵn sàng phục vụ bạn. Gõ /brand để xem profile.",
+                    "Bot đang sẵn sàng phục vụ bạn. Gõ /brand để xem profile.\n\n"
+                    "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
                     parse_mode="Markdown"
                 )
             else:
@@ -203,7 +209,8 @@ class TelegramCommandsMixin:
                     "🎯 Để bot tạo nội dung *bám sát thương hiệu* của bạn, "
                     "mình cần biết thêm một chút về brand.\n\n"
                     "Bạn muốn thiết lập brand profile ngay không?\n"
-                    "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_",
+                    "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_\n\n"
+                    "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
                     parse_mode="Markdown",
                     reply_markup=reply_markup,
                 )
@@ -730,6 +737,7 @@ class TelegramCommandsMixin:
         sender_id = self._sender_id(user)
         if not self.is_allowed(sender_id):
             return
+        await self._add_reaction(str(message.chat_id), message.message_id, self.config.react_emoji)
 
         if getattr(self.config, "require_user_api_key", False):
             if await self._handle_api_key_commands(update):

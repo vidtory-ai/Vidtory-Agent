@@ -271,6 +271,7 @@ class TelegramMessagesMixin:
             if not self.keystore.get_key(sender_id):
                 if self._looks_like_api_key(raw_text := (message.text or "").strip()):
                     self.keystore.set_key(sender_id, raw_text)
+                    await self._delete_user_message(message.chat_id, message.message_id)
                     # Check if user already has a brand profile
                     has_profile = False
                     try:
@@ -282,7 +283,8 @@ class TelegramMessagesMixin:
                     if has_profile:
                         await message.reply_text(
                             "✅ *Đã lưu Vidtory API Key thành công!*\n"
-                            "Bot đang sẵn sàng. Gõ /help để xem danh sách lệnh.",
+                            "Bot đang sẵn sàng. Gõ /help để xem danh sách lệnh.\n\n"
+                            "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
                             parse_mode="Markdown"
                         )
                     else:
@@ -293,7 +295,8 @@ class TelegramMessagesMixin:
                             "🎯 Để bot tạo nội dung *bám sát thương hiệu* của bạn, "
                             "mình cần biết thêm một chút về brand.\n\n"
                             "Bạn muốn thiết lập brand profile ngay không?\n"
-                            "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_",
+                            "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_\n\n"
+                            "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
                             parse_mode="Markdown",
                             reply_markup=reply_markup,
                         )
@@ -316,6 +319,7 @@ class TelegramMessagesMixin:
             raw_text = (message.text or "").strip()
             if self._looks_like_api_key(raw_text):
                 self.keystore.set_key(sender_id, raw_text)
+                await self._delete_user_message(message.chat_id, message.message_id)
                 has_profile = False
                 try:
                     from nanobot.utils.customer_profile import profile_exists
@@ -326,7 +330,8 @@ class TelegramMessagesMixin:
                 if has_profile:
                     await message.reply_text(
                         "✅ *Đã lưu Vidtory API Key thành công!*\n"
-                        "Bot đang sẵn sàng phục vụ bạn.",
+                        "Bot đang sẵn sàng phục vụ bạn.\n\n"
+                        "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
                         parse_mode="Markdown"
                     )
                 else:
@@ -337,7 +342,8 @@ class TelegramMessagesMixin:
                         "🎯 Để bot tạo nội dung *bám sát thương hiệu* của bạn, "
                         "mình cần biết thêm một chút về brand.\n\n"
                         "Bạn muốn thiết lập brand profile ngay không?\n"
-                        "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_",
+                        "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_\n\n"
+                        "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
                         parse_mode="Markdown",
                         reply_markup=reply_markup,
                     )
