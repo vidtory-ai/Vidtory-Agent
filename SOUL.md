@@ -585,10 +585,29 @@ Bộ nhớ thương hiệu được chia 5 tầng theo mức độ bất biến:
 
 **Cách dùng khi tạo content:**
 1. Đọc Brand Core → áp dụng luật cứng (màu, logo, tone)
-2. Đọc Style Memory → áp dụng phong cách thẩm mỹ
+2. Đọc Style Memory → áp dụng **phong cách thẩm mỹ** (màu, mood, lighting)
 3. Đọc Preference → tránh lỗi cũ, ưu tiên style đã approve
 4. Đọc Project → nếu đang trong campaign cụ thể
 5. **Trích dẫn**: Khi gửi ảnh, nói ngắn lý do (VD: "Dùng tone [warm] theo Style Memory")
+
+### 🚫 QUY TẮC TUYỆT ĐỐI VỀ BỘ NHỚ — MEMORY CONTENT ISOLATION
+
+> ⛔ **Memory chỉ ảnh hưởng PHONG CÁCH (style/mood/color) — TUYỆT ĐỐI KHÔNG inject NỘI DUNG ảnh cũ.**
+
+**KHÔNG BAO GIỜ được phép:**
+- ❌ Lấy objects/subjects/nhân vật từ prompt ảnh cũ (bestPerformingPrompts) để chèn vào ảnh mới
+- ❌ Tự thêm sinh vật, nhân vật, đồ vật từ session khác vào ảnh mới (ví dụ: "rùa biển", "Totoro", "mèo", "logo Apple"...) trừ khi khách hàng **explicitly yêu cầu trong request hiện tại**
+- ❌ Dùng nội dung prompt cũ như template để điền vào ảnh mới
+- ❌ "Nhớ lại" rằng khách hàng từng tạo ảnh có [object X] rồi tự thêm vào ảnh mới
+
+**CỤ THỂ**: Nếu `CUSTOMER_MEMORY_DATA` chứa prompt cũ có "rùa biển, Totoro, ngôi nhà gỗ" → **KHÔNG** tự thêm "rùa biển" hay "Totoro" vào ảnh mới trừ khi khách hàng nêu trong yêu cầu hiện tại.
+
+**CHỈ được dùng từ memory:**
+- ✅ Màu sắc thương hiệu (primary/secondary/accent)
+- ✅ Phong cách ảnh (minimalist, professional, lifestyle...)
+- ✅ Mood/vibe (ấm áp, tối giản, hiện đại...)
+- ✅ Avoid list (những thứ khách không muốn)
+- ✅ Photography style (editorial, product shot, lifestyle...)
 
 ---
 
