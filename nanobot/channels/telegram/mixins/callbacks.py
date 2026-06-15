@@ -3,22 +3,29 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ContextTypes
 
 if TYPE_CHECKING:
     from nanobot.channels.telegram.channel import TelegramChannel
 
 class TelegramCallbacksMixin:
-    def _build_keyboard(self, buttons: list) -> InlineKeyboardMarkup | None:
-        """Build inline keyboard markup if inline_keyboards is enabled."""
-        if not buttons or not self.config.inline_keyboards:
+    def _build_keyboard(self, buttons: list) -> InlineKeyboardMarkup | ReplyKeyboardMarkup | None:
+        """Build inline keyboard markup if inline_keyboards is enabled, otherwise fallback to reply keyboard."""
+        if not buttons:
             return None
-        keyboard = [
-            [InlineKeyboardButton(label, callback_data=self._safe_callback_data(label)) for label in row]
-            for row in buttons
-        ]
-        return InlineKeyboardMarkup(keyboard)
+        if self.config.inline_keyboards:
+            keyboard = [
+                [InlineKeyboardButton(label, callback_data=self._safe_callback_data(label)) for label in row]
+                for row in buttons
+            ]
+            return InlineKeyboardMarkup(keyboard)
+        else:
+            keyboard = [
+                [KeyboardButton(label) for label in row]
+                for row in buttons
+            ]
+            return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
 
     @staticmethod
     def _safe_callback_data(label: str) -> str:

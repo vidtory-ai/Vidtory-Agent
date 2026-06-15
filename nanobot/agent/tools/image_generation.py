@@ -254,6 +254,20 @@ class ImageGenerationTool(Tool, ContextAware):
                 f"({self.config.max_images_per_turn})"
             )
 
+        # Send a loading/progress message to the user to improve responsiveness
+        ctx = _image_gen_request_ctx.get()
+        if ctx and self._send_callback:
+            try:
+                progress_msg = OutboundMessage(
+                    channel=ctx.channel,
+                    chat_id=ctx.chat_id,
+                    content="🎨 *Đã nhận yêu cầu vẽ ảnh!* Designer đang bắt đầu phác thảo và làm việc chăm chỉ... Vui lòng đợi trong giây lát nhé! ⏳",
+                    metadata={**(ctx.metadata or {}), "_progress": True},
+                )
+                await self._send_callback(progress_msg)
+            except Exception as e:
+                logger.debug("Failed to send image generation progress message: {}", e)
+
         # Apply Vidtory professional standards + customer brand guidelines
         optimized_prompt, customer_ar, logo_url = self._apply_customer_context(prompt)
         resolved_ar = aspect_ratio or customer_ar or self.config.default_aspect_ratio

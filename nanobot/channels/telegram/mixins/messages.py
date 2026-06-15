@@ -421,48 +421,58 @@ class TelegramMessagesMixin:
         has_text = bool(message.text or message.caption)
         is_reply = reply is not None
         if has_media and not has_text and not is_reply:
-            # Determine if this is a document file (not image/video)
-            doc = getattr(message, "document", None)
-            is_document_file = (
-                doc is not None
-                and not (getattr(doc, "mime_type", "") or "").startswith(("image/", "video/"))
-            )
+            # Bypass this guard during onboarding since the user is expected to send a logo/signal
+            in_onboarding = False
+            try:
+                from nanobot.utils.customer_profile import get_onboarding_status
+                uid_check = sender_id.split("|")[0].strip()
+                in_onboarding = get_onboarding_status(uid_check) == "in_progress"
+            except Exception:
+                pass
 
-            if is_document_file:
-                file_name = getattr(doc, "file_name", "file") or "file"
-                file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
-
-                # Early rejection for blocked file types
-                from nanobot.utils.document_sanitizer import sanitize_document
-                if media_paths:
-                    scan = sanitize_document(media_paths[0])
-                    if scan.status == "blocked":
-                        await message.reply_text(
-                            scan.user_message,
-                            parse_mode="Markdown",
-                        )
-                        return
-
-                await message.reply_text(
-                    f"📄 *File đã nhận: `{file_name}`*\n\n"
-                    "Bạn muốn tôi dùng file này để:\n\n"
-                    "• 🏷️ Cập nhật thông tin thương hiệu _(brand guidelines)_\n"
-                    "• 📋 Tham khảo khi tạo ảnh/video _(design brief)_\n"
-                    "• 📝 Đọc nội dung và tóm tắt\n\n"
-                    "_Gửi lại file kèm caption mô tả mục đích nhé!_\n"
-                    "_Ví dụ: gửi file + gõ \"đây là brand guidelines\"_",
-                    parse_mode="Markdown",
+            if not in_onboarding:
+                # Determine if this is a document file (not image/video)
+                doc = getattr(message, "document", None)
+                is_document_file = (
+                    doc is not None
+                    and not (getattr(doc, "mime_type", "") or "").startswith(("image/", "video/"))
                 )
-            else:
-                await message.reply_text(
-                    "📷 *Ảnh đã nhận!*\n\n"
-                    "Bạn muốn tôi làm gì với ảnh này?\n\n"
-                    "• Reply ảnh + gõ `/setlogo` — đặt làm logo\n"
-                    "• Reply ảnh + mô tả yêu cầu — tạo ảnh/video\n"
-                    "• Reply ảnh + `/removewm` — xoá watermark",
-                    parse_mode="Markdown",
-                )
-            return
+
+                if is_document_file:
+                    file_name = getattr(doc, "file_name", "file") or "file"
+                    file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+
+                    # Early rejection for blocked file types
+                    from nanobot.utils.document_sanitizer import sanitize_document
+                    if media_paths:
+                        scan = sanitize_document(media_paths[0])
+                        if scan.status == "blocked":
+                            await message.reply_text(
+                                scan.user_message,
+                                parse_mode="Markdown",
+                            )
+                            return
+
+                    await message.reply_text(
+                        f"📄 *File đã nhận: `{file_name}`*\n\n"
+                        "Bạn muốn tôi dùng file này để:\n\n"
+                        "• 🏷️ Cập nhật thông tin thương hiệu _(brand guidelines)_\n"
+                        "• 📋 Tham khảo khi tạo ảnh/video _(design brief)_\n"
+                        "• 📝 Đọc nội dung và tóm tắt\n\n"
+                        "_Gửi lại file kèm caption mô tả mục đích nhé!_\n"
+                        "_Ví dụ: gửi file + gõ \"đây là brand guidelines\"_",
+                        parse_mode="Markdown",
+                    )
+                else:
+                    await message.reply_text(
+                        "📷 *Ảnh đã nhận!*\n\n"
+                        "Bạn muốn tôi làm gì với ảnh này?\n\n"
+                        "• Reply ảnh + gõ `/setlogo` — đặt làm logo\n"
+                        "• Reply ảnh + mô tả yêu cầu — tạo ảnh/video\n"
+                        "• Reply ảnh + `/removewm` — xoá watermark",
+                        parse_mode="Markdown",
+                    )
+                return
 
         # Guard: New user onboarding prompt
         try:
@@ -632,24 +642,8 @@ class TelegramMessagesMixin:
                         await self._app.bot.send_message(
                             chat_id=chat_id,
                             text=(
-                                "📝 *Tuyệt vời! Dưới đây là mẫu thông tin cơ bản:*\n\n"
-                                "• *Tên thương hiệu:* ...\n"
-                                "• *Ngành nghề:* ...\n"
-                                "• *Phong cách thiết kế:* ...\n"
-                                "• *Màu sắc chủ đạo:* ...\n"
-                                "• *Logo:* (xem hướng dẫn bên dưới)\n\n"
-                                "_💡 Mẹo: Điền càng chi tiết thì AI tạo nội dung càng chuẩn xác. "
-                                "Tuy nhiên nếu bạn không điền đủ cũng không sao, "
-                                "sau này trong quá trình làm việc hệ thống sẽ tự động quan sát và học dần dần. "
-                                "Bạn không cần phải ép mình trả lời hoàn hảo ngay từ đầu!_\n\n"
-                                "Hãy copy mẫu trên, điền thông tin và gửi lại cho tôi nhé.\n\n"
-                                "━━━━━━━━━━━━━━\n"
-                                "🖼️ *Thêm logo thương hiệu (tuỳ chọn nhưng rất nên có):*\n\n"
-                                "*Cách 1 — Gửi URL logo:*\n"
-                                "`/setlogo https://link-logo-cua-ban.png`\n\n"
-                                "*Cách 2 — Gửi file ảnh:*\n"
-                                "Reply bất kỳ ảnh logo nào + gõ `/setlogo`\n\n"
-                                "_Logo sẽ được tự động chèn vào mọi ảnh quảng cáo bạn tạo._"
+                                "🎨 *Tuyệt vời! Hãy bắt đầu thiết lập brand profile.*\n\n"
+                                "Bạn gửi cho tôi **logo thương hiệu** của mình nhé (gửi file ảnh logo hoặc nhập link website của bạn để tôi tự tìm kiếm logo và tông màu chủ đạo) 👇"
                             ),
                             parse_mode="Markdown"
                         )

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Awaitable
+
+from loguru import logger
 
 from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.agent.tools.path_utils import is_under
 from nanobot.agent.tools.schema import (
     ArraySchema,
@@ -14,6 +18,7 @@ from nanobot.agent.tools.schema import (
     StringSchema,
     tool_parameters_schema,
 )
+from nanobot.bus.events import OutboundMessage
 from nanobot.config.paths import get_media_dir
 from nanobot.config.schema import Base
 from nanobot.providers.video_generation import (
@@ -25,6 +30,11 @@ from nanobot.utils.artifacts import (
     ArtifactError,
     store_generated_video_artifact,
     store_remote_video_artifact,
+)
+
+# Module-level ContextVar
+_video_gen_request_ctx: ContextVar[RequestContext | None] = ContextVar(
+    "video_gen_request_context", default=None
 )
 
 
@@ -61,7 +71,7 @@ class VideoGenerationToolConfig(Base):
         required=["prompt"],
     )
 )
-class VideoGenerationTool(Tool):
+class VideoGenerationTool(Tool, ContextAware):
     """Generate videos from text prompts or starting image frames via Vidtory API."""
 
     config_key = "video_generation"
@@ -78,10 +88,12 @@ class VideoGenerationTool(Tool):
     @classmethod
     def create(cls, ctx: Any) -> Tool:
         provider_config = ctx.providers.vidtory if ctx.providers else None
+        send_callback = ctx.bus.publish_outbound if ctx.bus else None
         return cls(
             workspace=ctx.workspace,
             config=getattr(ctx.config, "video_generation", None) or VideoGenerationToolConfig(),
             provider_config=provider_config,
+            send_callback=send_callback,
             capability_profile=getattr(ctx.config, "capability_profile", "standard"),
         )
 
@@ -91,12 +103,18 @@ class VideoGenerationTool(Tool):
         workspace: str | Path,
         config: VideoGenerationToolConfig,
         provider_config: Any | None = None,
+        send_callback: Callable[[OutboundMessage], Awaitable[None]] | None = None,
         capability_profile: str = "standard",
     ) -> None:
         self.workspace = Path(workspace).expanduser()
         self.config = config
         self.provider_config = provider_config
+        self._send_callback = send_callback
         self.capability_profile = capability_profile
+
+    def set_context(self, ctx: RequestContext) -> None:
+        """Receive the current request context (channel, chat_id, metadata)."""
+        _video_gen_request_ctx.set(ctx)
 
     @property
     def name(self) -> str:
@@ -169,6 +187,20 @@ class VideoGenerationTool(Tool):
             if policy.redacted_text and policy.redacted_text.strip():
                 prompt = policy.redacted_text
         client = self._provider_client()
+
+        # Send a loading/progress message to the user to improve responsiveness
+        ctx = _video_gen_request_ctx.get()
+        if ctx and self._send_callback:
+            try:
+                progress_msg = OutboundMessage(
+                    channel=ctx.channel,
+                    chat_id=ctx.chat_id,
+                    content="🎬 *Đã nhận yêu cầu dựng video!* Designer đang bắt đầu biên tập chuyển động và làm việc chăm chỉ... Vui lòng đợi trong giây lát nhé! ⏳",
+                    metadata={**(ctx.metadata or {}), "_progress": True},
+                )
+                await self._send_callback(progress_msg)
+            except Exception as e:
+                logger.debug("Failed to send video generation progress message: {}", e)
 
         try:
             refs = self._resolve_reference_images(reference_images)

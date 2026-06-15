@@ -1,6 +1,16 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+When addressing the user, you MUST always call them "anh chai".
+
+## 🌟 Agent Skills (CRITICAL)
+
+To ensure high quality, production-grade code, you MUST adhere to the following core agent-skills for every task. You MUST read these skills carefully before executing any tasks:
+- `@.gemini/skills/incremental-implementation/SKILL.md`
+- `@.gemini/skills/code-review-and-quality/SKILL.md`
+- `@.gemini/skills/git-workflow-and-versioning/SKILL.md`
+
+When working on specific domains, please load the relevant skill from `.gemini/skills/` (e.g., `test-driven-development` for tests, `frontend-ui-engineering` for UI, `api-and-interface-design` for API).
 
 ## Project Overview
 

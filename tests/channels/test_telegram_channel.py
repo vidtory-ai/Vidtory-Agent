@@ -1726,17 +1726,20 @@ async def test_send_delta_mid_stream_strips_markdown() -> None:
 
 
 def test_build_keyboard_respects_inline_keyboards_flag() -> None:
-    """``_build_keyboard`` returns ``None`` whenever the feature flag is off,
-    regardless of whether buttons are provided; returns a proper Markup only
+    """``_build_keyboard`` returns ReplyKeyboardMarkup whenever the feature flag is off,
+    regardless of whether buttons are provided; returns a proper InlineKeyboardMarkup only
     when the flag is explicitly enabled. Pins the kill-switch so accidentally
     flipping the default doesn't silently expose callback handlers."""
-    from telegram import InlineKeyboardMarkup
+    from telegram import InlineKeyboardMarkup, ReplyKeyboardMarkup
 
     off = TelegramChannel(
         TelegramConfig(enabled=True, token="123:abc", inline_keyboards=False),
         MessageBus(),
     )
-    assert off._build_keyboard([["A", "B"]]) is None
+    markup = off._build_keyboard([["A", "B"]])
+    assert isinstance(markup, ReplyKeyboardMarkup)
+    rows = markup.keyboard
+    assert [[b.text for b in row] for row in rows] == [["A", "B"]]
 
     on = TelegramChannel(
         TelegramConfig(enabled=True, token="123:abc", inline_keyboards=True),
@@ -1749,6 +1752,7 @@ def test_build_keyboard_respects_inline_keyboards_flag() -> None:
     assert [[b.text for b in row] for row in rows] == [["Yes", "No"], ["Cancel"]]
     # callback_data mirrors label so _on_callback_query can echo the tap back.
     assert rows[0][0].callback_data == "Yes"
+
 
 
 def test_safe_callback_data_truncates_at_utf8_boundary() -> None:
@@ -1791,14 +1795,11 @@ def test_buttons_as_text_format_preserves_rows_and_labels() -> None:
     assert TelegramChannel._buttons_as_text([["Yes", "No"], ["Cancel"]]) == "[Yes] [No]\n[Cancel]"
     assert TelegramChannel._buttons_as_text([["Only"]]) == "[Only]"
     assert TelegramChannel._buttons_as_text([[], ["A"]]) == "[A]"  # empty rows skipped
-
-
 @pytest.mark.asyncio
-async def test_send_falls_back_buttons_to_inline_text_when_flag_off() -> None:
-    """Buttons are semantic options; with ``inline_keyboards=False`` we must
-    splice labels into the text so users still see the choices. Silent-drop
-    was the pre-fallback bug — the agent got a success reply while the user
-    saw a question with no options."""
+async def test_send_uses_reply_keyboard_when_inline_keyboards_flag_off() -> None:
+    """When inline_keyboards=False, we fall back to a native ReplyKeyboardMarkup."""
+    from telegram import ReplyKeyboardMarkup
+
     channel = TelegramChannel(
         TelegramConfig(enabled=True, token="123:abc", allow_from=["*"], inline_keyboards=False),
         MessageBus(),
@@ -1816,10 +1817,8 @@ async def test_send_falls_back_buttons_to_inline_text_when_flag_off() -> None:
 
     assert len(channel._app.bot.sent_messages) == 1
     sent = channel._app.bot.sent_messages[0]
-    assert sent.get("reply_markup") is None
-    assert "Proceed?" in sent["text"]
-    assert "[Yes] [No]" in sent["text"]
-    assert "[Cancel]" in sent["text"]
+    assert isinstance(sent.get("reply_markup"), ReplyKeyboardMarkup)
+    assert sent["text"] == "Proceed?"
 
 
 @pytest.mark.asyncio

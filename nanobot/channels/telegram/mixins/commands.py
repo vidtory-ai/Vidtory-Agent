@@ -28,29 +28,51 @@ class TelegramCommandsMixin:
             key = self.keystore.get_key(sender_id)
             if not key:
                 await update.message.reply_text(
-                    f"👋 *Xin chào {user.first_name}!* Chào mừng bạn đến với Vidtory AI.\n\n"
-                    "Để bắt đầu sử dụng bot, bạn cần cung cấp *Vidtory API Key* của mình.\n\n"
-                    "🔑 *Cách lấy API Key:*\n"
+                    f"👋 *Xin chào {user.first_name}! Chào mừng bạn đến với Vidtory AI.*\n\n"
+                    "🤖 *Vidtory AI* là hệ thống trợ lý thiết kế tự động, đồng hành cùng doanh nghiệp và thương hiệu để tạo ra các ấn phẩm hình ảnh tiếp thị (ảnh sản phẩm, banner quảng cáo, bài viết mạng xã hội) đồng bộ thương hiệu chỉ trong vài giây.\n\n"
+                    "💡 **Giải pháp thiết kế từ Vidtory AI mang lại:**\n"
+                    "• *Đồng nhất thương hiệu:* Tự động nhận diện logo và màu sắc chủ đạo để áp dụng đồng bộ vào mọi ấn phẩm.\n"
+                    "• *Tối ưu hình ảnh tiếp thị:* Định hình phong cách thiết kế riêng biệt cho từng chiến dịch (Brand Marketing hoặc Fashion Studio).\n"
+                    "• *Nhanh chóng & Tiết kiệm:* Tạo ra hình ảnh chất lượng cao ngay lập tức mà không cần qua quy trình chỉnh sửa phức tạp.\n\n"
+                    "--- \n"
+                    "🔑 *Để bắt đầu trải nghiệm, vui lòng kết nối Vidtory API Key của bạn:*\n"
                     "1. Truy cập: https://app.vidtory.net/settings/api\n"
-                    "2. Tạo hoặc copy API Key có sẵn\n"
-                    "3. Gửi lệnh: `/apikey YOUR_API_KEY`\n\n"
-                    "_Bạn chỉ cần cài đặt một lần duy nhất._",
+                    "2. Sao chép API Key của bạn\n"
+                    "3. Gửi lệnh: `/apikey YOUR_API_KEY` (Ví dụ: `/apikey vidtory_123...`)\n\n"
+                    "_Thiết lập này chỉ cần thực hiện một lần duy nhất và hoàn toàn bảo mật._",
                     parse_mode="Markdown",
                     disable_web_page_preview=True,
                 )
                 return
             await update.message.reply_text(
-                f"👋 Xin chào lại, *{user.first_name}*! Bot đang sẵn sàng.\n"
-                "Gõ /help để xem danh sách lệnh.",
+                f"👋 *Chào mừng quay trở lại, {user.first_name}!* Hệ thống thiết kế thông minh Vidtory AI đã sẵn sàng phục vụ bạn.\n\n"
+                "🚀 **Bạn muốn thực hiện công việc nào tiếp theo?**\n"
+                "• `/brand` - Xem và quản lý cấu hình thương hiệu (logo, phong cách).\n"
+                "• `/new` - Khởi tạo một phiên thiết kế hình ảnh mới.\n"
+                "• `/help` - Xem danh sách câu lệnh và hướng dẫn chi tiết.\n\n"
+                "Hãy gửi yêu cầu hoặc chọn lệnh để bắt đầu nhé!",
                 parse_mode="Markdown",
             )
             return
 
+        buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
+        reply_markup = self._build_keyboard(buttons)
         await update.message.reply_text(
-            f"👋 Hi {user.first_name}! I'm nanobot.\n\n"
-            "Send me a message and I'll respond!\n"
-            "Type /help to see available commands."
+            f"👋 *Xin chào {user.first_name}! Chào mừng bạn đến với Vidtory AI.*\n\n"
+            "🤖 *Vidtory AI* là hệ thống trợ lý thiết kế tự động, đồng hành cùng doanh nghiệp và thương hiệu để tạo ra các ấn phẩm hình ảnh tiếp thị (ảnh sản phẩm, banner quảng cáo, bài viết mạng xã hội) đồng bộ thương hiệu chỉ trong vài giây.\n\n"
+            "💡 **Giải pháp thiết kế từ Vidtory AI mang lại:**\n"
+            "• *Đồng nhất thương hiệu:* Tự động nhận diện logo và màu sắc chủ đạo để áp dụng đồng bộ vào mọi ấn phẩm.\n"
+            "• *Tối ưu hình ảnh tiếp thị:* Định hình phong cách thiết kế riêng biệt cho từng chiến dịch (Brand Marketing hoặc Fashion Studio).\n"
+            "• *Nhanh chóng & Tiết kiệm:* Tạo ra hình ảnh chất lượng cao ngay lập tức mà không cần qua quy trình chỉnh sửa phức tạp.\n\n"
+            "--- \n"
+            "🚀 **Hãy bắt đầu thiết lập nhanh:**\n"
+            "Bạn có thể thiết lập phong cách thương hiệu để AI hiểu chính xác định hướng thiết kế, hoặc trải nghiệm trực tiếp:\n\n"
+            "• Chọn **Bắt đầu khai báo** để thiết lập nhanh Brand Profile (~1 phút).\n"
+            "• Chọn **Dùng ngay** để trực tiếp gửi yêu cầu thiết kế của bạn.",
+            parse_mode="Markdown",
+            reply_markup=reply_markup,
         )
+
 
     async def _on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command for allowed users only."""

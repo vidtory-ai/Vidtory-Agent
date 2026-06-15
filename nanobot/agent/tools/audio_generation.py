@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Awaitable
 
+from loguru import logger
 
 from nanobot.agent.tools.base import Tool, tool_parameters
+from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.agent.tools.schema import (
     NumberSchema,
     StringSchema,
     tool_parameters_schema,
 )
+from nanobot.bus.events import OutboundMessage
 from nanobot.config.schema import Base
 from nanobot.providers.audio_generation import (
     AudioGenerationError,
@@ -22,6 +26,11 @@ from nanobot.utils.artifacts import (
     ArtifactError,
     store_generated_audio_artifact,
     store_remote_audio_artifact,
+)
+
+# Module-level ContextVar
+_audio_gen_request_ctx: ContextVar[RequestContext | None] = ContextVar(
+    "audio_gen_request_context", default=None
 )
 
 
@@ -55,7 +64,7 @@ class AudioGenerationToolConfig(Base):
         required=["prompt"],
     )
 )
-class AudioGenerationTool(Tool):
+class AudioGenerationTool(Tool, ContextAware):
     """Generate voice/speech audio (TTS) via Vidtory API."""
 
     config_key = "audio_generation"
@@ -72,10 +81,12 @@ class AudioGenerationTool(Tool):
     @classmethod
     def create(cls, ctx: Any) -> Tool:
         provider_config = ctx.providers.vidtory if ctx.providers else None
+        send_callback = ctx.bus.publish_outbound if ctx.bus else None
         return cls(
             workspace=ctx.workspace,
             config=getattr(ctx.config, "audio_generation", None) or AudioGenerationToolConfig(),
             provider_config=provider_config,
+            send_callback=send_callback,
         )
 
     def __init__(
@@ -84,10 +95,16 @@ class AudioGenerationTool(Tool):
         workspace: str | Path,
         config: AudioGenerationToolConfig,
         provider_config: Any | None = None,
+        send_callback: Callable[[OutboundMessage], Awaitable[None]] | None = None,
     ) -> None:
         self.workspace = Path(workspace).expanduser()
         self.config = config
         self.provider_config = provider_config
+        self._send_callback = send_callback
+
+    def set_context(self, ctx: RequestContext) -> None:
+        """Receive the current request context (channel, chat_id, metadata)."""
+        _audio_gen_request_ctx.set(ctx)
 
     @property
     def name(self) -> str:
@@ -119,6 +136,20 @@ class AudioGenerationTool(Tool):
         **kwargs: Any,
     ) -> str:
         client = self._provider_client()
+
+        # Send a loading/progress message to the user to improve responsiveness
+        ctx = _audio_gen_request_ctx.get()
+        if ctx and self._send_callback:
+            try:
+                progress_msg = OutboundMessage(
+                    channel=ctx.channel,
+                    chat_id=ctx.chat_id,
+                    content="🔊 *Đã nhận yêu cầu tạo âm thanh!* Designer đang xử lý giọng nói và âm điệu... Vui lòng đợi trong giây lát nhé! ⏳",
+                    metadata={**(ctx.metadata or {}), "_progress": True},
+                )
+                await self._send_callback(progress_msg)
+            except Exception as e:
+                logger.debug("Failed to send audio generation progress message: {}", e)
 
         try:
             response = await client.generate(

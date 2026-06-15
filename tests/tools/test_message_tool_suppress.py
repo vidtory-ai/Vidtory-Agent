@@ -2,7 +2,7 @@
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -11,13 +11,30 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMResponse, ToolCallRequest
+from nanobot.config.schema import ToolsConfig
+
+
+@pytest.fixture(autouse=True)
+def mock_intent_router():
+    with patch("nanobot.agent.router.IntentRouter.classify", new_callable=AsyncMock) as mock:
+        from nanobot.agent.router import Intent
+        mock.return_value = Intent.GENERAL
+        yield mock
+
 
 
 def _make_loop(tmp_path: Path) -> AgentLoop:
     bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
-    return AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+    provider.generation.max_tokens = 4096
+    return AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+        tools_config=ToolsConfig(capability_profile="standard"),
+    )
 
 
 class TestMessageToolSuppressLogic:
