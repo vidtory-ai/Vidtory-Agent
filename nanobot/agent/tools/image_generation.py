@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from contextvars import ContextVar
 from pathlib import Path
@@ -52,6 +53,188 @@ if TYPE_CHECKING:
 _image_gen_request_ctx: ContextVar[RequestContext | None] = ContextVar(
     "image_gen_request_context", default=None
 )
+
+
+def detect_language(text: str) -> str:
+    """Detect prompt language using character ranges and common stop words."""
+    text_lower = text.lower()
+
+    # 1. Japanese check
+    if re.search(r"[\u3040-\u309F\u30A0-\u30FF]", text):
+        return "ja"
+
+    # 2. Korean check
+    if re.search(r"[\uAC00-\uD7AF\u1100-\u11FF]", text):
+        return "ko"
+
+    # 3. Chinese check (Hanzi only, checking Japanese/Korean first avoids collisions)
+    if re.search(r"[\u4E00-\u9FFF]", text):
+        return "zh"
+
+    # 4. Cyrillic (Russian, Ukrainian, etc.)
+    if re.search(r"[\u0400-\u04FF]", text):
+        return "ru"
+
+    # 5. Vietnamese check
+    vietnamese_diacritics = r"[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]"
+    if re.search(vietnamese_diacritics, text_lower):
+        return "vi"
+
+    # Common unaccented Vietnamese words
+    vi_words = {
+        "mot", "con", "vit", "vang", "co", "xanh", "ho", "yen", "tinh", "cua", 
+        "dep", "lam", "tao", "anh", "bo", "cuc", "mau", "sac", "san", "pham", 
+        "nang", "dong", "tieng", "viet", "khong", "co", "quan", "ca", "phe"
+    }
+    words = re.findall(r"\b\w+\b", text_lower)
+    vi_match_count = sum(1 for w in words if w in vi_words)
+    if vi_match_count >= 2:
+        return "vi"
+
+    # 6. Western European language checks (diacritics specific to DE, ES, FR)
+    if re.search(r"[äöüß]", text_lower):
+        return "de"
+    if "ñ" in text_lower or "¿" in text_lower or "¡" in text_lower:
+        return "es"
+    if re.search(r"[çœæëïÿâêîôûàèù]", text_lower):
+        return "fr"
+
+    fr_words = {"le", "la", "les", "des", "une", "dans", "pour", "avec", "sans", "est", "sont"}
+    es_words = {"el", "la", "los", "las", "un", "una", "en", "para", "con", "sin", "es", "son"}
+    de_words = {"der", "die", "das", "ein", "eine", "in", "für", "mit", "ohne", "ist", "sind"}
+
+    fr_matches = sum(1 for w in words if w in fr_words)
+    es_matches = sum(1 for w in words if w in es_words)
+    de_matches = sum(1 for w in words if w in de_words)
+
+    max_matches = max(fr_matches, es_matches, de_matches)
+    if max_matches >= 2:
+        if max_matches == fr_matches:
+            return "fr"
+        elif max_matches == es_matches:
+            return "es"
+        else:
+            return "de"
+
+    return "en"
+
+
+def get_target_text_language(prompt: str, customer_lang: str | None = None) -> str:
+    """Determine the target language for text appearing in the image.
+
+    Checks for explicit language requests first, then falls back to customer preference or detected prompt language.
+    """
+    prompt_lower = prompt.lower()
+
+    # Check for explicit English request
+    english_hints = ["in english", "bằng tiếng anh", "chữ tiếng anh", "text in english", "english text", "english lettering", "write in english"]
+    if any(hint in prompt_lower for hint in english_hints):
+        return "en"
+
+    # Check for explicit Vietnamese request
+    vietnamese_hints = ["in vietnamese", "bằng tiếng việt", "chữ tiếng việt", "text in vietnamese", "vietnamese text", "vietnamese lettering", "write in vietnamese"]
+    if any(hint in prompt_lower for hint in vietnamese_hints):
+        return "vi"
+
+    # Check for other explicit languages
+    if "in japanese" in prompt_lower or "bằng tiếng nhật" in prompt_lower or "chữ tiếng nhật" in prompt_lower:
+        return "ja"
+    if "in korean" in prompt_lower or "bằng tiếng hàn" in prompt_lower or "chữ tiếng hàn" in prompt_lower:
+        return "ko"
+    if "in chinese" in prompt_lower or "bằng tiếng trung" in prompt_lower or "chữ tiếng trung" in prompt_lower:
+        return "zh"
+    if "in french" in prompt_lower or "bằng tiếng pháp" in prompt_lower or "chữ tiếng pháp" in prompt_lower:
+        return "fr"
+    if "in spanish" in prompt_lower or "bằng tiếng tây ban nha" in prompt_lower or "chữ tiếng tây ban nha" in prompt_lower:
+        return "es"
+    if "in german" in prompt_lower or "bằng tiếng đức" in prompt_lower or "chữ tiếng đức" in prompt_lower:
+        return "de"
+
+    # Fallback to customer language preference if available, else detect from prompt
+    if customer_lang:
+        return customer_lang
+
+    return detect_language(prompt)
+
+
+def build_language_instruction(target_lang: str) -> str:
+    """Build the text language instruction for the prompt."""
+    instructions = {
+        "vi": (
+            "IMPORTANT: All text, typography, or words appearing in the image MUST be written in Vietnamese "
+            "(LƯU Ý QUAN TRỌNG: Tất cả chữ/text trong ảnh PHẢI viết bằng tiếng Việt, KHÔNG dùng tiếng Anh)."
+        ),
+        "ja": (
+            "IMPORTANT: All text, typography, or words appearing in the image MUST be written in Japanese "
+            "(重要：画像内のすべての文字やテキストは日本語で記述してください。)."
+        ),
+        "ko": (
+            "IMPORTANT: All text, typography, or words appearing in the image MUST be written in Korean "
+            "(중요: 이미지 내의 모든 글자와 텍스트는 한국어로 작성되어야 합니다.)."
+        ),
+        "zh": (
+            "IMPORTANT: All text, typography, or words appearing in the image MUST be written in Chinese "
+            "(重要：图像中的所有文字或文本必须用中文书写。)."
+        ),
+        "fr": (
+            "IMPORTANT: All text, typography, or words appearing in the image MUST be written in French "
+            "(IMPORTANT : Tous les textes ou mots dans l'image doivent être écrits en français.)."
+        ),
+        "es": (
+            "IMPORTANT: All text, typography, or words appearing in the image MUST be written in Spanish "
+            "(IMPORTANTE: Todos los textos o palabras en la imagen deben estar escritos en español.)."
+        ),
+        "de": (
+            "IMPORTANT: All text, typography, or words appearing in the image MUST be written in German "
+            "(WICHTIG: Alle Texte oder Wörter im Bild müssen auf Deutsch geschrieben sein.)."
+        ),
+        "ru": (
+            "IMPORTANT: All text, typography, or words appearing in the image MUST be written in Russian "
+            "(ВАЖНО: Все надписи и text на изображении должны быть на русском языке.)."
+        ),
+        "en": (
+            "IMPORTANT: All text, typography, or words appearing in the image MUST be written in English."
+        )
+    }
+    return instructions.get(target_lang, "")
+
+
+def extract_quoted_texts(prompt: str) -> list[str]:
+    """Find all double, single, and smart quoted substrings in the prompt."""
+    patterns = [
+        r'"([^"\\]*(?:\\.[^"\\]*)*)"',
+        r"'([^'\\]*(?:\\.[^'\\]*)*)'",
+        r'“([^”]*”?)”',
+        r'‘([^’]*’?)’',
+    ]
+    quotes = []
+    for pattern in patterns:
+        matches = re.findall(pattern, prompt)
+        for m in matches:
+            if m.strip():
+                quotes.append(m.strip())
+    return quotes
+
+
+def _is_revision_prompt(prompt: str) -> bool:
+    """Check if the user's prompt is a revision or edit request."""
+    prompt_lower = prompt.lower()
+    revision_keywords = [
+        "sửa", "sửa lại", "chỉnh lại", "thay đổi", "thêm", "ghép", "lồng",
+        "từ ảnh", "ảnh trên", "ảnh trước", "ảnh vừa tạo", "tinh chỉnh", "tối ưu",
+        "edit", "modify", "change", "add", "revision", "fix", "update", "replace",
+        "chèn logo", "thêm logo", "bỏ logo", "xóa logo", "đặt logo"
+    ]
+    return any(kw in prompt_lower for kw in revision_keywords)
+
+
+def _prompt_requests_no_logo(prompt: str) -> bool:
+    """Check if the user explicitly requested to omit the logo."""
+    prompt_lower = prompt.lower()
+    return any(kw in prompt_lower for kw in [
+        "không logo", "không cần logo", "bỏ logo", "no logo", "without logo",
+        "không có logo", "tạo không cần logo", "không chèn logo"
+    ])
 
 
 class ImageGenerationToolConfig(Base):
@@ -119,6 +302,7 @@ class ImageGenerationTool(Tool, ContextAware):
             provider_configs=ctx.image_generation_provider_configs,
             send_callback=send_callback,
             capability_profile=getattr(ctx.config, "capability_profile", "standard"),
+            sessions=getattr(ctx, "sessions", None),
         )
 
     def __init__(
@@ -130,6 +314,7 @@ class ImageGenerationTool(Tool, ContextAware):
         provider_configs: dict[str, ProviderConfig] | None = None,
         send_callback: Callable[[OutboundMessage], Awaitable[None]] | None = None,
         capability_profile: str = "standard",
+        sessions: Any | None = None,
     ) -> None:
         self.workspace = Path(workspace).expanduser()
         self.config = config
@@ -139,6 +324,7 @@ class ImageGenerationTool(Tool, ContextAware):
         if provider_config is not None and self.config.provider not in self.provider_configs:
             self.provider_configs[self.config.provider] = provider_config
         self._send_callback = send_callback
+        self.sessions = sessions
 
     @property
     def name(self) -> str:
@@ -282,9 +468,25 @@ class ImageGenerationTool(Tool, ContextAware):
                 except Exception as pe:
                     logger.debug("Failed to send progress update: {}", pe)
 
+        # Auto-fill reference_images for revision/edit requests when empty
+        if not reference_images and _is_revision_prompt(prompt):
+            last_img = self._find_last_generated_image()
+            if last_img:
+                logger.info("Auto-injecting last generated image as reference_images: {}", last_img)
+                reference_images = [last_img]
+
         # Apply Vidtory professional standards + customer brand guidelines
-        optimized_prompt, customer_ar, logo_url = self._apply_customer_context(prompt)
+        is_vidtory = (self.config.provider == "vidtory")
+        optimized_prompt, customer_ar, logo_url = self._apply_customer_context(prompt, is_vidtory_provider=is_vidtory)
         resolved_ar = aspect_ratio or customer_ar or self.config.default_aspect_ratio
+
+        # Append multi-image instruction if multiple reference images are provided
+        if reference_images and len(reference_images) > 1:
+            multi_image_instruction = (
+                "IMPORTANT: Multiple reference images are provided. You MUST reference, combine, and incorporate visual elements, subjects, or contexts from ALL of these reference images into the generated output. Do NOT ignore any of them. "
+                "LƯU Ý QUAN TRỌNG: Nhiều ảnh tham chiếu đã được cung cấp. Bạn BẮT BUỘC phải tham chiếu, kết hợp và đưa các yếu tố hình ảnh, chủ thể hoặc bối cảnh từ TẤT CẢ các ảnh tham chiếu này vào sản phẩm được tạo ra. KHÔNG được bỏ qua bất kỳ ảnh tham chiếu nào."
+            )
+            optimized_prompt = f"{optimized_prompt}. {multi_image_instruction}"
 
         # Log logo status for traceability
         if logo_url:
@@ -387,7 +589,7 @@ class ImageGenerationTool(Tool, ContextAware):
                         prompt_used=prompt[:500],
                         enhanced_prompt=optimized_prompt[:500],
                         design_note=design_note[:1000],
-                        result_url=delivery_paths[0] if delivery_paths else "",
+                        result_url="",
                     )
                     # Also record in generation_history for backward compat
                     db.record_generation(
@@ -396,7 +598,7 @@ class ImageGenerationTool(Tool, ContextAware):
                         prompt=prompt,
                         enhanced_prompt=optimized_prompt,
                         model=self.config.model,
-                        result_url=delivery_paths[0] if delivery_paths else "",
+                        result_url="",
                     )
             except Exception as exc:
                 logger.debug("Task recording/design note failed (non-fatal): {}", exc)
@@ -420,6 +622,7 @@ class ImageGenerationTool(Tool, ContextAware):
                     result = {
                         "status": "sent",
                         "count": len(delivery_paths),
+                        "artifacts": artifacts,
                     }
                     if task_id:
                         result["task_id"] = task_id
@@ -465,20 +668,76 @@ class ImageGenerationTool(Tool, ContextAware):
         prompt_lower = prompt.lower()
         return any(kw in prompt_lower for kw in self._DETAILED_PROMPT_KEYWORDS)
 
-    def _apply_customer_context(self, prompt: str) -> tuple[str, str | None, str | None]:
+    def _find_last_generated_image(self) -> str | None:
+        ctx = _image_gen_request_ctx.get()
+        if not ctx:
+            logger.debug("Cannot find last generated image: request context not available")
+            return None
+        
+        # Check 1: Did the user upload/reply with a media file in the current request?
+        media = ctx.metadata.get("media")
+        if isinstance(media, list) and media:
+            # Filter for files that exist
+            valid_media = [m for m in media if m and (m.startswith(("http://", "https://")) or Path(m).is_file())]
+            if valid_media:
+                logger.info("Found reference image from current request media: {}", valid_media[0])
+                return valid_media[0]
+
+        if not ctx.session_key or not self.sessions:
+            logger.debug("Cannot find last generated image from history: session_key or sessions not available")
+            return None
+
+        try:
+            session = self.sessions.get_or_create(ctx.session_key)
+            if not session or not session.messages:
+                return None
+            
+            # Scan messages from the newest to oldest
+            for msg in reversed(session.messages):
+                role = msg.get("role")
+                content = msg.get("content")
+                
+                # Check 2a: Tool response from generate_image
+                if role == "tool" and msg.get("name") == "generate_image" and content:
+                    try:
+                        data = json.loads(content)
+                        artifacts = data.get("artifacts") or []
+                        if artifacts and isinstance(artifacts, list):
+                            last_art = artifacts[-1]
+                            path = last_art.get("path") or last_art.get("remote_url")
+                            if path:
+                                logger.info("Found last generated image from tool response: {}", path)
+                                return path
+                    except Exception:
+                        pass
+                
+                # Check 2b: Assistant message with media paths
+                if role == "assistant" and msg.get("media"):
+                    h_media = msg.get("media")
+                    if isinstance(h_media, list) and h_media:
+                        logger.info("Found last generated image from assistant media: {}", h_media[-1])
+                        return h_media[-1]
+        except Exception as exc:
+            logger.warning("Error finding last generated image: {}", exc)
+            
+        return None
+
+    def _apply_customer_context(self, prompt: str, is_vidtory_provider: bool = False) -> tuple[str, str | None, str | None]:
         """Apply customer brand guidelines and Vidtory professional standards to the prompt.
 
         This is the central prompt enrichment pipeline:
-        1. Auto-detect content type from prompt
-        2. Apply Vidtory professional photography style for that content type
+        1. Auto-detect target text language from explicit request or detected prompt language
+        2. Auto-detect content type from prompt
+        3. Apply Vidtory professional photography style for that content type
            (SKIPPED when prompt is already detailed to avoid injecting irrelevant styles)
-           Uses Vietnamese styles when customer's language is 'vi'.
-        3. Apply customer brand guidelines (style, mood keywords, colors)
-           Uses Vietnamese labels when customer's language is 'vi'.
-        4. Derive customer's preferred aspect ratio from their primary channel
-        5. Extract brand logo URL (for logo-aware generation)
-        6. Inject logo preservation instruction when watermark-related keywords
+           Uses language-specific styles matching the target language.
+        4. Apply customer brand guidelines (style, mood keywords, colors)
+           Uses Vietnamese labels when target language is 'vi'.
+        5. Derive customer's preferred aspect ratio from their primary channel
+        6. Extract brand logo URL (for logo-aware generation)
+        7. Inject logo preservation instruction when watermark-related keywords
            are detected in the prompt (prevents AI from erasing the logo)
+        8. Inject text language instruction & preserve quoted text (applied universally)
 
         Returns:
             Tuple of (enriched_prompt, aspect_ratio_or_None, logo_url_or_None).
@@ -498,6 +757,9 @@ class ImageGenerationTool(Tool, ContextAware):
         except Exception:
             pass
 
+        # ── Detect target language (explicit or auto-detected) ──────────
+        target_lang = get_target_text_language(prompt, customer_lang)
+
         # ── Step 1: Vidtory professional prompt enhancement ──────────────────
         # Skip when the user has already written a detailed/professional prompt
         # to avoid injecting irrelevant content-type keywords (e.g. 'beverage
@@ -506,14 +768,14 @@ class ImageGenerationTool(Tool, ContextAware):
             try:
                 content_type = detect_content_type(prompt)
                 pro_suffix = build_professional_prompt_suffix(
-                    prompt, content_type=content_type, lang=customer_lang,
+                    prompt, content_type=content_type, lang=target_lang,
                 )
                 if pro_suffix:
                     enriched = f"{enriched}, {pro_suffix}"
                     logger.debug(
                         "Vidtory professional enhancement applied (content_type={}, lang={}): +{} chars",
                         content_type or "auto",
-                        customer_lang or "default",
+                        target_lang or "default",
                         len(pro_suffix),
                     )
             except Exception:
@@ -564,40 +826,70 @@ class ImageGenerationTool(Tool, ContextAware):
                 except Exception as _logo_exc:
                     logger.debug("Failed to read logo from DB (non-critical): {}", _logo_exc)
 
-                # ── Step 5: Logo preservation guard ──────────────────────────
-                # When the user's prompt contains watermark-related keywords AND
-                # the customer has a brand logo, inject an explicit instruction
-                # telling the AI to KEEP the logo intact.  This prevents Gemini
-                # from erasing the logo while removing other watermark elements.
-                if logo_url and self._prompt_has_watermark_keywords(prompt):
-                    logo_guard = (
-                        "QUAN TRỌNG: giữ nguyên logo thương hiệu như cũ — "
-                        "KHÔNG xóa, làm mờ hoặc chỉnh sửa logo thương hiệu"
-                        if customer_lang == "vi"
-                        else (
-                            "IMPORTANT: preserve the existing brand logo exactly as-is — "
-                            "do NOT erase, blur, or modify the brand logo"
-                        )
-                    )
-                    enriched = f"{enriched}. {logo_guard}"
-                    logger.info(
-                        "Logo preservation guard injected into prompt "
-                        "(watermark keyword detected, customer has logo)"
-                    )
+                # If user explicitly requested no logo in prompt, do not use it
+                if logo_url and _prompt_requests_no_logo(prompt):
+                    logger.info("User prompt explicitly requested no logo; skipping logo injection")
+                    logo_url = None
 
-                # ── Step 6: Language text instruction ─────────────────────────
-                # Instruct the model to render any text/typography inside the
-                # image in the correct language. Without this, Gemini defaults
-                # to English text even when the prompt is in Vietnamese.
-                if customer_lang == "vi":
-                    lang_instruction = (
-                        "LƯU Ý QUAN TRỌNG: Nếu có chữ/text xuất hiện trong ảnh, "
-                        "PHẢI viết bằng tiếng Việt, KHÔNG dùng tiếng Anh."
+                # ── Step 5: Logo preservation guard & instructions ────────────
+                if logo_url:
+                    logo_instruction = (
+                        "IMPORTANT BRAND LOGO INSTRUCTION: The brand logo is provided as the last reference image in the input list. "
+                        "You MUST integrate this exact brand logo into the generated image. "
+                        "Keep the logo design, shape, and structure completely unchanged and intact — DO NOT mutate, redraw, or modify the logo. "
+                        "Note that in some contexts, the logo can be rendered in solid white or solid black to fit the aesthetic of the environment, but the shape and structure of the logo must never be altered or deformed. "
+                        "Integrate the logo naturally, harmoniously, and professionally in a suitable location in the layout "
+                        "(for example: displayed on a TV screen, computer monitor, projector screen, printed on the character's clothing/uniform, on product packaging, or in a subtle clean corner of the image). "
+                        "The placement should be clean and artistic, avoiding clutter. "
+                        "LƯU Ý QUAN TRỌNG VỀ LOGO THƯƠNG HIỆU: Ảnh logo thương hiệu được cung cấp là ảnh tham chiếu cuối cùng trong danh sách. "
+                        "Bạn BẮT BUỘC phải chèn logo thương hiệu này vào hình ảnh được tạo một cách chính xác, giữ nguyên thiết kế và hình dáng gốc của logo, TUYỆT ĐỐI không vẽ lại, không làm thay đổi hay biến dạng cấu trúc logo. "
+                        "Có thể chuyển màu logo sang màu trắng trơn hoặc đen trơn nếu cần thiết để hài hòa với màu sắc của bối cảnh/bố cục xung quanh, nhưng kết cấu thiết kế không được biến dạng. "
+                        "Hãy chèn logo một cách tự nhiên, hài hòa và chuyên nghiệp ở một vị trí phù hợp trong bố cục (ví dụ: hiển thị trên màn hình tivi, màn hình máy tính, máy chiếu, in trên áo/đồng phục của nhân vật, trên bao bì sản phẩm, hoặc đặt ở một góc tinh tế của ảnh) để tạo nét nhận diện tinh tế, sang trọng."
                     )
-                    enriched = f"{enriched}. {lang_instruction}"
-                    logger.debug("Vietnamese text instruction injected into prompt")
+                    enriched = f"{enriched}. {logo_instruction}"
+
+                    if self._prompt_has_watermark_keywords(prompt):
+                        logo_guard = (
+                            "QUAN TRỌNG: giữ nguyên logo thương hiệu như cũ — "
+                            "KHÔNG xóa, làm mờ hoặc chỉnh sửa logo thương hiệu"
+                            if target_lang == "vi"
+                            else (
+                                "IMPORTANT: preserve the existing brand logo exactly as-is — "
+                                "do NOT erase, blur, or modify the brand logo"
+                            )
+                        )
+                        enriched = f"{enriched}. {logo_guard}"
+                        logger.info(
+                            "Logo preservation guard injected into prompt "
+                            "(watermark keyword detected, customer has logo)"
+                        )
         except Exception:
             logger.warning("Customer context enhancement failed — using defaults")
+
+        # ── Step 6: Language text instruction & preservation ─────────────────
+        # Injected outside profile check so it always applies to any prompt.
+        lang_instruction = build_language_instruction(target_lang)
+        if lang_instruction:
+            enriched = f"{enriched}. {lang_instruction}"
+            logger.debug("Language text instruction injected into prompt: %s", target_lang)
+
+        quoted_texts = extract_quoted_texts(prompt)
+        if quoted_texts:
+            quoted_str = ", ".join(f"'{q}'" for q in quoted_texts)
+            enriched = f"{enriched}. IMPORTANT: Render the exact text {quoted_str} without translating it."
+            logger.debug("Preserve quoted text instruction injected: %s", quoted_str)
+
+        # ── Step 7: General professional layout standards ───────────────────
+        # Append standard guidelines to keep layout clean, minimal, and uncluttered
+        design_standard = (
+            "DESIGN LAYOUT STANDARD: Maintain a clean, professional, and minimalist layout. "
+            "Avoid cluttering the image with excessive elements, crowded characters, or unnecessary details. "
+            "Focus on a clean composition with high aesthetic quality. "
+            "TIÊU CHUẨN BỐ CỤC THIẾT KẾ: Đảm bảo bố cục sạch sẽ, chuyên nghiệp và thoáng đãng. "
+            "Tránh nhồi nhét quá nhiều chi tiết thừa, quá nhiều người hoặc quá nhiều màn hình gây rối mắt. "
+            "Tập trung vào tính tối giản, tinh tế và tính nghệ thuật cao."
+        )
+        enriched = f"{enriched}. {design_standard}"
 
         return enriched, aspect_ratio, logo_url
 

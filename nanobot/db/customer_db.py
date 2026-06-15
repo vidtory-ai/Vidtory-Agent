@@ -558,7 +558,7 @@ class CustomerDatabase:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (uid, gen_id, content_type, prompt,
-                     enhanced_prompt, model, result_url, now),
+                     enhanced_prompt, model, "", now),
                 )
         except Exception as exc:
             logger.warning("Failed to log generation for {}: {}", uid, exc)
@@ -753,7 +753,7 @@ class CustomerDatabase:
                     """,
                     (uid, task_id, brief, content_type, lifecycle_stage,
                      model_used, prompt_used, enhanced_prompt, design_note,
-                     result_url, now),
+                     "", now),
                 )
             return True
         except Exception as exc:

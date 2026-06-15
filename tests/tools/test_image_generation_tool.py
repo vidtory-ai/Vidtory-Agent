@@ -207,3 +207,252 @@ async def test_generate_image_tool_rejects_reference_outside_workspace(tmp_path:
     result = await tool.execute(prompt="edit", reference_images=[str(outside)])
 
     assert "reference_images must be inside the workspace" in result
+
+
+def test_detect_language() -> None:
+    from nanobot.agent.tools.image_generation import detect_language
+    assert detect_language("Một con vịt vàng dễ thương") == "vi"
+    assert detect_language("Một con vit vang de thuong") == "vi"
+    assert detect_language("A cute yellow duck on the grass") == "en"
+    assert detect_language("画像内に表示される文字やテキスト") == "ja"
+    assert detect_language("이미지에 표시되는 모든 텍스트나 글자") == "ko"
+
+
+def test_get_target_text_language() -> None:
+    from nanobot.agent.tools.image_generation import get_target_text_language
+    assert get_target_text_language("Một con vịt vàng ghi chữ tiếng Anh") == "en"
+    assert get_target_text_language("A cute duck write in Vietnamese") == "vi"
+    assert get_target_text_language("Một con vịt vàng", customer_lang="en") == "en"
+
+
+def test_extract_quoted_texts() -> None:
+    from nanobot.agent.tools.image_generation import extract_quoted_texts
+    assert extract_quoted_texts('Vẽ một con vịt có chữ "Hello"') == ["Hello"]
+    assert extract_quoted_texts("Vẽ một con vịt có chữ 'Cà phê muối'") == ["Cà phê muối"]
+    assert extract_quoted_texts("Vẽ một con vịt có chữ “Thơm ngon”") == ["Thơm ngon"]
+
+
+def test_apply_customer_context_language_injection() -> None:
+    tool = ImageGenerationTool(
+        workspace=Path("."),
+        config=ImageGenerationToolConfig(enabled=True),
+        provider_config=ProviderConfig(api_key="sk-or-test"),
+    )
+    # Simple Vietnamese prompt
+    enriched, _, _ = tool._apply_customer_context("Vẽ con vịt")
+    assert "LƯU Ý QUAN TRỌNG: Tất cả chữ/text trong ảnh PHẢI viết bằng tiếng Việt" in enriched
+
+    # Simple Japanese prompt
+    enriched_ja, _, _ = tool._apply_customer_context("アヒルの絵を描く")
+    assert "画像内のすべての文字やテキストは日本語で記述してください" in enriched_ja
+
+    # Vietnamese prompt with quotes
+    enriched_quotes, _, _ = tool._apply_customer_context('Vẽ con vịt có chữ "Hello"')
+    assert "Render the exact text 'Hello' without translating it" in enriched_quotes
+
+
+def test_is_revision_prompt() -> None:
+    from nanobot.agent.tools.image_generation import _is_revision_prompt
+    assert _is_revision_prompt("sửa lại ảnh vừa tạo") is True
+    assert _is_revision_prompt("từ ảnh trên hãy chèn thêm chữ") is True
+    assert _is_revision_prompt("tạo ảnh mới hoàn toàn") is False
+
+
+def test_prompt_requests_no_logo() -> None:
+    from nanobot.agent.tools.image_generation import _prompt_requests_no_logo
+    assert _prompt_requests_no_logo("tạo ảnh không logo") is True
+    assert _prompt_requests_no_logo("không cần logo nhé") is True
+    assert _prompt_requests_no_logo("tạo ảnh có logo") is False
+
+
+@pytest.mark.asyncio
+async def test_find_last_generated_image_from_metadata(tmp_path: Path) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(enabled=True),
+    )
+    # Set context with media in metadata
+    ctx = RequestContext(
+        channel="telegram",
+        chat_id="123",
+        message_id="msg_1",
+        session_key="telegram:123",
+        metadata={"media": ["https://example.com/some/image.png"]}
+    )
+    tool.set_context(ctx)
+    last_img = tool._find_last_generated_image()
+    assert last_img == "https://example.com/some/image.png"
+
+
+@pytest.mark.asyncio
+async def test_find_last_generated_image_from_session_history(tmp_path: Path) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+    
+    # Create fake session with tool response containing generated image
+    session = Session(key="telegram:123")
+    tool_resp_content = json.dumps({
+        "artifacts": [
+            {"path": "generated/img1.png", "remote_url": "http://example.com/img1.png"}
+        ]
+    })
+    session.add_message("tool", tool_resp_content, name="generate_image")
+    
+    # Mock sessions manager
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+            
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(enabled=True),
+        sessions=FakeSessions()
+    )
+    
+    ctx = RequestContext(
+        channel="telegram",
+        chat_id="123",
+        message_id="msg_2",
+        session_key="telegram:123",
+        metadata={}
+    )
+    tool.set_context(ctx)
+    
+    last_img = tool._find_last_generated_image()
+    assert last_img == "generated/img1.png"
+
+
+def test_apply_customer_context_logo_blending_and_preservation(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = ImageGenerationTool(
+        workspace=Path("."),
+        config=ImageGenerationToolConfig(enabled=True, provider="vidtory"),
+    )
+    
+    # Mock telegram_customer_profile to return a profile
+    fake_profile = {
+        "telegramUserId": "user123",
+        "preferences": {"communicationLanguage": "vi"},
+        "brand": {
+            "businessName": "Vidtory",
+            "logoUrl": "http://example.com/logo.png"
+        }
+    }
+    from nanobot.utils.context_vars import telegram_customer_profile
+    token = telegram_customer_profile.set(fake_profile)
+    
+    # Mock DB get_logo_url
+    class FakeDB:
+        def get_logo_url(self, uid):
+            return "http://example.com/logo.png"
+    
+    monkeypatch.setattr("nanobot.db.customer_db.get_db", FakeDB)
+    
+    try:
+        # Test 1: Brand logo blending instructions are injected regardless of provider
+        enriched, _, logo_url = tool._apply_customer_context("Vẽ ảnh", is_vidtory_provider=False)
+        assert logo_url == "http://example.com/logo.png"
+        assert "LƯU Ý QUAN TRỌNG VỀ LOGO THƯƠNG HIỆU" in enriched
+        assert "TIÊU CHUẨN BỐ CỤC THIẾT KẾ" in enriched
+        
+        # Test 2: Skip logo injection when prompt explicitly requests no logo
+        enriched_no_logo, _, logo_url_no_logo = tool._apply_customer_context("Vẽ ảnh không logo", is_vidtory_provider=False)
+        assert logo_url_no_logo is None
+        assert "LƯU Ý QUAN TRỌNG VỀ LOGO THƯƠNG HIỆU" not in enriched_no_logo
+    finally:
+        telegram_customer_profile.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_execute_with_multiple_reference_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+    ref1 = tmp_path / "ref1.png"
+    ref1.write_bytes(PNG_BYTES)
+    ref2 = tmp_path / "ref2.png"
+    ref2.write_bytes(PNG_BYTES)
+    
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+    )
+
+    await tool.execute(
+        prompt="Combine these two",
+        reference_images=["ref1.png", "ref2.png"],
+    )
+
+    fake = FakeImageClient.instances[0]
+    assert len(fake.calls) == 1
+    call_prompt = fake.calls[0]["prompt"]
+    assert "Combine these two" in call_prompt
+    assert "LƯU Ý QUAN TRỌNG: Nhiều ảnh tham chiếu đã được cung cấp." in call_prompt
+
+
+@pytest.mark.asyncio
+async def test_execute_auto_injects_last_generated_image_on_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+    
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+    
+    ref = tmp_path / "last_art.png"
+    ref.write_bytes(PNG_BYTES)
+    
+    session = Session(key="telegram:123")
+    session.add_message("assistant", "Here is your image", media=[str(ref.resolve())])
+    
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+            
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions()
+    )
+    
+    ctx = RequestContext(
+        channel="telegram",
+        chat_id="123",
+        message_id="msg_3",
+        session_key="telegram:123",
+        metadata={}
+    )
+    tool.set_context(ctx)
+
+    await tool.execute(
+        prompt="Sửa lại ảnh trên để nó sáng hơn",
+        reference_images=None,
+    )
+
+    fake = FakeImageClient.instances[0]
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["reference_images"] == [str(ref.resolve())]
+
+

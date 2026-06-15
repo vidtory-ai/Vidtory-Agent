@@ -197,7 +197,7 @@ class TestGenerationTasks:
         assert task["brief"] == "test image"
         assert task["lifecycle_stage"] == "probation"
         assert task["design_note"] == "note"
-        assert task["result_url"] == "https://cdn.test/img.jpg"
+        assert task["result_url"] == ""
 
     def test_update_task_score(self, db: CustomerDatabase):
         """Task scores should be updateable."""

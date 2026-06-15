@@ -503,6 +503,7 @@ class AgentLoop:
         self, channel: str, chat_id: str,
         message_id: str | None = None, metadata: dict | None = None,
         session_key: str | None = None,
+        media: list[str] | None = None,
     ) -> None:
         """Update context for all tools that need routing info."""
         from nanobot.agent.tools.context import ContextAware, RequestContext
@@ -514,12 +515,16 @@ class AgentLoop:
         else:
             effective_key = f"{channel}:{chat_id}"
 
+        merged_meta = dict(metadata or {})
+        if media is not None:
+            merged_meta["media"] = media
+
         request_ctx = RequestContext(
             channel=channel,
             chat_id=chat_id,
             message_id=message_id,
             session_key=effective_key,
-            metadata=dict(metadata or {}),
+            metadata=merged_meta,
         )
 
         for name in self.tools.tool_names:
@@ -1145,6 +1150,7 @@ class AgentLoop:
         self._set_tool_context(
             channel, chat_id, msg.metadata.get("message_id"),
             msg.metadata, session_key=key,
+            media=msg.media,
         )
         _hist_kwargs: dict[str, Any] = {
             "max_messages": self._llm_history_messages,
@@ -1168,7 +1174,7 @@ class AgentLoop:
         final_content, _, all_msgs, stop_reason, _ = await self._run_agent_loop(
             messages, session=session, channel=channel, chat_id=chat_id,
             message_id=msg.metadata.get("message_id"),
-            metadata=msg.metadata,
+            metadata={**(msg.metadata or {}), "media": msg.media},
             session_key=key,
             pending_queue=pending_queue,
         )
@@ -1428,6 +1434,7 @@ class AgentLoop:
             ctx.msg.metadata.get("message_id"),
             ctx.msg.metadata,
             session_key=ctx.session_key,
+            media=ctx.msg.media,
         )
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
@@ -1495,7 +1502,7 @@ class AgentLoop:
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
             message_id=ctx.msg.metadata.get("message_id"),
-            metadata=ctx.msg.metadata,
+            metadata={**(ctx.msg.metadata or {}), "media": ctx.msg.media},
             session_key=ctx.session_key,
             pending_queue=ctx.pending_queue,
         )
