@@ -289,7 +289,11 @@ def _is_revision_prompt(prompt: str) -> bool:
         "sửa", "sửa lại", "chỉnh lại", "thay đổi", "thêm", "ghép", "lồng",
         "từ ảnh", "ảnh trên", "ảnh trước", "ảnh vừa tạo", "tinh chỉnh", "tối ưu",
         "edit", "modify", "change", "add", "revision", "fix", "update", "replace",
-        "chèn logo", "thêm logo", "bỏ logo", "xóa logo", "đặt logo"
+        "chèn logo", "thêm logo", "bỏ logo", "xóa logo", "đặt logo",
+        "dựa theo", "dựa trên", "dựa vào", "giống ảnh", "như ảnh", "giống bản", "như bản",
+        "thiết kế trên", "thiết kế trước", "bản trước", "bản trên", "bản cũ", "ảnh cũ",
+        "như trên", "như cũ", "cùng layout", "cùng style", "cùng phong cách", "đồng bộ",
+        "biến thể", "phiên bản", "làm tiếp", "giữ nguyên"
     ]
     return any(kw in prompt_lower for kw in revision_keywords)
 
