@@ -36,12 +36,6 @@ def test_build_image_delivery_uses_brand_product_channel_and_memory() -> None:
     assert "Vidtory" in message
     assert "Design note:" in message
     assert "chữ quá nhỏ" in message
-    assert "1️⃣" in message
-    assert "2️⃣" in message
-    assert "3️⃣" in message
-    assert "Facebook" in message
-    assert "Nền tảng sáng tạo nội dung cho doanh nghiệp" in message
-    assert len(delivery["suggestions"]) == 3
 
 
 def test_build_image_delivery_falls_back_cleanly_without_profile() -> None:
@@ -53,7 +47,6 @@ def test_build_image_delivery_falls_back_cleanly_without_profile() -> None:
 
     assert "Đã tạo ảnh" in delivery["message"]
     assert "Design note:" in delivery["message"]
-    assert len(delivery["suggestions"]) == 3
 
 
 def test_delivery_uses_one_generic_strategy_for_unseen_subjects() -> None:
@@ -73,8 +66,6 @@ def test_delivery_uses_one_generic_strategy_for_unseen_subjects() -> None:
 
     message = delivery["message"]
     assert "Atelier Mới" in message
-    assert "Không gian thử nghiệm vật liệu và văn hóa" in message
-    assert "Instagram" in message
     assert "linh vật" not in message
     assert "sản phẩm là điểm nhìn chính" not in message
     assert "da tự nhiên" not in message

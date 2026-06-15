@@ -50,7 +50,7 @@ from nanobot.session.webui_turns import (
 from nanobot.utils.document import extract_documents
 from nanobot.utils.helpers import image_placeholder_text
 from nanobot.utils.helpers import truncate_text as truncate_text_fn
-from nanobot.utils.image_delivery import universal_direction_labels
+from nanobot.utils.image_delivery import build_image_delivery
 from nanobot.utils.image_generation_intent import image_generation_prompt
 from nanobot.utils.llm_runtime import LLMRuntime
 from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
@@ -746,18 +746,7 @@ class AgentLoop:
                     "Không chặn yêu cầu hiện tại nếu người dùng chưa muốn bổ sung."
                 )
 
-            creative_markers = (
-                "ảnh", "hình", "poster", "banner", "story", "video", "thiết kế", "tạo"
-            )
-            if not brand_update and any(
-                marker in msg.content.lower() for marker in creative_markers
-            ):
-                suggestions = universal_direction_labels()
-                lines.append(
-                    "[CREATIVE_DIRECTIONS] Nếu cần cho người dùng chọn hướng sáng tạo, "
-                    f"ưu tiên ba nút sát yêu cầu này: {suggestions}. "
-                    "Người dùng có thể bấm nút hoặc gõ lại đúng nội dung lựa chọn."
-                )
+
         except Exception:
             pass
 

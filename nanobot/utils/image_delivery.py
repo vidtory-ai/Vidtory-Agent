@@ -203,7 +203,6 @@ def build_image_delivery(
         reference_count=reference_count,
         context=context,
     )
-    suggestions = _suggestions(prompt, context)
 
     lines = [
         _success_line(
@@ -213,14 +212,10 @@ def build_image_delivery(
         "",
         "Design note:",
         *(f"• {note}" for note in notes),
-        "",
-        "Nếu muốn, mình làm tiếp 3 biến thể:",
-        *(f"{index}️⃣ {suggestion}" for index, suggestion in enumerate(suggestions, 1)),
     ]
     return {
         "message": "\n".join(lines),
         "design_notes": notes,
-        "suggestions": suggestions,
         "context": {
             key: value
             for key, value in context.items()

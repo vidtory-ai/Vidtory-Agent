@@ -847,7 +847,6 @@ async def test_generation_returns_artifacts_without_auto_sending_result(
     payload = json.loads(result)
     assert len(payload["artifacts"]) == 1
     assert "Đã tạo ảnh" in payload["delivery"]["message"]
-    assert len(payload["delivery"]["suggestions"]) == 3
     # Auto-send delivers images via the send_callback: exactly one message with media.
     assert len(sent) >= 1
     assert any(message.media for message in sent)

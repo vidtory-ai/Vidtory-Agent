@@ -798,8 +798,7 @@ class ImageGenerationTool(Tool, ContextAware):
                     # that haven't been caught by local or LLM rules.
                     if not clarification:
                         vague_purpose = _is_vague_text(original_user_content) or "thiết kế"
-                        from nanobot.utils.image_delivery import universal_direction_labels
-                        suggs = universal_direction_labels()
+                        suggs = ["Tinh gọn cao cấp", "Bối cảnh chân thực", "Chiến dịch nổi bật"]
                         clarification = (
                             f"Để tạo ảnh {vague_purpose} đẹp và đúng ý, "
                             "bạn muốn hình ảnh thể hiện gì?\n\n"
@@ -1244,26 +1243,37 @@ class ImageGenerationTool(Tool, ContextAware):
 
         # 2. Case: Callback selection
         if ctx and ctx.metadata.get("is_callback"):
-            # Scan session for the most recent user-uploaded image and the last
-            # generated image. If user uploaded AFTER the last generation, the
-            # upload must win — the user is creating something new with their
-            # image, not requesting a variation of the old generated image.
             session_key = ctx.session_key
+            root_msg_index = -1
+            last_generated_index = -1
             session_imgs: list[str] = []
-            last_generated_index: int | None = None
-            last_user_upload_index: int | None = None
+            
             if session_key and self.sessions:
                 try:
                     session = self.sessions.get_or_create(session_key)
                     messages = list(session.messages) if session else []
-                    # Scan forward to find indices (newest = highest index)
+                    
                     for i, msg in enumerate(messages):
                         if msg.get("_command"):
                             continue
                         role = msg.get("role")
-                        h_media = msg.get("media")
-                        # Check for generated image
-                        if role == "tool" and msg.get("name") == "generate_image":
+                        
+                        # Find root message
+                        if role == "user":
+                            meta = msg.get("metadata") or {}
+                            if not meta.get("is_callback"):
+                                root_msg_index = i
+                                r_media = msg.get("media")
+                                if isinstance(r_media, list) and r_media:
+                                    session_imgs = [
+                                        m for m in r_media 
+                                        if m and (m.startswith(("http://", "https://")) or Path(m).is_file())
+                                    ]
+                                else:
+                                    session_imgs = []
+                                    
+                        # Find last generated image
+                        elif role == "tool" and msg.get("name") == "generate_image":
                             content = msg.get("content")
                             if content:
                                 try:
@@ -1272,41 +1282,32 @@ class ImageGenerationTool(Tool, ContextAware):
                                         last_generated_index = i
                                 except Exception:
                                     pass
-                        elif role == "assistant" and isinstance(h_media, list) and h_media:
+                        elif role == "assistant" and isinstance(msg.get("media"), list) and msg.get("media"):
                             last_generated_index = i
-                        # Check for user upload
-                        elif role == "user" and isinstance(h_media, list) and h_media:
-                            valid = [
-                                m for m in h_media
-                                if m and (m.startswith(("http://", "https://")) or Path(m).is_file())
-                            ]
-                            if valid:
-                                last_user_upload_index = i
-                                session_imgs = valid
-                except Exception:
-                    pass
 
-            # User uploaded AFTER the last generated image (or no generated image
-            # exists yet) → restore user's uploaded images as references.
-            user_upload_is_newer = (
-                last_user_upload_index is not None
-                and (
-                    last_generated_index is None
-                    or last_user_upload_index > last_generated_index
-                )
-            )
-            if user_upload_is_newer and session_imgs:
-                logger.info(
-                    "Callback: user upload (idx={}) is newer than last generation (idx={}) "
-                    "— using {} uploaded image(s) as references",
-                    last_user_upload_index,
-                    last_generated_index,
-                    len(session_imgs),
-                )
-                return list(dict.fromkeys(session_imgs + list(reference_images or [])))
+                except Exception as e:
+                    logger.warning("Error finding root message for callback: {}", e)
 
-            # If a generated image exists and is more recent than any user upload
-            # → this is a variation/edit callback, use the generated image.
+            # Compare root_msg_index and last_generated_index
+            if root_msg_index > last_generated_index:
+                if session_imgs:
+                    logger.info(
+                        "Callback: root request (idx={}) is newer than last generation (idx={}) "
+                        "— using {} uploaded image(s) as references",
+                        root_msg_index,
+                        last_generated_index,
+                        len(session_imgs),
+                    )
+                    return list(dict.fromkeys(session_imgs + list(reference_images or [])))
+                else:
+                    logger.info(
+                        "Callback: root request (idx={}) has no media. Ignoring old images.",
+                        root_msg_index,
+                    )
+                    return reference_images
+
+            # If a generated image exists and is more recent than the root request
+            # → this is a variation/edit callback on the generated image itself.
             if last_generated:
                 logger.info(
                     "Callback selection: using last actual generated image as reference: {}",
@@ -1314,10 +1315,10 @@ class ImageGenerationTool(Tool, ContextAware):
                 )
                 return [last_generated]
 
-            # Fallback: restore whatever session images we found
+            # Fallback
             if session_imgs:
                 logger.info(
-                    "Callback selection (pre-generation): restoring {} session image(s) as references",
+                    "Callback selection (fallback): restoring {} session image(s) as references",
                     len(session_imgs),
                 )
                 return list(dict.fromkeys(session_imgs + list(reference_images or [])))
