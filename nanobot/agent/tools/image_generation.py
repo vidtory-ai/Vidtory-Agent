@@ -1062,11 +1062,29 @@ class ImageGenerationTool(Tool, ContextAware):
         prompt: str,
         reference_images: list[str] | None,
     ) -> list[str] | None:
-        """Make current and replied-to images authoritative for edit requests."""
+        """Make current and replied-to images authoritative for edit requests.
+
+        IMPORTANT: When the user presses a numbered button (is_callback=True) to select
+        a NEW creative direction (not an explicit edit/revision keyword), do NOT pull
+        previous image URLs from history — this causes unwanted image injection.
+        Only pull history when the prompt explicitly references a previous image.
+        """
+        ctx = _image_gen_request_ctx.get()
+
+        # If this is a callback button press selecting a new creative direction,
+        # do NOT attempt to inject previous image URLs.
+        # Callbacks for edits ("Cần chỉnh", "Tạo biến thể") are marked with
+        # is_edit_callback=True by the Telegram layer; plain numbered buttons are not.
+        if ctx and ctx.metadata.get("is_callback") and not ctx.metadata.get("is_edit_callback"):
+            # Callback with no explicit edit intent — return whatever LLM passed
+            logger.debug(
+                "_merge_revision_references: skipping history injection for non-edit callback"
+            )
+            return reference_images
+
         if not _is_revision_prompt(prompt):
             return reference_images
 
-        ctx = _image_gen_request_ctx.get()
         request_media: list[str] = []
         if ctx:
             reply_media = self._valid_context_media(ctx.metadata.get("reply_media"))
