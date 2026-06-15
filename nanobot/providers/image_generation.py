@@ -9,7 +9,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 from loguru import logger
@@ -1640,7 +1640,6 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         logo_url: str | None = None,
         progress_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> GeneratedImageResponse:
-        import time
         if not self.api_key:
             raise ImageGenerationError(self.missing_key_message)
 
@@ -1650,9 +1649,29 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         # If a logo URL is provided, ensure it is a stable CDN URL before use.
         # Local paths and data URLs are pre-uploaded to the Vidtory Media CDN
         # with preserveFormat=true so that PNG transparency is preserved.
-        # The CDN URL is then passed as ``logoUrl`` (not refImageUrl/startImages)
-        # so Gemini does NOT treat it as a subject to modify or erase.
+        # The resolved logo is appended as the final startImages asset.
         resolved_logo_url = await self._resolve_logo_url(logo_url) if logo_url else None
+
+        # When a logo is present, keep every image in one ordered startImages
+        # collection. The generation backend may not combine refImageUrl and
+        # startImages, so splitting a single content reference from the logo can
+        # silently drop the logo before Gemini receives the request.
+        if resolved_logo_url and refs:
+            logger.info(
+                "Vidtory: {} content reference(s) plus logo — sending one startImages collection",
+                len(refs),
+            )
+            return await self._generate_single(
+                prompt=prompt,
+                model=model,
+                ref_image=None,
+                extra_images=refs,
+                style_image_url=style_image_url,
+                logo_url=resolved_logo_url,
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+                progress_callback=progress_callback,
+            )
 
         # When multiple reference images are provided, send ALL of them equally
         # via startImages so Vidtory forwards every image into Gemini's
@@ -1757,9 +1776,8 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         ``ref_image``        → ``refImageUrl``   (single primary content/subject reference)
         ``extra_images``     → ``startImages``   (array of images forwarded equally into Gemini)
         ``style_image_url``  → ``styleImageUrl`` (style-transfer reference, optional)
-        ``logo_url``         → ``logoUrl``        (brand logo as a separate protected asset;
-                                                   must be a pre-uploaded Vidtory CDN URL so
-                                                   the AI does NOT erase it as a watermark)
+        ``logo_url``         → final ``startImages`` entry (brand logo asset;
+                                                            pre-uploaded Vidtory CDN URL)
 
         For multi-image requests, pass all images via ``extra_images`` so that
         Vidtory forwards every one into Gemini's contents[0].parts as separate
@@ -1783,6 +1801,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
             "modelId": model or "gemini-3.1-flash-image-preview",
             "resolution": image_size or "1K",
         }
+        body.update(self.extra_body)
 
         # Single reference image → refImageUrl (content/subject, not logo)
         if ref_image:
@@ -1823,8 +1842,6 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
                 len(existing_starts),
                 logo_url,
             )
-
-        body.update(self.extra_body)
 
         # Use x-api-key for merchant authentication
         headers = {

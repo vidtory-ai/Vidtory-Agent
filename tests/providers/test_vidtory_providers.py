@@ -90,6 +90,43 @@ async def test_vidtory_image_generation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_vidtory_image_generation_sends_single_reference_and_logo_together() -> None:
+    responses = [
+        FakeResponse({"success": True, "data": {"generationHistoryId": "img-refs"}}),
+        FakeResponse(
+            {
+                "success": True,
+                "data": {
+                    "status": "COMPLETED",
+                    "result": {"url": "https://cdn/result.png"},
+                },
+            }
+        ),
+    ]
+    fake = FakeClient(responses)
+    client = VidtoryImageGenerationClient(
+        api_key="test-api-key",
+        api_base="https://bapi.vidtory.net",
+        extra_body={"startImages": ["https://stale.example/old.png"]},
+        client=fake,  # type: ignore[arg-type]
+    )
+
+    await client.generate(
+        prompt="Sửa tiêu đề poster",
+        model="gemini-3.1-flash-image-preview",
+        reference_images=["https://b2b.vidtory.net/images/latest-poster.png"],
+        logo_url="https://b2b.vidtory.net/assets/brand-logo.png",
+    )
+
+    body = fake.calls[0]["json"]
+    assert "refImageUrl" not in body
+    assert body["startImages"] == [
+        "https://b2b.vidtory.net/images/latest-poster.png",
+        "https://b2b.vidtory.net/assets/brand-logo.png",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_vidtory_video_generation() -> None:
     responses = [
         FakeResponse({"success": True, "data": {"generationHistoryId": "vid-123"}}),
