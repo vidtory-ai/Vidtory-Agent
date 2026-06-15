@@ -286,12 +286,13 @@ def _is_revision_prompt(prompt: str) -> bool:
     """Check if the user's prompt is a revision or edit request."""
     prompt_lower = prompt.lower()
     revision_keywords = [
-        "sửa", "sửa lại", "chỉnh lại", "thay đổi", "thêm", "ghép", "lồng",
+        "sửa", "sửa lại", "chỉnh", "chỉnh lại", "thay đổi", "thêm", "ghép", "lồng",
         "từ ảnh", "ảnh trên", "ảnh trước", "ảnh vừa tạo", "tinh chỉnh", "tối ưu",
         "edit", "modify", "change", "add", "revision", "fix", "update", "replace",
         "chèn logo", "thêm logo", "bỏ logo", "xóa logo", "đặt logo",
         "dựa theo", "dựa trên", "dựa vào", "giống ảnh", "như ảnh", "giống bản", "như bản",
         "thiết kế trên", "thiết kế trước", "bản trước", "bản trên", "bản cũ", "ảnh cũ",
+        "bản này",
         "như trên", "như cũ", "cùng layout", "cùng style", "cùng phong cách", "đồng bộ",
         "biến thể", "phiên bản", "làm tiếp", "giữ nguyên"
     ]
@@ -310,6 +311,7 @@ def _references_latest_image(prompt: str) -> bool:
         "hình vừa rồi",
         "bản trên",
         "bản vừa tạo",
+        "bản này",
         "như trên",
         "above image",
         "image above",
@@ -606,8 +608,16 @@ class ImageGenerationTool(Tool, ContextAware):
         # Dedup while preserving order — LLM may pass the same image path twice
         return list(dict.fromkeys(resolved))
 
-    async def _check_vague_request_with_llm(self, prompt: str) -> str | None:
-        """Call the LLM dynamically to analyze request vagueness and generate suggestions."""
+    async def _check_vague_request_with_llm(
+        self,
+        prompt: str,
+        media_paths: list[str] | None = None,
+    ) -> str | None:
+        """Call the LLM dynamically to analyze request vagueness and generate suggestions.
+
+        When ``media_paths`` is supplied the LLM sees the images so it can make
+        suggestions that are grounded in the actual uploaded visuals.
+        """
         if not self.provider_snapshot_loader:
             return None
 
@@ -652,16 +662,43 @@ class ImageGenerationTool(Tool, ContextAware):
                 "}"
             )
 
+            # Build user message — attach images when available so the LLM
+            # can ground its suggestions in the actual uploaded visuals.
+            user_content: str | list = f'Yêu cầu khách hàng: "{prompt}"'
+            valid_media = [
+                p for p in (media_paths or [])
+                if isinstance(p, str) and p
+                and (p.startswith(("http://", "https://")) or Path(p).is_file())
+            ]
+            if valid_media:
+                parts: list[dict] = [{"type": "text", "text": str(user_content)}]
+                for path in valid_media[:4]:  # cap at 4 images for cost
+                    if path.startswith(("http://", "https://")):
+                        parts.append({"type": "image_url", "image_url": {"url": path}})
+                    else:
+                        try:
+                            import base64
+                            ext = Path(path).suffix.lower().lstrip(".") or "jpeg"
+                            mime = f"image/{ext.replace('jpg', 'jpeg')}"
+                            b64 = base64.b64encode(Path(path).read_bytes()).decode()
+                            parts.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime};base64,{b64}"},
+                            })
+                        except Exception:
+                            pass
+                user_content = parts
+
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Yêu cầu khách hàng: \"{prompt}\""}
+                {"role": "user", "content": user_content},
             ]
 
             response = await llm.chat(
                 messages=messages,
                 model=model,
                 temperature=0.1,
-                max_tokens=300
+                max_tokens=300,
             )
 
             content = (response.content or "").strip()
@@ -717,24 +754,52 @@ class ImageGenerationTool(Tool, ContextAware):
             if ctx
             else ""
         )
-        has_request_media = bool(
-            ctx
-            and (
-                self._valid_context_media(ctx.metadata.get("reply_media"))
-                or self._valid_context_media(ctx.metadata.get("current_media"))
-                or self._valid_context_media(ctx.metadata.get("media"))
+        # Collect media paths from the current request context so the vague-check
+        # LLM can read the uploaded images and tailor its suggestions.
+        request_media_paths: list[str] = []
+        if ctx:
+            for meta_key in ("reply_media", "current_media", "media"):
+                request_media_paths.extend(
+                    self._valid_context_media(ctx.metadata.get(meta_key))
+                )
+        has_request_media = bool(request_media_paths)
+
+        if original_user_content:
+            # 1. Always try intelligent context-aware check using LLM first.
+            #    Pass media_paths so the LLM can ground suggestions in uploaded visuals.
+            clarification = await self._check_vague_request_with_llm(
+                original_user_content,
+                media_paths=request_media_paths or None,
             )
-        )
-        if original_user_content and not has_request_media:
-            # 1. Try intelligent context-aware check using LLM first
-            clarification = await self._check_vague_request_with_llm(original_user_content)
-            
-            # 2. Fall back to local rules if LLM didn't return a clarification
-            if not clarification:
+
+            # 2. Fall back to local rules when LLM returns nothing.
+            if not clarification and not has_request_media:
+                # Text-only: use acronym / vague-purpose detection.
                 clarification = _ambiguous_image_request_clarification(
                     original_user_content
                 )
-                
+
+            if not clarification and has_request_media:
+                # Multi-image + short/vague request: show universal direction picker
+                # so the user can choose the creative axis before generation starts.
+                word_count = len(original_user_content.split())
+                is_short_request = word_count <= 12
+                if is_short_request:
+                    vague_purpose = _is_vague_text(original_user_content) or "thiết kế"
+                    from nanobot.utils.image_delivery import universal_direction_labels
+                    suggs = universal_direction_labels()
+                    clarification = (
+                        f"Để tạo ảnh {vague_purpose} đẹp và đúng ý, "
+                        "bạn muốn hình ảnh thể hiện gì?\n\n"
+                        f"1️⃣ {suggs[0]}\n"
+                        f"2️⃣ {suggs[1]}\n"
+                        f"3️⃣ {suggs[2]}\n\n"
+                        "Nếu muốn, trả lời theo mẫu:\n"
+                        "• Hướng ảnh: ...\n"
+                        "• Dòng chữ trên ảnh: ...\n"
+                        "• Tỷ lệ: 1:1 / 9:16 / 16:9"
+                    )
+
             if clarification:
                 logger.info(
                     "Image generation blocked pending clarification of original request: {}",
@@ -924,17 +989,39 @@ class ImageGenerationTool(Tool, ContextAware):
                         content="",
                         media=delivery_paths,
                         metadata=dict(ctx.metadata or {}),
-                        buttons=[["Đúng ý", "Cần chỉnh"], ["Tạo biến thể"]],
+                        buttons=[["Đúng ý", "Cần chỉnh"]],
                     )
                     await self._send_callback(outbound)
                     logger.info(
                         "ImageGenerationTool: auto-sent {} image(s) to {}:{}",
                         len(delivery_paths), ctx.channel, ctx.chat_id,
                     )
+                    # Build delivery message for the LLM to use as completion response.
+                    try:
+                        from nanobot.utils.image_delivery import build_image_delivery
+                        delivery = build_image_delivery(
+                            prompt=prompt,
+                            profile=(
+                                telegram_customer_profile.get()
+                                if telegram_customer_profile
+                                else None
+                            ),
+                            reference_count=len([
+                                r for r in (reference_images or []) if r
+                            ]),
+                        )
+                    except Exception:
+                        delivery = {
+                            "message": "Đã tạo ảnh xong rồi nhé ✅",
+                            "suggestions": [],
+                            "design_notes": [],
+                            "context": {},
+                        }
                     result = {
                         "status": "sent",
                         "count": len(delivery_paths),
                         "artifacts": artifacts,
+                        "delivery": delivery,
                     }
                     if task_id:
                         result["task_id"] = task_id
@@ -1008,7 +1095,11 @@ class ImageGenerationTool(Tool, ContextAware):
             for msg in reversed(session.messages):
                 role = msg.get("role")
                 content = msg.get("content")
-                
+
+                # Skip command messages (e.g. /setlogo) — they are not design references.
+                if msg.get("_command"):
+                    continue
+
                 # Check 2a: Tool response from generate_image
                 if role == "tool" and msg.get("name") == "generate_image" and content:
                     try:
@@ -1022,7 +1113,7 @@ class ImageGenerationTool(Tool, ContextAware):
                                 return path
                     except Exception:
                         pass
-                
+
                 # Check 2b: Assistant message with media paths
                 if role == "assistant" and msg.get("media"):
                     h_media = msg.get("media")
@@ -1064,26 +1155,12 @@ class ImageGenerationTool(Tool, ContextAware):
     ) -> list[str] | None:
         """Make current and replied-to images authoritative for edit requests.
 
-        IMPORTANT: When the user presses a numbered button (is_callback=True) to select
-        a NEW creative direction (not an explicit edit/revision keyword), do NOT pull
-        previous image URLs from history — this causes unwanted image injection.
-        Only pull history when the prompt explicitly references a previous image.
+        When the request comes from a callback button press (is_callback=True),
+        the LLM selects the creative direction but the session images from the
+        prior user turn must be restored so they can be used as references.
+        This covers both "select new variant" and "edit existing" callbacks.
         """
         ctx = _image_gen_request_ctx.get()
-
-        # If this is a callback button press selecting a new creative direction,
-        # do NOT attempt to inject previous image URLs.
-        # Callbacks for edits ("Cần chỉnh", "Tạo biến thể") are marked with
-        # is_edit_callback=True by the Telegram layer; plain numbered buttons are not.
-        if ctx and ctx.metadata.get("is_callback") and not ctx.metadata.get("is_edit_callback"):
-            # Callback with no explicit edit intent — return whatever LLM passed
-            logger.debug(
-                "_merge_revision_references: skipping history injection for non-edit callback"
-            )
-            return reference_images
-
-        if not _is_revision_prompt(prompt):
-            return reference_images
 
         request_media: list[str] = []
         if ctx:
@@ -1096,6 +1173,49 @@ class ImageGenerationTool(Tool, ContextAware):
             )
 
         merged = list(dict.fromkeys(request_media + list(reference_images or [])))
+
+        # When the request is a callback button press (user selected a creative
+        # direction or a variant), restore the session images so the LLM-chosen
+        # prompt can reference them as inputs.  This is NOT history injection
+        # for arbitrary prompts — it only applies to explicit user selections.
+        if ctx and ctx.metadata.get("is_callback"):
+            if request_media:
+                return merged
+            # Try to restore session images from the latest user / assistant turn
+            last_img = self._find_last_generated_image()
+            if last_img:
+                session_key = ctx.session_key
+                session_imgs: list[str] = []
+                if session_key and self.sessions:
+                    try:
+                        session = self.sessions.get_or_create(session_key)
+                        # Look for the most recent user message with multiple images
+                        for msg in reversed(session.messages):
+                            if msg.get("_command"):
+                                continue
+                            h_media = msg.get("media")
+                            if isinstance(h_media, list) and len(h_media) >= 1:
+                                session_imgs = [
+                                    m for m in h_media
+                                    if m and (m.startswith(("http://", "https://")) or Path(m).is_file())
+                                ]
+                                if session_imgs:
+                                    break
+                    except Exception:
+                        pass
+                if session_imgs:
+                    logger.info(
+                        "Callback selection: restoring {} session image(s) as references",
+                        len(session_imgs),
+                    )
+                    return list(dict.fromkeys(session_imgs + list(reference_images or [])))
+                return [last_img]
+            # No session images found — just return what LLM passed
+            return reference_images
+
+        if not _is_revision_prompt(prompt):
+            return reference_images
+
         if request_media:
             return merged
 

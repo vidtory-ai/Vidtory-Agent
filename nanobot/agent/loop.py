@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import os
 import re
 import time
@@ -49,6 +50,7 @@ from nanobot.session.webui_turns import (
 from nanobot.utils.document import extract_documents
 from nanobot.utils.helpers import image_placeholder_text
 from nanobot.utils.helpers import truncate_text as truncate_text_fn
+from nanobot.utils.image_delivery import universal_direction_labels
 from nanobot.utils.image_generation_intent import image_generation_prompt
 from nanobot.utils.llm_runtime import LLMRuntime
 from nanobot.utils.runtime import EMPTY_FINAL_RESPONSE_MESSAGE
@@ -705,7 +707,11 @@ class AgentLoop:
 
         try:
             from nanobot.utils.customer_context import format_customer_context_lines
-            customer_lines = format_customer_context_lines(profile)
+            customer_lines = format_customer_context_lines(
+                profile,
+                query=msg.content,
+                max_chars=2200,
+            )
             lines.extend(customer_lines)
         except Exception:
             pass
@@ -713,7 +719,6 @@ class AgentLoop:
         try:
             from nanobot.utils.brand_intelligence import (
                 build_adaptive_onboarding_step,
-                build_creative_suggestions,
                 detect_brand_update_intent,
                 get_profile_gaps,
                 should_offer_onboarding,
@@ -747,8 +752,7 @@ class AgentLoop:
             if not brand_update and any(
                 marker in msg.content.lower() for marker in creative_markers
             ):
-                industry = str((profile.get("business") or {}).get("industry") or "")
-                suggestions = build_creative_suggestions(msg.content, industry)
+                suggestions = universal_direction_labels()
                 lines.append(
                     "[CREATIVE_DIRECTIONS] Nếu cần cho người dùng chọn hướng sáng tạo, "
                     f"ưu tiên ba nút sát yêu cầu này: {suggestions}. "
@@ -820,6 +824,8 @@ class AgentLoop:
         metadata: dict[str, Any] | None = None,
         session_key: str | None = None,
         pending_queue: asyncio.Queue | None = None,
+        media: list[str] | None = None,
+        original_user_content: str | None = None,
     ) -> tuple[str | None, list[str], list[dict], str, bool]:
         """Run the agent iteration loop.
 
@@ -856,6 +862,8 @@ class AgentLoop:
                 tool_hint_max_length=self.tool_hint_max_length,
                 set_tool_context=self._set_tool_context,
                 on_iteration=lambda iteration: setattr(self, "_current_iteration", iteration),
+                media=media,
+                original_user_content=original_user_content,
             )
             hook: AgentHook = (
                 CompositeHook([loop_hook] + self._extra_hooks) if self._extra_hooks else loop_hook
@@ -1261,6 +1269,8 @@ class AgentLoop:
             metadata={**(msg.metadata or {}), "media": msg.media},
             session_key=key,
             pending_queue=pending_queue,
+            media=msg.media,
+            original_user_content=msg.content,
         )
         wall_done = time.time()
         latency_ms = max(0, int((wall_done - t_wall) * 1000))
@@ -1388,12 +1398,28 @@ class AgentLoop:
         on_stream: Callable[[str], Awaitable[None]] | None,
         *,
         turn_latency_ms: int | None = None,
+        turn_message_start: int = 0,
     ) -> OutboundMessage | None:
         """Assemble the final outbound message from turn results."""
+        turn_messages = all_msgs[turn_message_start:]
+        generated_media = self._generated_media_from_messages(turn_messages)
+        delivery_message = self._image_delivery_message_from_messages(turn_messages)
+        delivered_media: list[str] = []
+
         # MessageTool suppression
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
-            if not had_injections or stop_reason == "empty_final_response":
+            delivered_media = mt.turn_delivered_media_paths()
+            generated_media = [
+                path for path in generated_media if path not in set(delivered_media)
+            ]
+            if (
+                not generated_media
+                and (not had_injections or stop_reason == "empty_final_response")
+            ):
                 return None
+
+        if generated_media and delivery_message:
+            final_content = delivery_message
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
@@ -1408,13 +1434,61 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
+            media=generated_media,
             buttons=(
-                extract_numbered_choice_buttons(final_content)
-                if is_resident_designer_profile(self.capability_profile)
-                else []
+                [["Đúng ý", "Cần chỉnh"]]
+                if generated_media
+                else (
+                    extract_numbered_choice_buttons(final_content)
+                    if is_resident_designer_profile(self.capability_profile)
+                    else []
+                )
             ),
             metadata=meta,
         )
+
+    @staticmethod
+    def _generated_media_from_messages(messages: list[dict[str, Any]]) -> list[str]:
+        paths: list[str] = []
+        for message in messages:
+            if message.get("role") != "tool" or message.get("name") != "generate_image":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError):
+                continue
+            for artifact in payload.get("artifacts") or []:
+                if not isinstance(artifact, dict):
+                    continue
+                path = artifact.get("path") or artifact.get("remote_url")
+                if isinstance(path, str) and path:
+                    paths.append(path)
+        return list(dict.fromkeys(paths))
+
+    @staticmethod
+    def _image_delivery_message_from_messages(
+        messages: list[dict[str, Any]],
+    ) -> str:
+        for message in reversed(messages):
+            if message.get("role") != "tool" or message.get("name") != "generate_image":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            try:
+                payload = json.loads(content)
+            except (TypeError, ValueError):
+                continue
+            delivery = payload.get("delivery")
+            if not isinstance(delivery, dict):
+                continue
+            value = delivery.get("message")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
 
     async def _state_restore(self, ctx: TurnContext) -> TurnState:
         """Restore checkpoint / pending user turn; extract documents."""
@@ -1595,6 +1669,8 @@ class AgentLoop:
             metadata={**(ctx.msg.metadata or {}), "media": ctx.msg.media},
             session_key=ctx.session_key,
             pending_queue=ctx.pending_queue,
+            media=ctx.msg.media,
+            original_user_content=ctx.msg.content,
         )
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
         output_policy = evaluate_request(
@@ -1671,6 +1747,7 @@ class AgentLoop:
             ctx.had_injections,
             ctx.on_stream,
             turn_latency_ms=ctx.turn_latency_ms,
+            turn_message_start=ctx.save_skip,
         )
         return "ok"
 

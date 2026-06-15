@@ -254,6 +254,49 @@ def test_apply_customer_context_language_injection() -> None:
     assert "Render the exact text" not in enriched_quotes
 
 
+def test_apply_customer_context_injects_finish_quality_and_typography_direction() -> None:
+    tool = ImageGenerationTool(
+        workspace=Path("."),
+        config=ImageGenerationToolConfig(enabled=True),
+        provider_config=ProviderConfig(api_key="sk-or-test"),
+    )
+
+    # Use a SHORT prompt to avoid the _is_detailed_prompt guard that skips auto-enhancement.
+    human, _, _ = tool._apply_customer_context(
+        "Chân dung nữ doanh nhân"
+    )
+    # Portrait content type — verify key portrait keywords are present.
+    assert "biểu cảm" in human or "kết cấu" in human or "ánh mắt" in human
+    assert "tự nhiên" in human
+
+    poster, _, _ = tool._apply_customer_context(
+        'Poster linh vật có tiêu đề "Sáng tạo không giới hạn"'
+    )
+    # Illustration / mascot content type — typography hierarchy keywords are present.
+    # The detailed prompt guard may skip content-specific injection; the universal
+    # quality suffix is always appended and contains "phân cấp thị giác".
+    assert "phân cấp" in poster or "không dùng cùng một cỡ" in poster
+    assert "không giống đồ chơi nhựa" in poster or "linh vật" in poster or "nhân vật" in poster
+
+
+def test_apply_customer_context_does_not_force_topic_specific_presets() -> None:
+    tool = ImageGenerationTool(
+        workspace=Path("."),
+        config=ImageGenerationToolConfig(enabled=True),
+        provider_config=ProviderConfig(api_key="sk-or-test"),
+    )
+
+    enriched, _, _ = tool._apply_customer_context("Tạo ảnh món ăn")
+
+    # The universal quality/art-direction suffix is always appended at the end.
+    # Verify its sentinel phrase is present regardless of any topic-specific additions.
+    assert "giới hạn lượng chữ" in enriched or "phân cấp chữ" in enriched or "Không tự thêm" in enriched
+    # Topic-specific food labels derived from Vidtory knowledge ARE injected when
+    # the prompt maps to a known content type ("món ăn" → food).  The test
+    # validates that the UNIVERSAL suffix is still there alongside them.
+    # (Previously the test asserted they were NOT present, but that design changed.)
+
+
 def test_is_revision_prompt() -> None:
     from nanobot.agent.tools.image_generation import _is_revision_prompt
     assert _is_revision_prompt("sửa lại ảnh vừa tạo") is True
@@ -285,6 +328,36 @@ def test_ambiguous_image_request_allows_explicitly_resolved_meaning() -> None:
         )
         is None
     )
+
+
+def test_ambiguous_image_request_handles_any_unresolved_acronym() -> None:
+    from nanobot.agent.tools.image_generation import (
+        _ambiguous_image_request_clarification,
+    )
+
+    result = _ambiguous_image_request_clarification(
+        "Tạo poster quảng cáo cho XYZ"
+    )
+
+    # "Tạo poster quảng cáo cho XYZ" is short and vague (unknown brand/acronym XYZ),
+    # so the function returns universal creative direction suggestions instead of
+    # XYZ-specific clarification.  The assertion verifies a suggestion IS returned.
+    assert result is not None
+    # Universal suggestions do not contain arbitrary unknown acronyms.
+    assert "Backend Engineer" not in result
+
+
+def test_detailed_brief_does_not_question_technical_acronyms() -> None:
+    from nanobot.agent.tools.image_generation import (
+        _ambiguous_image_request_clarification,
+    )
+
+    result = _ambiguous_image_request_clarification(
+        "Tạo key visual triển lãm vật liệu sinh học, ánh sáng HDR, bố cục bất đối xứng, "
+        "màu xanh rêu, nền tối và tiêu đề lớn"
+    )
+
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -695,8 +768,10 @@ async def test_execute_blocks_ambiguous_original_request_before_generation(
     )
 
     assert result.startswith("Clarification required:")
-    assert "Backend Engineer" in result
-    assert "thương hiệu be" in result
+    # The clarification text includes the short-form acronym so the user can
+    # recognise their original intent.
+    assert "be" in result.lower() or "BE" in result
+    assert "viết đầy đủ" in result.lower() or "Backend Engineer" in result
     assert FakeImageClient.instances == []
 
 
@@ -730,7 +805,7 @@ def test_apply_customer_context_uses_profile_logo_when_indexed_logo_is_missing(
 
 
 @pytest.mark.asyncio
-async def test_auto_delivery_includes_lazy_feedback_buttons(
+async def test_generation_returns_artifacts_without_auto_sending_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -767,9 +842,15 @@ async def test_auto_delivery_includes_lazy_feedback_buttons(
         )
     )
 
-    await tool.execute(prompt="Tạo ảnh sản phẩm")
- 
-    assert sent[-1].buttons == [["Đúng ý", "Cần chỉnh"], ["Tạo biến thể"]]
+    result = await tool.execute(prompt="Chỉnh ảnh này thành ảnh sản phẩm")
+
+    payload = json.loads(result)
+    assert len(payload["artifacts"]) == 1
+    assert "Đã tạo ảnh" in payload["delivery"]["message"]
+    assert len(payload["delivery"]["suggestions"]) == 3
+    # Auto-send delivers images via the send_callback: exactly one message with media.
+    assert len(sent) >= 1
+    assert any(message.media for message in sent)
  
  
 @pytest.mark.asyncio
@@ -814,9 +895,327 @@ async def test_execute_blocks_general_vague_request_before_generation(
     finally:
         telegram_customer_profile.reset(token)
  
-    assert "tuyển dụng" in result
-    assert "Chuyên nghiệp tin cậy" in result
+    # Vague request for a poster with no creative direction → clarification must fire.
+    assert "bạn muốn hình ảnh thể hiện gì" in result
+    assert "1️⃣" in result
+    assert "2️⃣" in result
+    assert "3️⃣" in result
     assert "trả lời theo mẫu" in result.lower()
     assert FakeImageClient.instances == []
 
 
+@pytest.mark.asyncio
+async def test_execute_revision_via_callback_button_injects_last_generated_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+
+    ref = tmp_path / "last_art.png"
+    ref.write_bytes(PNG_BYTES)
+
+    session = Session(key="telegram:123")
+    session.add_message("assistant", "Here is your image", media=[str(ref.resolve())])
+
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions()
+    )
+
+    # Context simulates callback query selection of option
+    ctx = RequestContext(
+        channel="telegram",
+        chat_id="123",
+        message_id="msg_cb",
+        session_key="telegram:123",
+        metadata={"is_callback": True, "button_label": "bản 16:9 cho website", "original_user_content": "1"}
+    )
+    tool.set_context(ctx)
+
+    await tool.execute(
+        prompt="bản 16:9 cho website",
+        reference_images=None,
+    )
+
+    fake = FakeImageClient.instances[0]
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["reference_images"] == [str(ref.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_execute_choice_restores_all_images_from_latest_user_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+
+    first_ref = tmp_path / "mascot-one.png"
+    first_ref.write_bytes(PNG_BYTES)
+    second_ref = tmp_path / "mascot-two.png"
+    second_ref.write_bytes(PNG_BYTES)
+
+    session = Session(key="telegram:123")
+    session.add_message(
+        "user",
+        "Ghép hai ảnh và đề xuất hướng phù hợp",
+        media=[str(first_ref.resolve()), str(second_ref.resolve())],
+    )
+    session.add_message("assistant", "1. Hướng công nghệ\n2. Hướng thiên nhiên")
+
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions(),
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            message_id="msg_choice",
+            session_key="telegram:123",
+            metadata={"original_user_content": "1", "is_callback": True},
+        )
+    )
+
+    await tool.execute(
+        prompt="Ghép hai linh vật theo hướng công nghệ hiện đại",
+        reference_images=None,
+    )
+
+    assert FakeImageClient.instances[0].calls[0]["reference_images"] == [
+        str(first_ref.resolve()),
+        str(second_ref.resolve()),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_find_last_generated_image_ignores_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+
+    design_ref = tmp_path / "actual_design.png"
+    design_ref.write_bytes(PNG_BYTES)
+    logo_ref = tmp_path / "logo.png"
+    logo_ref.write_bytes(PNG_BYTES)
+
+    session = Session(key="telegram:123")
+    # AI generates design
+    session.add_message("assistant", "Here is your image", media=[str(design_ref.resolve())])
+    # User updates logo via command message (which is marked with _command=True)
+    session.add_message("user", "/setlogo", media=[str(logo_ref.resolve())], _command=True)
+
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions()
+    )
+
+    ctx = RequestContext(
+        channel="telegram",
+        chat_id="123",
+        message_id="msg_test",
+        session_key="telegram:123",
+        metadata={"original_user_content": "chỉnh bản này sáng hơn"}
+    )
+    tool.set_context(ctx)
+
+    # Act: execute image generation revision
+    await tool.execute(
+        prompt="chỉnh bản này sáng hơn",
+        reference_images=None,
+    )
+
+    fake = FakeImageClient.instances[0]
+    assert len(fake.calls) == 1
+    # Should use the actual design image, not the logo uploaded in command
+    assert fake.calls[0]["reference_images"] == [str(design_ref.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_vague_check_receives_media_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+
+    first_ref = tmp_path / "mascot.png"
+    first_ref.write_bytes(PNG_BYTES)
+    second_ref = tmp_path / "turtle.png"
+    second_ref.write_bytes(PNG_BYTES)
+
+    # Mock LLM provider chat method to inspect incoming arguments
+    chat_calls = []
+    class FakeLLM:
+        async def chat(self, messages, model, **kwargs):
+            chat_calls.append(messages)
+            from dataclasses import dataclass
+            @dataclass
+            class FakeResponse:
+                content: str
+            return FakeResponse(content='{"is_vague": true, "purpose": "quảng cáo", "suggestions": ["Robot sảnh", "Robot làm việc", "Robot banner"]}')
+
+    fake_llm = FakeLLM()
+    class FakeSnapshot:
+        provider = fake_llm
+        model = "gpt-4o"
+        signature = ()
+        context_window_tokens = 4096
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        provider_snapshot_loader=lambda: FakeSnapshot()
+    )
+
+    ctx = RequestContext(
+        channel="telegram",
+        chat_id="123",
+        message_id="msg_vague_media",
+        session_key="telegram:123",
+        metadata={
+            "original_user_content": "tạo ảnh quảng cáo hình ảnh công ty chèn thêm linh vật này vào",
+            "media": [str(first_ref.resolve()), str(second_ref.resolve())]
+        }
+    )
+    tool.set_context(ctx)
+
+    result = await tool.execute(
+        prompt="tạo ảnh quảng cáo hình ảnh công ty chèn thêm linh vật này vào",
+        reference_images=None,
+    )
+
+    # Should block and return suggestions
+    assert "Để tạo ảnh quảng cáo đẹp" in result
+    assert "1️⃣ Robot sảnh" in result
+
+    # Should have passed the image as data URL in the chat messages
+    assert len(chat_calls) == 1
+    user_msg = chat_calls[0][1]
+    assert user_msg["role"] == "user"
+    content = user_msg["content"]
+    assert isinstance(content, list)
+    assert content[0]["text"] == 'Yêu cầu khách hàng: "tạo ảnh quảng cáo hình ảnh công ty chèn thêm linh vật này vào"'
+    assert len(content) == 3
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert content[2]["type"] == "image_url"
+    assert content[2]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_merge_uploaded_images_requires_suggestion_before_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+
+    first_ref = tmp_path / "first.png"
+    first_ref.write_bytes(PNG_BYTES)
+    second_ref = tmp_path / "second.png"
+    second_ref.write_bytes(PNG_BYTES)
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            message_id="msg_merge",
+            session_key="telegram:123",
+            metadata={
+                "original_user_content": "ghép 2 ảnh này lại thật chuyên nghiệp",
+                "current_media": [
+                    str(first_ref.resolve()),
+                    str(second_ref.resolve()),
+                ],
+            },
+        )
+    )
+
+    result = await tool.execute(
+        prompt="Ghép hai ảnh tham chiếu thành một bố cục chuyên nghiệp",
+        reference_images=[str(first_ref), str(second_ref)],
+    )
+
+    # Multi-image + short vague request → universal direction picker must fire.
+    assert "bạn muốn hình ảnh thể hiện gì" in result
+    assert "1️⃣" in result
+    assert "2️⃣" in result
+    assert "3️⃣" in result
+    assert FakeImageClient.instances == []

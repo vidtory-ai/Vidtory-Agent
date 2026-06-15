@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -32,11 +33,11 @@ class FakeImageClient:
 
 
 @pytest.mark.asyncio
-async def test_outbound_no_longer_carries_generated_media(
+async def test_outbound_delivers_generated_media_once_when_llm_does_not_send_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Media delivery is now the LLM's responsibility via the message tool."""
+    """The loop falls back to one final attachment when the LLM omits message()."""
     set_config_path(tmp_path / "config.json")
     FakeImageClient.generate_calls = 0
     monkeypatch.setattr(
@@ -69,7 +70,7 @@ async def test_outbound_no_longer_carries_generated_media(
         workspace=tmp_path,
         model="test-model",
         tools_config=ToolsConfig(
-            image_generation=ImageGenerationToolConfig(enabled=True),
+            image_generation=ImageGenerationToolConfig(enabled=True, provider="openrouter"),
         ),
         image_generation_provider_config=ProviderConfig(api_key="sk-or-test"),
     )
@@ -80,15 +81,19 @@ async def test_outbound_no_longer_carries_generated_media(
             channel="websocket",
             sender_id="user",
             chat_id="chat-image",
-            content="draw an icon",
+            content="edit this image",
+            metadata={"original_user_content": "edit this image"},
         )
     )
 
     assert result is not None
-    assert result.content == "Done"
-    # OutboundMessage no longer carries generated media —
-    # the LLM sends images via the message tool instead.
-    assert result.media == []
+    # When generate_image tool includes a delivery.message, the loop uses it as
+    # the outbound content (overriding the LLM's final "Done" response).
+    assert "Đã tạo ảnh" in result.content
+    assert len(result.media) == 1
+    assert FakeImageClient.generate_calls == 1
+    # "Tạo biến thể" button must NOT appear — only the feedback pair.
+    assert result.buttons == [["Đúng ý", "Cần chỉnh"]]
 
 
 @pytest.mark.asyncio
@@ -139,7 +144,7 @@ async def test_loop_preserves_original_request_for_image_preflight(
         workspace=tmp_path,
         model="test-model",
         tools_config=ToolsConfig(
-            image_generation=ImageGenerationToolConfig(enabled=True),
+            image_generation=ImageGenerationToolConfig(enabled=True, provider="openrouter"),
         ),
         image_generation_provider_config=ProviderConfig(api_key="sk-or-test"),
     )
@@ -157,3 +162,109 @@ async def test_loop_preserves_original_request_for_image_preflight(
     assert result is not None
     assert "Bạn muốn hướng nào?" in result.content
     assert FakeImageClient.generate_calls == 0
+
+
+def test_assemble_outbound_does_not_reattach_historical_generated_media(
+    tmp_path: Path,
+) -> None:
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.generation.max_tokens = 4096
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+        tools_config=ToolsConfig(),
+    )
+    old_image = tmp_path / "old-result.png"
+    old_image.write_bytes(b"old")
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "create an image"},
+        {
+            "role": "tool",
+            "name": "generate_image",
+            "content": json.dumps({"artifacts": [{"path": str(old_image)}]}),
+        },
+        {"role": "assistant", "content": "image completed"},
+        {"role": "user", "content": "hello again"},
+        {"role": "assistant", "content": "hello"},
+    ]
+
+    outbound = loop._assemble_outbound(
+        InboundMessage(
+            channel="telegram",
+            sender_id="user",
+            chat_id="123",
+            content="hello again",
+        ),
+        "hello",
+        messages,
+        "stop",
+        False,
+        None,
+        turn_message_start=4,
+    )
+
+    assert outbound is not None
+    assert outbound.media == []
+
+
+def test_assemble_outbound_uses_structured_image_delivery_message(
+    tmp_path: Path,
+) -> None:
+    provider = MagicMock()
+    provider.get_default_model.return_value = "test-model"
+    provider.generation.max_tokens = 4096
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+        tools_config=ToolsConfig(),
+    )
+    image = tmp_path / "result.png"
+    image.write_bytes(b"image")
+    delivery_message = (
+        "Đã ghép 2 linh vật thành ảnh quảng bá rồi nhé ✅\n\n"
+        "Design note:\n"
+        "• Giữ cá tính riêng của từng linh vật.\n\n"
+        "Nếu muốn, mình làm tiếp 3 biến thể:\n"
+        "1️⃣ Tối giản cao cấp\n"
+        "2️⃣ Lifestyle chân thực\n"
+        "3️⃣ Năng động nổi bật"
+    )
+    messages = [
+        {"role": "user", "content": "ghép hai ảnh"},
+        {
+            "role": "tool",
+            "name": "generate_image",
+            "content": json.dumps(
+                {
+                    "artifacts": [{"path": str(image)}],
+                    "delivery": {"message": delivery_message},
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {"role": "assistant", "content": "Đây là bản ghép theo hướng cinematic."},
+    ]
+
+    outbound = loop._assemble_outbound(
+        InboundMessage(
+            channel="telegram",
+            sender_id="user",
+            chat_id="123",
+            content="ghép hai ảnh",
+        ),
+        "Đây là bản ghép theo hướng cinematic.",
+        messages,
+        "stop",
+        False,
+        None,
+    )
+
+    assert outbound is not None
+    assert outbound.content == delivery_message
+    assert outbound.media == [str(image)]

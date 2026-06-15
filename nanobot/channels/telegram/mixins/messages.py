@@ -4,17 +4,15 @@ import asyncio
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from nanobot.config.paths import get_media_dir, get_workspace_path
 from nanobot.channels.telegram.format import TELEGRAM_REPLY_CONTEXT_MAX_LEN
-from nanobot.channels.telegram.utils import get_extension, is_remote_media_url
-
-if TYPE_CHECKING:
-    from nanobot.channels.telegram.channel import TelegramChannel
+from nanobot.channels.telegram.media_groups import MediaGroupPart
+from nanobot.channels.telegram.utils import get_extension
+from nanobot.config.paths import get_media_dir, get_workspace_path
 
 class TelegramMessagesMixin:
     @staticmethod
@@ -265,7 +263,11 @@ class TelegramMessagesMixin:
         user = update.effective_user
         chat_id = message.chat_id
         sender_id = self._sender_id(user)
-        if not self.is_allowed(sender_id):
+        is_new_api_key_customer = (
+            getattr(self.config, "require_user_api_key", False)
+            and not self.keystore.get_key(sender_id)
+        )
+        if not is_new_api_key_customer and not self.is_allowed(sender_id):
             return
 
         if getattr(self.config, "require_user_api_key", False):
@@ -354,9 +356,17 @@ class TelegramMessagesMixin:
 
         # Store chat_id for replies
         self._chat_ids[sender_id] = chat_id
+        str_chat_id = str(chat_id)
 
         if not await self._is_group_message_for_bot(message):
             return
+
+        media_group_id = getattr(message, "media_group_id", None)
+        media_group_key = (
+            f"{str_chat_id}:{media_group_id}" if media_group_id else None
+        )
+        if media_group_key:
+            self._media_group_collector.begin_part(media_group_key)
 
         # Build content from text and/or media
         content_parts = []
@@ -374,55 +384,65 @@ class TelegramMessagesMixin:
             lon = message.location.longitude
             content_parts.append(f"[location: {lat}, {lon}]")
 
-        # Download current message media
-        current_media_paths, current_media_parts = await self._download_message_media(
-            message, add_failure_content=True
-        )
-        media_paths.extend(current_media_paths)
-        content_parts.extend(current_media_parts)
-        if current_media_paths:
-            self.logger.debug("Downloaded message media to {}", current_media_paths[0])
+        try:
+            # Download current message media
+            current_media_paths, current_media_parts = await self._download_message_media(
+                message, add_failure_content=True
+            )
+            media_paths.extend(current_media_paths)
+            content_parts.extend(current_media_parts)
+            if current_media_paths:
+                self.logger.debug("Downloaded message media to {}", current_media_paths[0])
 
-        # Reply context: text and/or media from the replied-to message
-        reply_media: list[str] = []
-        reply = getattr(message, "reply_to_message", None)
-        if reply is not None:
-            reply_ctx = await self._extract_reply_context(message)
-            reply_media, reply_media_parts = await self._download_message_media(reply)
-            if reply_media:
-                media_paths = reply_media + media_paths
-                self.logger.debug("Attached replied-to media: {}", reply_media[0])
-            tag = reply_ctx or (f"[Reply to: {reply_media_parts[0]}]" if reply_media_parts else None)
-            if tag:
-                content_parts.insert(0, tag)
+            # Reply context: text and/or media from the replied-to message
+            reply_media: list[str] = []
+            reply = getattr(message, "reply_to_message", None)
+            if reply is not None:
+                reply_ctx = await self._extract_reply_context(message)
+                reply_media, reply_media_parts = await self._download_message_media(reply)
+                if reply_media:
+                    media_paths = reply_media + media_paths
+                    self.logger.debug("Attached replied-to media: {}", reply_media[0])
+                tag = reply_ctx or (f"[Reply to: {reply_media_parts[0]}]" if reply_media_parts else None)
+                if tag:
+                    content_parts.insert(0, tag)
+        except Exception:
+            if media_group_key:
+                self._media_group_collector.abort_part(media_group_key)
+            raise
         content = "\n".join(content_parts) if content_parts else "[empty message]"
 
         self.logger.debug("message from {}: {}...", sender_id, content[:50])
 
-        str_chat_id = str(chat_id)
         metadata = self._build_message_metadata(message, user)
         metadata["reply_media"] = list(reply_media)
         metadata["current_media"] = list(current_media_paths)
         session_key = self._derive_topic_session_key(message)
 
         # Telegram media groups: buffer briefly, forward as one aggregated turn.
-        if media_group_id := getattr(message, "media_group_id", None):
-            key = f"{str_chat_id}:{media_group_id}"
-            if key not in self._media_group_buffers:
-                self._media_group_buffers[key] = {
-                    "sender_id": sender_id, "chat_id": str_chat_id,
-                    "contents": [], "media": [],
-                    "metadata": metadata,
-                    "session_key": session_key,
-                }
+        if media_group_key:
+            is_first_part = not self._media_group_collector.groups[media_group_key].parts
+            self._media_group_collector.finish_part(
+                media_group_key,
+                MediaGroupPart(
+                    message_id=message.message_id,
+                    sender_id=sender_id,
+                    chat_id=str_chat_id,
+                    content=content,
+                    media=list(media_paths),
+                    metadata=metadata,
+                    session_key=session_key,
+                    current_media=list(current_media_paths),
+                    reply_media=list(reply_media),
+                ),
+            )
+            if is_first_part:
                 self._start_typing(str_chat_id)
                 await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
-            buf = self._media_group_buffers[key]
-            if content and content != "[empty message]":
-                buf["contents"].append(content)
-            buf["media"].extend(media_paths)
-            if key not in self._media_group_tasks:
-                self._media_group_tasks[key] = asyncio.create_task(self._flush_media_group(key))
+            if media_group_key not in self._media_group_tasks:
+                self._media_group_tasks[media_group_key] = asyncio.create_task(
+                    self._flush_media_group(media_group_key)
+                )
             return
 
         # Guard: When user sends photo/document without any text or caption,
@@ -450,7 +470,6 @@ class TelegramMessagesMixin:
 
                 if is_document_file:
                     file_name = getattr(doc, "file_name", "file") or "file"
-                    file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
 
                     # Early rejection for blocked file types
                     from nanobot.utils.document_sanitizer import sanitize_document
@@ -680,7 +699,7 @@ class TelegramMessagesMixin:
                     await self._app.bot.send_message(
                         chat_id=chat_id,
                         text="Cảm ơn bạn, mình đã ghi nhận gu này cho các lần tạo sau.",
-                        reply_markup=self._build_keyboard([["Tạo biến thể", "Tạo ảnh mới"]]),
+                        reply_markup=self._build_keyboard([["Tạo ảnh mới"]]),
                     )
                     self._stop_typing(chat_id)
                     return
@@ -700,11 +719,6 @@ class TelegramMessagesMixin:
                 self._stop_typing(chat_id)
                 return
 
-            if raw_content == "tạo biến thể":
-                content = (
-                    "Tạo một biến thể mới từ kết quả gần nhất, giữ đúng brief và thương hiệu "
-                    "nhưng thay đổi bố cục hoặc cách thể hiện để có thêm lựa chọn."
-                )
 
             # Handle new user onboarding choice
             if onboarding_status == "none":
