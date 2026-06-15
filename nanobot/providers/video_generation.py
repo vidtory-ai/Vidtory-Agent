@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Callable, Awaitable
 import httpx
+from loguru import logger
 
 class VideoGenerationError(RuntimeError):
     """Raised when the video generation provider cannot return video."""
@@ -32,7 +33,7 @@ class VidtoryVideoGenerationClient:
         api_base: str | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
-        timeout: float = 300.0,
+        timeout: float = 900.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.api_key = api_key
@@ -51,6 +52,7 @@ class VidtoryVideoGenerationClient:
         aspect_ratio: str | None = None,
         duration: int | None = None,
         mode: str | None = None,
+        progress_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> GeneratedVideoResponse:
         if not self.api_key:
             raise VideoGenerationError(self.missing_key_message)
@@ -122,9 +124,21 @@ class VidtoryVideoGenerationClient:
             # Polling loop
             poll_url = f"{self.api_base}/generative-core/jobs/{job_id}/status"
             start_time = time.monotonic()
+            sent_patience_message = False
             while True:
-                if time.monotonic() - start_time > self.timeout:
+                elapsed = time.monotonic() - start_time
+                if elapsed > self.timeout:
                     raise VideoGenerationError("Vidtory video generation timed out while polling status")
+
+                if elapsed >= 180.0 and not sent_patience_message:
+                    sent_patience_message = True
+                    if progress_callback:
+                        try:
+                            await progress_callback(
+                                "⏳ Hệ thống vẫn đang nỗ lực tạo video cho bạn, quá trình này có thể mất thêm một chút thời gian. Xin hãy kiên nhẫn đợi thêm giây lát nhé..."
+                            )
+                        except Exception as p_exc:
+                            logger.debug("Failed to send patience progress update: {}", p_exc)
 
                 await asyncio.sleep(4.0)  # Video takes longer, poll every 4s
                 poll_resp = await client.get(poll_url, headers=headers)

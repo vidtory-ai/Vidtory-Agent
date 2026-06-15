@@ -202,6 +202,20 @@ class VideoGenerationTool(Tool, ContextAware):
             except Exception as e:
                 logger.debug("Failed to send video generation progress message: {}", e)
 
+        async def send_progress(text: str) -> None:
+            c = _video_gen_request_ctx.get()
+            if c and self._send_callback:
+                try:
+                    progress_msg = OutboundMessage(
+                        channel=c.channel,
+                        chat_id=c.chat_id,
+                        content=text,
+                        metadata={**(c.metadata or {}), "_progress": True},
+                    )
+                    await self._send_callback(progress_msg)
+                except Exception as pe:
+                    logger.debug("Failed to send progress update: {}", pe)
+
         try:
             refs = self._resolve_reference_images(reference_images)
             response = await client.generate(
@@ -211,6 +225,7 @@ class VideoGenerationTool(Tool, ContextAware):
                 aspect_ratio=aspect_ratio or self.config.default_aspect_ratio,
                 duration=duration or self.config.default_duration,
                 mode=mode,
+                progress_callback=send_progress,
             )
 
             if response.video_bytes:
