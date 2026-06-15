@@ -1418,7 +1418,10 @@ class AgentLoop:
             ):
                 return None
 
-        if generated_media and delivery_message:
+        # Use delivery message as the outbound text whenever the tool produced one.
+        # This covers both cases: images returned as artifacts (generated_media filled)
+        # and images already auto-sent (status="sent", generated_media=[]).
+        if delivery_message:
             final_content = delivery_message
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
@@ -1430,20 +1433,34 @@ class AgentLoop:
         if turn_latency_ms is not None:
             meta["latency_ms"] = int(turn_latency_ms)
 
+        # Button logic:
+        # - Image returned as artifact (not auto-sent) → feedback + delivery_message numbered choices
+        # - Image auto-sent by tool already → no media in outbound; numbered choices on text follow-up
+        # - No image → numbered choice buttons for non-image multi-option responses
+        if generated_media:
+            # Artifact image: attach feedback buttons; also numbered shortcuts if delivery has suggestions
+            choice_buttons = (
+                extract_numbered_choice_buttons(final_content)
+                if is_resident_designer_profile(self.capability_profile)
+                else []
+            )
+            outbound_buttons: list[list[str]] = [["Đúng ý", "Cần chỉnh"]] + choice_buttons
+        elif delivery_message and is_resident_designer_profile(self.capability_profile):
+            # Auto-sent image: text follow-up carries numbered suggestion shortcuts
+            outbound_buttons = extract_numbered_choice_buttons(final_content)
+        else:
+            outbound_buttons = (
+                extract_numbered_choice_buttons(final_content)
+                if is_resident_designer_profile(self.capability_profile)
+                else []
+            )
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
             media=generated_media,
-            buttons=(
-                [["Đúng ý", "Cần chỉnh"]]
-                if generated_media
-                else (
-                    extract_numbered_choice_buttons(final_content)
-                    if is_resident_designer_profile(self.capability_profile)
-                    else []
-                )
-            ),
+            buttons=outbound_buttons,
             metadata=meta,
         )
 
@@ -1459,6 +1476,11 @@ class AgentLoop:
             try:
                 payload = json.loads(content)
             except (TypeError, ValueError):
+                continue
+            # Skip tool results that were already auto-delivered via send_callback.
+            # status="sent" means the tool pushed images directly to the channel;
+            # including them here would result in a duplicate delivery.
+            if payload.get("status") == "sent":
                 continue
             for artifact in payload.get("artifacts") or []:
                 if not isinstance(artifact, dict):

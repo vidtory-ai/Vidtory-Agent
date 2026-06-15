@@ -9,36 +9,40 @@ from typing import Any
 
 from telegram import BotCommand, ReactionTypeEmoji, ReplyParameters
 from telegram.error import BadRequest, NetworkError, TimedOut
-from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 from telegram.request import HTTPXRequest
 
 from nanobot.bus.events import OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
-from nanobot.command.builtin import build_help_text
-from nanobot.security.network import validate_url_target
-from nanobot.utils.helpers import split_message
-
 from nanobot.channels.telegram.config import TelegramConfig
-from nanobot.channels.telegram.keystore import TelegramKeyStore
 from nanobot.channels.telegram.format import (
-    TELEGRAM_MAX_MESSAGE_LEN,
     TELEGRAM_HTML_MAX_LEN,
-    tool_hint_to_telegram_blockquote,
+    TELEGRAM_MAX_MESSAGE_LEN,
     markdown_to_telegram_html,
     strip_md_block,
+    tool_hint_to_telegram_blockquote,
 )
+from nanobot.channels.telegram.keystore import TelegramKeyStore
+from nanobot.channels.telegram.media_groups import TelegramMediaGroupCollector
+from nanobot.channels.telegram.mixins.callbacks import TelegramCallbacksMixin
+from nanobot.channels.telegram.mixins.commands import TelegramCommandsMixin
+from nanobot.channels.telegram.mixins.media import TelegramMediaMixin
+from nanobot.channels.telegram.mixins.messages import TelegramMessagesMixin
 from nanobot.channels.telegram.models import StreamBuf
 from nanobot.channels.telegram.utils import (
+    format_telegram_error,
     get_media_type,
     is_remote_media_url,
-    get_extension,
-    format_telegram_error,
 )
-from nanobot.channels.telegram.mixins.commands import TelegramCommandsMixin
-from nanobot.channels.telegram.mixins.messages import TelegramMessagesMixin
-from nanobot.channels.telegram.mixins.media import TelegramMediaMixin
-from nanobot.channels.telegram.mixins.callbacks import TelegramCallbacksMixin
+from nanobot.security.network import validate_url_target
+from nanobot.utils.helpers import split_message
 
 _SEND_MAX_RETRIES = 3
 _SEND_RETRY_BASE_DELAY = 0.5
@@ -85,8 +89,10 @@ class TelegramChannel(
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
-        self._media_group_buffers: dict[str, dict] = {}
+        self._media_group_collector = TelegramMediaGroupCollector()
+        self._media_group_buffers = self._media_group_collector.groups
         self._media_group_tasks: dict[str, asyncio.Task] = {}
+        self._media_group_quiet_period = 0.6
         self._message_threads: dict[tuple[str, int], int] = {}
         self._bot_user_id: int | None = None
         self._bot_username: str | None = None
@@ -98,7 +104,9 @@ class TelegramChannel(
         allow_list = getattr(self.config, "allow_from", [])
         allowed = False
         if getattr(self.config, "require_user_api_key", False):
-            if not allow_list or "*" in allow_list:
+            if self.keystore.get_key(sender_id):
+                allowed = True
+            elif not allow_list or "*" in allow_list:
                 allowed = True
             else:
                 allowed = self._matches_telegram_allowlist(sender_id, allow_list)
@@ -241,7 +249,7 @@ class TelegramChannel(
         for task in self._media_group_tasks.values():
             task.cancel()
         self._media_group_tasks.clear()
-        self._media_group_buffers.clear()
+        self._media_group_collector.clear()
 
         if self._app:
             self.logger.info("Stopping bot...")
@@ -597,7 +605,7 @@ class TelegramChannel(
                 message_id=message_id,
                 reaction=[ReactionTypeEmoji(emoji=emoji)],
             )
-            if getattr(self.config, "remove_react_emoji", True):
+            if getattr(self.config, "remove_react_emoji", False):
                 asyncio.create_task(
                     self._delayed_remove_reaction(chat_id, message_id, delay=self.config.react_remove_delay)
                 )

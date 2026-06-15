@@ -983,20 +983,7 @@ class ImageGenerationTool(Tool, ContextAware):
             ctx = _image_gen_request_ctx.get()
             if ctx and self._send_callback and delivery_paths:
                 try:
-                    outbound = OutboundMessage(
-                        channel=ctx.channel,
-                        chat_id=ctx.chat_id,
-                        content="",
-                        media=delivery_paths,
-                        metadata=dict(ctx.metadata or {}),
-                        buttons=[["Đúng ý", "Cần chỉnh"]],
-                    )
-                    await self._send_callback(outbound)
-                    logger.info(
-                        "ImageGenerationTool: auto-sent {} image(s) to {}:{}",
-                        len(delivery_paths), ctx.channel, ctx.chat_id,
-                    )
-                    # Build delivery message for the LLM to use as completion response.
+                    # Build delivery FIRST so suggestions can be included in buttons.
                     try:
                         from nanobot.utils.image_delivery import build_image_delivery
                         delivery = build_image_delivery(
@@ -1017,6 +1004,23 @@ class ImageGenerationTool(Tool, ContextAware):
                             "design_notes": [],
                             "context": {},
                         }
+
+
+                    outbound_metadata = dict(ctx.metadata or {})
+                    outbound_metadata["_delivery"] = delivery
+                    outbound = OutboundMessage(
+                        channel=ctx.channel,
+                        chat_id=ctx.chat_id,
+                        content="",
+                        media=delivery_paths,
+                        metadata=outbound_metadata,
+                        buttons=[["Đúng ý", "Cần chỉnh"]],
+                    )
+                    await self._send_callback(outbound)
+                    logger.info(
+                        "ImageGenerationTool: auto-sent {} image(s) to {}:{}",
+                        len(delivery_paths), ctx.channel, ctx.chat_id,
+                    )
                     result = {
                         "status": "sent",
                         "count": len(delivery_paths),
