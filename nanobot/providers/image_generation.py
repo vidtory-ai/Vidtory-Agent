@@ -1623,6 +1623,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
     missing_key_message = (
         "Vidtory API key is not configured. Set providers.vidtory.apiKey."
     )
+    default_timeout = 900.0
 
     def _default_base_url(self) -> str:
         return "https://bapi.vidtory.net"
@@ -1637,6 +1638,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         aspect_ratio: str | None = None,
         image_size: str | None = None,
         logo_url: str | None = None,
+        progress_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> GeneratedImageResponse:
         import time
         if not self.api_key:
@@ -1670,6 +1672,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
                 logo_url=resolved_logo_url,
                 aspect_ratio=aspect_ratio,
                 image_size=image_size,
+                progress_callback=progress_callback,
             )
 
         # Single image (or no image) path
@@ -1683,6 +1686,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
             logo_url=resolved_logo_url,
             aspect_ratio=aspect_ratio,
             image_size=image_size,
+            progress_callback=progress_callback,
         )
 
     def _image_to_ref_value(self, image_ref: str) -> str:
@@ -1746,6 +1750,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         logo_url: str | None = None,
         aspect_ratio: str | None,
         image_size: str | None,
+        progress_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> GeneratedImageResponse:
         """Submit a single Vidtory image generation job and poll until completion.
 
@@ -1851,9 +1856,21 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
             # Polling loop
             poll_url = f"{self.api_base}/generative-core/jobs/{job_id}/status"
             start_time = time.monotonic()
+            sent_patience_message = False
             while True:
-                if time.monotonic() - start_time > self.timeout:
+                elapsed = time.monotonic() - start_time
+                if elapsed > self.timeout:
                     raise ImageGenerationError("Vidtory image generation timed out while polling status")
+
+                if elapsed >= 180.0 and not sent_patience_message:
+                    sent_patience_message = True
+                    if progress_callback:
+                        try:
+                            await progress_callback(
+                                "⏳ Hệ thống vẫn đang nỗ lực tạo ảnh cho bạn, quá trình này có thể mất thêm một chút thời gian. Xin hãy kiên nhẫn đợi thêm giây lát nhé..."
+                            )
+                        except Exception as p_exc:
+                            logger.debug("Failed to send patience progress update: {}", p_exc)
 
                 await asyncio.sleep(2.0)
                 poll_resp = await client.get(poll_url, headers=headers)

@@ -268,6 +268,20 @@ class ImageGenerationTool(Tool, ContextAware):
             except Exception as e:
                 logger.debug("Failed to send image generation progress message: {}", e)
 
+        async def send_progress(text: str) -> None:
+            c = _image_gen_request_ctx.get()
+            if c and self._send_callback:
+                try:
+                    progress_msg = OutboundMessage(
+                        channel=c.channel,
+                        chat_id=c.chat_id,
+                        content=text,
+                        metadata={**(c.metadata or {}), "_progress": True},
+                    )
+                    await self._send_callback(progress_msg)
+                except Exception as pe:
+                    logger.debug("Failed to send progress update: {}", pe)
+
         # Apply Vidtory professional standards + customer brand guidelines
         optimized_prompt, customer_ar, logo_url = self._apply_customer_context(prompt)
         resolved_ar = aspect_ratio or customer_ar or self.config.default_aspect_ratio
@@ -297,6 +311,8 @@ class ImageGenerationTool(Tool, ContextAware):
                 if logo_url and hasattr(client, "_resolve_logo_url"):
                     gen_kwargs["logo_url"] = logo_url
                     logger.info("Vidtory provider: injecting logo_url into API call")
+                if self.config.provider == "vidtory":
+                    gen_kwargs["progress_callback"] = send_progress
 
                 response = await client.generate(**gen_kwargs)
                 for url in (response.image_urls or []):

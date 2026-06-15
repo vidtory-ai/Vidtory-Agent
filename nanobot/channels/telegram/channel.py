@@ -256,14 +256,9 @@ class TelegramChannel(
             self.logger.warning("bot not running")
             return
 
-        # Only stop typing indicator and remove reaction for final responses
+        # Only stop typing indicator for final responses
         if not msg.metadata.get("_progress", False):
             self._stop_typing(msg.chat_id)
-            if reply_to_message_id := msg.metadata.get("message_id"):
-                if getattr(self.config, "remove_react_emoji", True):
-                    asyncio.create_task(
-                        self._delayed_remove_reaction(msg.chat_id, int(reply_to_message_id), delay=3.0)
-                    )
 
         try:
             chat_id = int(msg.chat_id)
@@ -439,11 +434,6 @@ class TelegramChannel(
             if stream_id is not None and buf.stream_id is not None and buf.stream_id != stream_id:
                 return
             self._stop_typing(chat_id)
-            if reply_to_message_id := meta.get("message_id"):
-                if getattr(self.config, "remove_react_emoji", True):
-                    asyncio.create_task(
-                        self._delayed_remove_reaction(chat_id, int(reply_to_message_id), delay=3.0)
-                    )
             thread_kwargs = {}
             if message_thread_id := meta.get("message_thread_id"):
                 thread_kwargs["message_thread_id"] = message_thread_id
@@ -607,6 +597,10 @@ class TelegramChannel(
                 message_id=message_id,
                 reaction=[ReactionTypeEmoji(emoji=emoji)],
             )
+            if getattr(self.config, "remove_react_emoji", True):
+                asyncio.create_task(
+                    self._delayed_remove_reaction(chat_id, message_id, delay=3.0)
+                )
         except Exception as e:
             self.logger.debug("reaction failed: {}", e)
 
