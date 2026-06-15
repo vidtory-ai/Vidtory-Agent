@@ -152,7 +152,9 @@ class MessageTool(Tool, ContextAware):
             "When generate_image creates images in the current chat, do not use this tool; "
             "the runtime delivers those artifacts exactly once with the completion response. "
             "For proactive attachment delivery, use the 'media' parameter with file paths. "
-            "Do NOT use read_file to send files — that only reads content for your own analysis."
+            "Do NOT use read_file to send files — that only reads content for your own analysis.\n\n"
+            "⛔ CRITICAL RULE: If the user asks to edit, add text, or modify an image (e.g. 'thêm chữ...', 'sửa lỗi...'), "
+            "you MUST use the generate_image tool. DO NOT use this message tool to pretend the edit was successful!"
         )
 
     def _resolve_media(self, media: list[str]) -> list[str]:
