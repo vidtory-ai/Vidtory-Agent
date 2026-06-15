@@ -185,6 +185,35 @@ class TestMessageToolTurnTracking:
         tool.start_turn()
         assert not tool._sent_in_turn
 
+    @pytest.mark.asyncio
+    async def test_duplicate_media_is_skipped_in_same_turn(self, tmp_path: Path) -> None:
+        from nanobot.agent.tools.context import RequestContext
+
+        media_path = tmp_path / "result.png"
+        media_path.write_bytes(b"image")
+        sent: list[OutboundMessage] = []
+
+        async def capture(message: OutboundMessage) -> None:
+            sent.append(message)
+
+        tool = MessageTool(send_callback=capture, workspace=tmp_path)
+        tool.set_context(
+            RequestContext(
+                channel="telegram",
+                chat_id="123",
+                message_id="456",
+                metadata={},
+            )
+        )
+        tool.start_turn()
+
+        first = await tool.execute(content="", media=[str(media_path)])
+        second = await tool.execute(content="", media=[str(media_path)])
+
+        assert "Message sent" in first
+        assert second == "Skipped duplicate media delivery in the current turn"
+        assert len(sent) == 1
+
     def test_schema_allows_current_chat_buttons_but_discourages_plain_text(self) -> None:
         tool = MessageTool()
 

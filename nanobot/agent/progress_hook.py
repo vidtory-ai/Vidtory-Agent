@@ -36,6 +36,8 @@ class AgentProgressHook(AgentHook):
         tool_hint_max_length: int = 40,
         set_tool_context: Callable[..., None] | None = None,
         on_iteration: Callable[[int], None] | None = None,
+        media: list[str] | None = None,
+        original_user_content: str | None = None,
     ) -> None:
         super().__init__(reraise=True)
         self._on_progress = on_progress
@@ -49,6 +51,8 @@ class AgentProgressHook(AgentHook):
         self._tool_hint_max_length = tool_hint_max_length
         self._set_tool_context = set_tool_context
         self._on_iteration = on_iteration
+        self._media = media
+        self._original_user_content = original_user_content
         self._stream_buf = ""
         self._think_extractor = IncrementalThinkExtractor()
         self._reasoning_open = False
@@ -131,6 +135,8 @@ class AgentProgressHook(AgentHook):
                 self._message_id,
                 self._metadata,
                 session_key=self._session_key,
+                media=self._media,
+                original_user_content=self._original_user_content,
             )
 
     async def emit_reasoning(self, reasoning_content: str | None) -> None:

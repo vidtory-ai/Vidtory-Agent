@@ -154,9 +154,10 @@ def generated_image_tool_result(artifacts: list[dict[str, Any]]) -> str:
             "artifacts": artifacts,
             "next_step": (
                 "Use these artifact paths as reference_images for follow-up edits. "
-                "Call the message tool with the artifact paths in the media parameter "
-                "to deliver the images to the user. Keep raw paths internal unless the "
-                "user asks for debug details."
+                "The current-chat runtime delivers generated images exactly once, so do "
+                "not call the message tool for these artifacts. Use the structured delivery "
+                "message when replying and keep raw paths internal unless the user asks "
+                "for debug details."
             ),
         },
         ensure_ascii=False,

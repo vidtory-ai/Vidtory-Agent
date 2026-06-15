@@ -36,7 +36,8 @@ from nanobot.security.request_policy import (
             StringSchema(""),
             description=(
                 "Optional list of existing file paths to attach. "
-                "Use artifact paths returned by generate_image here when delivering generated images."
+                "Do not attach generate_image results in the current chat; the runtime "
+                "delivers those exactly once."
             ),
         ),
         buttons=ArraySchema(
@@ -148,8 +149,8 @@ class MessageTool(Tool, ContextAware):
             "For an ordinary text-only reply, answer naturally instead. "
             "If channel/chat_id would target the current runtime conversation, do not call this tool "
             "unless you are attaching media or presenting interactive choices. "
-            "When generate_image creates images in the current chat, use the message tool "
-            "with the artifact paths in the media parameter to deliver the images to the user. "
+            "When generate_image creates images in the current chat, do not use this tool; "
+            "the runtime delivers those artifacts exactly once with the completion response. "
             "For proactive attachment delivery, use the 'media' parameter with file paths. "
             "Do NOT use read_file to send files — that only reads content for your own analysis."
         )
@@ -249,6 +250,11 @@ class MessageTool(Tool, ContextAware):
                 media = self._resolve_media(media)
             except (OSError, PermissionError, ValueError) as e:
                 return f"Error: media path is not allowed: {str(e)}"
+            if same_target:
+                delivered = set(self._turn_delivered_media_var.get())
+                media = [path for path in media if path not in delivered]
+                if not media:
+                    return "Skipped duplicate media delivery in the current turn"
 
         metadata = dict(self._default_metadata.get()) if same_target else {}
         if message_id:

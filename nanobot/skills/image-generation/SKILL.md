@@ -12,7 +12,7 @@ Use the `generate_image` tool when the user asks to create an image, photo, or a
 
 1. **Detailed Prompting**: Mở rộng yêu cầu ngắn thành prompt chi tiết. Bao gồm chủ thể, phong cách, ánh sáng, bố cục.
 2. **Aspect Ratio**: Mặc định ảnh vuông (`1:1`). Story/reels/tiktok dùng `9:16`. Youtube/desktop dùng `16:9`.
-3. **Artifact Handling**: Tool `generate_image` trả về đường dẫn. PHẢI dùng tool `message` để gửi file ảnh cho user.
+3. **Artifact Handling**: Tool `generate_image` trả về artifact và `delivery.message`. KHÔNG gọi tool `message` để gửi lại ảnh trong cuộc chat hiện tại; runtime tự giao ảnh đúng một lần. Dùng nội dung `delivery.message` làm phản hồi hoàn tất.
 4. **Reference Images**: Nếu user upload/gửi ảnh và yêu cầu chỉnh sửa hoặc tạo dựa trên ảnh (vd: "tạo ảnh quảng cáo cho con gấu trong hình" hay "làm giống ảnh này"), PHẢI truyền đường dẫn ảnh (xuất hiện dạng `[image: /path/to/file.jpg]` trong tin nhắn) vào tham số `reference_images` dưới dạng list.
    - Nếu user reply một ảnh cũ để sửa, ảnh reply là ảnh nguồn chính và phải đứng đầu `reference_images`.
    - Nếu user vừa reply ảnh cũ vừa gửi thêm ảnh mới, truyền tất cả theo thứ tự: ảnh reply, ảnh gửi mới.
@@ -34,7 +34,9 @@ Use the `generate_image` tool when the user asks to create an image, photo, or a
     - "Nếu muốn cập nhật logo, dùng /setlogo..."
     - "Bạn có thể xem brand profile bằng /brand..."
     
-    Chỉ được gợi ý các biến thể ảnh tiếp theo (tỷ lệ khác, có chữ, màu khác) hoặc hỏi nếu cần thêm gì.
+    Luôn xác nhận ảnh đã tạo thành công, thêm `Design note` ngắn giải thích 2-3 quyết định chính,
+    rồi gợi ý đúng 3 biến thể tiếp theo dựa trên Brand Profile, sản phẩm/dịch vụ, kênh nội dung
+    và learning memory của khách. Ưu tiên dùng nguyên nội dung `delivery.message` từ tool.
 
 ## Example
 
