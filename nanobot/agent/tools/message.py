@@ -227,7 +227,7 @@ class MessageTool(Tool, ContextAware):
             )
         if policy.redacted_text and policy.redacted_text.strip() and policy.redacted_text.strip() != content.strip():
             content = policy.redacted_text
-        if is_resident_designer_profile(self._capability_profile) and not media:
+        if is_resident_designer_profile(self._capability_profile) and not media and not buttons:
             return (
                 "Error: text-only message sends are disabled by the "
                 "resident_designer security policy"

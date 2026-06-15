@@ -395,7 +395,10 @@ class TelegramCommandsMixin:
                     ]
 
                     if logo:
-                        lines.append(f"🖼️ *Logo:* [Xem logo]({logo})")
+                        if logo.startswith(("http://", "https://")):
+                            lines.append(f"🖼️ *Logo:* [Xem logo]({logo})")
+                        else:
+                            lines.append(f"🖼️ *Logo:* _Đường dẫn không hợp lệ ({logo})_ — dùng /setlogo để cấu hình lại")
                     else:
                         lines.append("🖼️ *Logo:* _Chưa có_ — dùng /setlogo để thêm")
                     lines.append("")
@@ -418,9 +421,10 @@ class TelegramCommandsMixin:
                         "  /setbrand industry tech",
                         "  /setlogo — để thay đổi logo",
                     ])
-                    # Enable web preview when logo exists so Telegram shows the image inline
+                    # Enable web preview when logo exists and is a valid URL so Telegram shows the image inline
+                    show_preview = bool(logo) and logo.startswith(("http://", "https://"))
                     await message.reply_text("\n".join(lines), parse_mode="Markdown",
-                                            disable_web_page_preview=not bool(logo))
+                                            disable_web_page_preview=not show_preview)
             except Exception as e:
                 self.logger.warning("Failed to load brand profile: {}", e)
                 await message.reply_text(

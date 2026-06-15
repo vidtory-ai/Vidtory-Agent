@@ -359,12 +359,54 @@ class UpdateCustomerProfileTool(Tool):
                 changed_fields.append("avoidList")
 
             if logo_url is not None and logo_url.strip():
-                brand["logoUrl"] = logo_url.strip()
+                logo_url_val = logo_url.strip()
+                if logo_url_val and not logo_url_val.startswith(("http://", "https://")):
+                    try:
+                        # 1. Get user API key from database
+                        from nanobot.db.customer_db import get_db
+                        db = get_db()
+                        api_key = db.get_api_key(user_id) or ""
+
+                        # 2. Get API base URL and system fallback key
+                        api_base = "https://bapi.vidtory.net"
+                        effective_key = api_key
+                        try:
+                            from nanobot.config.loader import load_config
+                            cfg = load_config()
+                            provider_cfg = (cfg.providers or {}).get("vidtory") if cfg.providers else None
+                            if provider_cfg:
+                                api_base = getattr(provider_cfg, "api_base", None) or api_base
+                                sys_key = getattr(provider_cfg, "api_key", None) or ""
+                                if sys_key:
+                                    effective_key = sys_key
+                        except Exception:
+                            pass
+
+                        # 3. Perform upload to Vidtory CDN
+                        from nanobot.utils.logo_upload import upload_logo_to_cdn
+                        cdn_url = await upload_logo_to_cdn(
+                            logo_url_val,
+                            api_key=effective_key,
+                            base_url=api_base,
+                            customer_id=user_id,
+                        )
+                        if cdn_url:
+                            logo_url_val = cdn_url
+                        else:
+                            return "Error: Failed to upload logo to Vidtory CDN (endpoint returned empty URL)."
+                    except Exception as e:
+                        from loguru import logger
+                        logger.warning("Failed to upload local logo path to CDN: {}", e)
+                        return f"Error: Failed to upload logo to Vidtory CDN: {e}"
+
+                # Reassign logo_url to the resolved CDN URL so downstream works correctly
+                logo_url = logo_url_val
+                brand["logoUrl"] = logo_url
                 changed_fields.append("logo_url")
                 # Also sync to the DB indexed column
                 try:
                     from nanobot.db.customer_db import get_db
-                    get_db().set_logo_url(user_id, logo_url.strip())
+                    get_db().set_logo_url(user_id, logo_url)
                 except Exception:
                     pass  # Non-fatal — JSON blob is the source of truth
 

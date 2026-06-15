@@ -17,6 +17,7 @@ RESIDENT_DESIGNER_TOOLS = frozenset({
     "message",
     "remove_watermark",
     "update_customer_profile",
+    "web_fetch",
 })
 RESIDENT_DESIGNER_ALLOWED_COMMANDS = frozenset({
     "/help",

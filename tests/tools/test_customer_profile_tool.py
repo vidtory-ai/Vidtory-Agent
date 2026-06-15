@@ -360,6 +360,33 @@ class TestUpdateCustomerProfileToolExecute:
         updated = telegram_customer_profile.get()
         assert updated["business"]["name"] == "ContextTest"
 
+    @pytest.mark.asyncio
+    async def test_logo_local_path_upload(self, tool_with_profile, monkeypatch, tmp_path):
+        """Passing a local path to logo_url should upload it to CDN first."""
+        tool, db = tool_with_profile
+
+        # Create a dummy logo file
+        local_logo_path = tmp_path / "dummy_logo.png"
+        local_logo_path.write_bytes(b"PNG dummy content")
+
+        # Mock upload_logo_to_cdn
+        async def mock_upload(source, api_key, base_url, customer_id):
+            assert str(source) == str(local_logo_path)
+            return "https://cdn.example.com/uploaded-logo.png"
+
+        monkeypatch.setattr(
+            "nanobot.utils.logo_upload.upload_logo_to_cdn",
+            mock_upload
+        )
+
+        result = await tool.execute(logo_url=str(local_logo_path))
+        assert "logo_url" in result
+
+        profile = db.load_profile("test_user_42")
+        assert profile["brand"]["logoUrl"] == "https://cdn.example.com/uploaded-logo.png"
+        assert db.get_logo_url("test_user_42") == "https://cdn.example.com/uploaded-logo.png"
+
+
 
 # ===========================================================================
 # Color normalization edge cases

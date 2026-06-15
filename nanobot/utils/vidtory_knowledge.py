@@ -132,6 +132,11 @@ _PHOTOGRAPHY_STYLES: dict[str, str] = {
         "pet photography, soft natural window light, adorable candid expression, "
         "clean minimal background, warm and playful mood, sharp eye focus"
     ),
+    # Wildlife & Nature
+    "wildlife_nature": (
+        "professional wildlife photography, shot on telephoto lens, soft natural lighting, "
+        "natural environment context, ultra-sharp details, shallow depth of field, National Geographic quality"
+    ),
 }
 
 # ── Platform-specific output specifications ──────────────────────────────────
@@ -205,17 +210,18 @@ _CONTENT_TYPE_TO_STYLE: dict[str, str] = {
     "kids": "kids_product",
     "fitness": "fitness",
     "pet": "pet",
+    "wildlife": "wildlife_nature",
 }
 
 # ── Universal quality suffixes always appended ───────────────────────────────
 _UNIVERSAL_QUALITY_SUFFIX = (
-    "sharp focus, high resolution, professional grade, no watermark, no text overlay, "
-    "photorealistic, commercial quality"
+    "editorial photography, professional camera shot, sharp focus, natural textures, "
+    "balanced exposure, clean composition, no watermark, no text overlay"
 )
 
 _UNIVERSAL_QUALITY_SUFFIX_VI = (
-    "nét sắc, độ phân giải cao, chất lượng chuyên nghiệp, không watermark, không chữ chồng, "
-    "siêu thực, chất lượng thương mại"
+    "nhiếp ảnh thương mại chuyên nghiệp, chụp bằng máy ảnh cao cấp, nét sắc, kết cấu tự nhiên, "
+    "phơi sáng cân bằng, bố cục sạch, không có watermark, không có chữ ngẫu nhiên"
 )
 
 # ── Vietnamese photography style presets ─────────────────────────────────────
@@ -322,6 +328,11 @@ _PHOTOGRAPHY_STYLES_VI: dict[str, str] = {
         "ảnh thú cưng, ánh sáng cửa sổ tự nhiên mềm, biểu cảm đáng yêu tự nhiên, "
         "nền tối giản sạch, không khí ấm áp vui tươi, nét sắc vào mắt"
     ),
+    # Động vật & Tự nhiên
+    "wildlife_nature": (
+        "nhiếp ảnh động vật tự nhiên chuyên nghiệp, chụp bằng ống kính tele, ánh sáng tự nhiên mềm, "
+        "bối cảnh môi trường tự nhiên, chi tiết siêu sắc nét, độ sâu trường ảnh nông, chất lượng National Geographic"
+    ),
 }
 
 # ── Content type keyword detection ───────────────────────────────────────────
@@ -391,6 +402,10 @@ _CONTENT_TYPE_KEYWORDS: dict[str, list[str]] = {
     "pet": [
         "pet", "dog", "cat", "animal", "puppy", "kitten",
         "thú cưng", "chó", "mèo", "vật nuôi",
+    ],
+    "wildlife": [
+        "wildlife", "animal", "bird", "nature", "landscape", "forest", "lake", "mountain", "river", "sea", "duck",
+        "động vật", "thú", "chim", "thiên nhiên", "phong cảnh", "rừng", "hồ", "núi", "sông", "biển", "vịt",
     ],
     "product": [
         "product", "item", "object", "sản phẩm", "hàng hóa", "mặt hàng",

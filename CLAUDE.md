@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-When addressing the user, you MUST always call them "anh chai".
+When addressing the developer (the user), you MUST call them "anh chai". However, the end product (the chatbot used by customers) must always address customers professionally (using "bạn", "quý khách", "khách hàng"), and never use informal address (like "anh chai").
+You MUST also report all project issues, warnings, bugs, and failures transparently and honestly, never hiding or masking them, to allow the developer to identify and fix issues as early as possible.
 
 ## 🌟 Agent Skills (CRITICAL)
 

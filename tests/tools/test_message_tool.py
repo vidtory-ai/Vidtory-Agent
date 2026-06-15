@@ -435,3 +435,26 @@ async def test_message_tool_cli_context_may_target_other_ws_chat(tmp_path) -> No
     assert result.startswith("Message sent")
     assert sent[0].channel == "websocket"
     assert sent[0].chat_id == target
+
+
+@pytest.mark.asyncio
+async def test_message_tool_allows_text_only_in_resident_designer_with_buttons() -> None:
+    sent: list[OutboundMessage] = []
+    async def _send(msg: OutboundMessage) -> None:
+        sent.append(msg)
+
+    tool = MessageTool(send_callback=_send, capability_profile="resident_designer")
+    from nanobot.agent.tools.context import RequestContext
+    tool.set_context(RequestContext(channel="telegram", chat_id="1", metadata={}))
+
+    # Should fail when no media and no buttons
+    res_fail = await tool.execute(content="hello")
+    assert "Error: text-only message sends are disabled" in res_fail
+
+    # Should succeed when buttons are provided
+    res_success = await tool.execute(content="hello with buttons", buttons=[["Click Me"]])
+    assert "Message sent to telegram:1" in res_success
+    assert len(sent) == 1
+    assert sent[0].content == "hello with buttons"
+    assert sent[0].buttons == [["Click Me"]]
+
