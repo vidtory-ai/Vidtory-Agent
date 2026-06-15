@@ -1623,7 +1623,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
     missing_key_message = (
         "Vidtory API key is not configured. Set providers.vidtory.apiKey."
     )
-    default_timeout = 900.0
+    default_timeout = 600.0
 
     def _default_base_url(self) -> str:
         return "https://bapi.vidtory.net"
