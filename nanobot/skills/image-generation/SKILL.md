@@ -1,6 +1,7 @@
 ---
 name: image-generation
 description: Native image generation skill using the generate_image tool.
+always: true
 ---
 
 # Image Generation

@@ -1,6 +1,7 @@
 ---
 name: vidtory-input-validator
 description: Validates creative request completeness and asks smart follow-up questions.
+always: true
 ---
 
 # Input Validation & Smart Questioning
