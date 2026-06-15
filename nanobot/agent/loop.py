@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import os
+import re
 import time
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
@@ -62,6 +63,41 @@ if TYPE_CHECKING:
 
 
 UNIFIED_SESSION_KEY = "unified:default"
+
+
+_KEYCAP_CHOICE_RE = re.compile(r"(?m)^\s*([1-9])\ufe0f?\u20e3\s+\S")
+_PLAIN_CHOICE_RE = re.compile(r"(?m)^\s*([1-9])[.)]\s+\S")
+_PLAIN_CHOICE_CUES = (
+    "chọn",
+    "lựa chọn",
+    "phương án",
+    "hướng nào",
+    "trả lời",
+    "which option",
+    "choose",
+)
+
+
+def extract_numbered_choice_buttons(content: str) -> list[list[str]]:
+    """Convert a short numbered choice list into compact 1/2/3 buttons."""
+    if not content:
+        return []
+
+    matches = list(_KEYCAP_CHOICE_RE.finditer(content))
+    if not matches:
+        matches = list(_PLAIN_CHOICE_RE.finditer(content))
+        if matches:
+            prefix = content[max(0, matches[0].start() - 180):matches[0].start()].lower()
+            if not any(cue in prefix for cue in _PLAIN_CHOICE_CUES):
+                return []
+
+    numbers = [int(match.group(1)) for match in matches]
+    if not 2 <= len(numbers) <= 4 or numbers != list(range(1, len(numbers) + 1)):
+        return []
+
+    labels = [str(number) for number in numbers]
+    return [labels[:3], labels[3:]] if len(labels) > 3 else [labels]
+
 
 class TurnState(Enum):
     RESTORE = auto()
@@ -647,17 +683,14 @@ class AgentLoop:
             except Exception:
                 pass  # Non-critical — never block the turn
 
-        # Soft onboarding gate: inject hint for LLM to progressively collect brand info
-        if onboarding_status == "minimal":
-            lines.append(
-                "[ONBOARDING] User mới, profile chưa đầy đủ. "
-                "Phục vụ yêu cầu ngay nhưng trong quá trình làm việc hãy tự nhiên hỏi thêm "
-                "về thương hiệu (tên, ngành, phong cách, màu sắc) khi phù hợp với ngữ cảnh."
-            )
-
         # ── Customer Knowledge — per-user brand & channel preferences ─────────
         profile = metadata.get("customer_profile")
         if not isinstance(profile, dict):
+            if onboarding_status == "minimal":
+                lines.append(
+                    "[ONBOARDING] Profile chưa đầy đủ. Phục vụ yêu cầu hiện tại trước "
+                    "và chỉ gợi ý bổ sung thông tin khi phù hợp."
+                )
             return lines
 
         # Set contextvar so creative tools (generate_image, generate_video) can read brand data
@@ -671,6 +704,53 @@ class AgentLoop:
             from nanobot.utils.customer_context import format_customer_context_lines
             customer_lines = format_customer_context_lines(profile)
             lines.extend(customer_lines)
+        except Exception:
+            pass
+
+        try:
+            from nanobot.utils.brand_intelligence import (
+                build_adaptive_onboarding_step,
+                build_creative_suggestions,
+                detect_brand_update_intent,
+                get_profile_gaps,
+                should_offer_onboarding,
+            )
+
+            brand_update = detect_brand_update_intent(msg.content)
+            if brand_update:
+                lines.append(
+                    "[BRAND_UPDATE_INTENT] Đây là yêu cầu cập nhật Brand Profile. "
+                    "PHẢI gọi update_customer_profile với các trường được nêu; "
+                    "KHÔNG tạo ảnh trừ khi người dùng đồng thời yêu cầu một sản phẩm cụ thể."
+                )
+
+            gaps = get_profile_gaps(profile)
+            if gaps and (
+                onboarding_status == "in_progress"
+                or should_offer_onboarding(profile, msg.content)
+            ):
+                step = build_adaptive_onboarding_step(profile)
+                lines.append(
+                    "[ADAPTIVE_ONBOARDING] "
+                    f"Thiếu: {', '.join(gaps)}. Câu hỏi tiếp theo: {step['prompt']} "
+                    f"Lựa chọn nút: {step['buttons']}. "
+                    "Chấp nhận cả bấm nút, nhập text, URL hoặc tải file. "
+                    "Không chặn yêu cầu hiện tại nếu người dùng chưa muốn bổ sung."
+                )
+
+            creative_markers = (
+                "ảnh", "hình", "poster", "banner", "story", "video", "thiết kế", "tạo"
+            )
+            if not brand_update and any(
+                marker in msg.content.lower() for marker in creative_markers
+            ):
+                industry = str((profile.get("business") or {}).get("industry") or "")
+                suggestions = build_creative_suggestions(msg.content, industry)
+                lines.append(
+                    "[CREATIVE_DIRECTIONS] Nếu cần cho người dùng chọn hướng sáng tạo, "
+                    f"ưu tiên ba nút sát yêu cầu này: {suggestions}. "
+                    "Người dùng có thể bấm nút hoặc gõ lại đúng nội dung lựa chọn."
+                )
         except Exception:
             pass
 
@@ -1324,6 +1404,11 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
+            buttons=(
+                extract_numbered_choice_buttons(final_content)
+                if is_resident_designer_profile(self.capability_profile)
+                else []
+            ),
             metadata=meta,
         )
 
@@ -1457,7 +1542,7 @@ class AgentLoop:
         from nanobot.agent.router import IntentRouter
         router = IntentRouter(self.provider, self.model)
         content_for_intent = str(ctx.msg.content) if ctx.msg.content else ""
-        
+
         # Phase 3: Speed Optimization - Intent Caching
         # Only classify if intent is unknown or user sends a long message that might shift context
         cached_intent = ctx.session.metadata.get("current_intent")
@@ -1467,7 +1552,7 @@ class AgentLoop:
             intent_enum = await router.classify(content_for_intent)
             intent_value = intent_enum.value
             ctx.session.metadata["current_intent"] = intent_value
-            
+
         ctx.initial_messages = self._build_initial_messages(
             ctx.msg, ctx.session, ctx.history, ctx.pending_summary, intent=intent_value
         )

@@ -260,9 +260,13 @@ class UpdateCustomerProfileTool(Tool):
             "Save or update the customer's brand profile in the database. "
             "MUST be called whenever the user shares brand information "
             "(business name, industry, style, colors, audience, channels, logo). "
+            "Natural-language requests such as 'đổi phong cách thương hiệu từ nay' "
+            "are profile updates, not image-generation requests. "
             "Supports partial updates — only include fields that have new information. "
             "Accepts color names in Vietnamese/English — auto-converted to HEX. "
             "Accepts free-text brand styles — auto-normalized to presets when possible. "
+            "A logo-only change automatically refreshes visual style and palette; "
+            "explicit visual fields in the same request take precedence. "
             "After saving, the profile will automatically be applied to all future image generations."
         )
 
@@ -468,6 +472,28 @@ class UpdateCustomerProfileTool(Tool):
             ok = save_profile(user_id, current)
             if not ok:
                 return "Error: Failed to save profile to database. Please try again."
+
+            explicit_visual_update = any(
+                value
+                for value in (
+                    brand_style,
+                    mood_keywords,
+                    color_primary,
+                    color_secondary,
+                    color_accent,
+                    photography_style,
+                )
+            )
+            if logo_url and not explicit_visual_update:
+                try:
+                    from nanobot.utils.customer_profile import set_logo_and_refresh_identity
+
+                    refresh = await set_logo_and_refresh_identity(user_id, logo_url)
+                    if refresh.get("identity_refreshed"):
+                        current = load_profile(user_id) or current
+                        changed_fields.append("visual_identity_from_logo")
+                except Exception:
+                    pass
 
             # Also update the in-memory ContextVar so the current turn uses fresh data
             telegram_customer_profile.set(current)

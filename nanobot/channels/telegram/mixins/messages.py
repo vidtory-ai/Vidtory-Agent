@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -383,6 +384,7 @@ class TelegramMessagesMixin:
             self.logger.debug("Downloaded message media to {}", current_media_paths[0])
 
         # Reply context: text and/or media from the replied-to message
+        reply_media: list[str] = []
         reply = getattr(message, "reply_to_message", None)
         if reply is not None:
             reply_ctx = await self._extract_reply_context(message)
@@ -399,6 +401,8 @@ class TelegramMessagesMixin:
 
         str_chat_id = str(chat_id)
         metadata = self._build_message_metadata(message, user)
+        metadata["reply_media"] = list(reply_media)
+        metadata["current_media"] = list(current_media_paths)
         session_key = self._derive_topic_session_key(message)
 
         # Telegram media groups: buffer briefly, forward as one aggregated turn.
@@ -459,24 +463,40 @@ class TelegramMessagesMixin:
                             )
                             return
 
+                    pending = getattr(self, "_pending_media_choices", {})
+                    pending[f"{str_chat_id}:{sender_id}"] = {
+                        "media": list(media_paths),
+                        "metadata": dict(metadata),
+                        "session_key": session_key,
+                        "expires_at": time.monotonic() + 600,
+                    }
+                    self._pending_media_choices = pending
                     await message.reply_text(
                         f"📄 *File đã nhận: `{file_name}`*\n\n"
-                        "Bạn muốn tôi dùng file này để:\n\n"
-                        "• 🏷️ Cập nhật thông tin thương hiệu _(brand guidelines)_\n"
-                        "• 📋 Tham khảo khi tạo ảnh/video _(design brief)_\n"
-                        "• 📝 Đọc nội dung và tóm tắt\n\n"
-                        "_Gửi lại file kèm caption mô tả mục đích nhé!_\n"
-                        "_Ví dụ: gửi file + gõ \"đây là brand guidelines\"_",
+                        "Bạn muốn tôi dùng file này theo cách nào?",
                         parse_mode="Markdown",
+                        reply_markup=self._build_keyboard([
+                            ["Cập nhật thương hiệu", "Dùng làm brief"],
+                            ["Đọc và tóm tắt"],
+                        ]),
                     )
                 else:
+                    pending = getattr(self, "_pending_media_choices", {})
+                    pending[f"{str_chat_id}:{sender_id}"] = {
+                        "media": list(media_paths),
+                        "metadata": dict(metadata),
+                        "session_key": session_key,
+                        "expires_at": time.monotonic() + 600,
+                    }
+                    self._pending_media_choices = pending
                     await message.reply_text(
                         "📷 *Ảnh đã nhận!*\n\n"
-                        "Bạn muốn tôi làm gì với ảnh này?\n\n"
-                        "• Reply ảnh + gõ `/setlogo` — đặt làm logo\n"
-                        "• Reply ảnh + mô tả yêu cầu — tạo ảnh/video\n"
-                        "• Reply ảnh + `/removewm` — xoá watermark",
+                        "Bạn muốn tôi làm gì với ảnh này?",
                         parse_mode="Markdown",
+                        reply_markup=self._build_keyboard([
+                            ["Đặt làm logo", "Chỉnh ảnh này"],
+                            ["Dùng làm tham chiếu"],
+                        ]),
                     )
                 return
 
@@ -579,6 +599,28 @@ class TelegramMessagesMixin:
     ) -> None:
         metadata = dict(metadata or {})
 
+        pending_choices = getattr(self, "_pending_media_choices", {})
+        pending = pending_choices.pop(f"{chat_id}:{sender_id}", None)
+        if pending and float(pending.get("expires_at") or 0) < time.monotonic():
+            pending = None
+        choice_prompts = {
+            "đặt làm logo": "Đặt ảnh đính kèm làm logo thương hiệu và tự cập nhật phong cách theo logo mới.",
+            "chỉnh ảnh này": "Tôi muốn chỉnh ảnh đính kèm. Hãy hỏi một câu ngắn kèm các nút gợi ý sát với ảnh.",
+            "dùng làm tham chiếu": "Dùng ảnh đính kèm làm ảnh tham chiếu cho yêu cầu sáng tạo tiếp theo.",
+            "cập nhật thương hiệu": "Đọc file đính kèm và cập nhật Brand Profile từ toàn bộ thông tin phù hợp.",
+            "dùng làm brief": "Đọc file đính kèm như design brief và đề xuất hướng thực hiện sát nội dung.",
+            "đọc và tóm tắt": "Đọc và tóm tắt file đính kèm bằng tiếng Việt.",
+        }
+        normalized_choice = content.strip().lower()
+        if pending:
+            media = list(pending.get("media") or []) + list(media or [])
+            pending_metadata = dict(pending.get("metadata") or {})
+            pending_metadata.update(metadata)
+            metadata = pending_metadata
+            metadata["current_media"] = list(media)
+            session_key = session_key or pending.get("session_key")
+            content = choice_prompts.get(normalized_choice, content)
+
         # Handle logo pre-flight button responses
         _raw_content = content.strip().lower()
         if _raw_content in ("\ud83d\udce4 th\u00eam logo ngay", "th\u00eam logo ngay"):
@@ -623,13 +665,49 @@ class TelegramMessagesMixin:
                 create_minimal_profile,
                 get_onboarding_status,
                 load_profile,
+                save_profile,
             )
+            from nanobot.utils.brand_intelligence import build_adaptive_onboarding_step
             uid = sender_id.split("|")[0].strip()
             onboarding_status = get_onboarding_status(uid)
+            raw_content = content.strip().lower()
+
+            if raw_content in ("đúng ý", "ưng ý"):
+                from nanobot.utils.customer_profile import record_latest_task_feedback
+
+                result = record_latest_task_feedback(uid, rating="approved")
+                if result.get("recorded"):
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text="Cảm ơn bạn, mình đã ghi nhận gu này cho các lần tạo sau.",
+                        reply_markup=self._build_keyboard([["Tạo biến thể", "Tạo ảnh mới"]]),
+                    )
+                    self._stop_typing(chat_id)
+                    return
+
+            if raw_content in ("cần chỉnh", "chưa đúng ý"):
+                from nanobot.utils.customer_profile import record_latest_task_feedback
+
+                record_latest_task_feedback(uid, rating="rejected")
+                await self._app.bot.send_message(
+                    chat_id=chat_id,
+                    text="Bạn muốn chỉnh phần nào? Có thể bấm nút hoặc mô tả trực tiếp.",
+                    reply_markup=self._build_keyboard([
+                        ["Màu sắc", "Bố cục", "Chữ trên ảnh"],
+                        ["Phong cách", "Logo", "Chi tiết khác"],
+                    ]),
+                )
+                self._stop_typing(chat_id)
+                return
+
+            if raw_content == "tạo biến thể":
+                content = (
+                    "Tạo một biến thể mới từ kết quả gần nhất, giữ đúng brief và thương hiệu "
+                    "nhưng thay đổi bố cục hoặc cách thể hiện để có thêm lựa chọn."
+                )
 
             # Handle new user onboarding choice
             if onboarding_status == "none":
-                raw_content = content.strip().lower()
                 if raw_content in ("dùng ngay", "bỏ qua, dùng ngay"):
                     username = metadata.get("username") or ""
                     create_minimal_profile(uid, username=username)
@@ -637,21 +715,21 @@ class TelegramMessagesMixin:
                     # Translate to a clear instruction for the LLM
                     content = "Tôi muốn bỏ qua khai báo và bắt đầu sử dụng bot ngay."
                 elif raw_content in ("bắt đầu khai báo", "khai báo thông tin"):
-                    # Send the onboarding template directly
                     username = metadata.get("username") or ""
                     profile = create_minimal_profile(uid, username=username)
                     profile["onboarding"]["status"] = "in_progress"
-                    from nanobot.utils.customer_profile import save_profile
                     save_profile(uid, profile)
-                    
+                    step = build_adaptive_onboarding_step(profile)
                     try:
                         await self._app.bot.send_message(
                             chat_id=chat_id,
                             text=(
-                                "🎨 *Tuyệt vời! Hãy bắt đầu thiết lập brand profile.*\n\n"
-                                "Bạn gửi cho tôi **logo thương hiệu** của mình nhé (gửi file ảnh logo hoặc nhập link website của bạn để tôi tự tìm kiếm logo và tông màu chủ đạo) 👇"
+                                "🎨 *Thiết lập Brand Profile*\n\n"
+                                f"{step['prompt']}\n\n"
+                                "_Bạn có thể bấm nút hoặc nhập câu trả lời theo cách tự nhiên._"
                             ),
-                            parse_mode="Markdown"
+                            parse_mode="Markdown",
+                            reply_markup=self._build_keyboard(step["buttons"]) if step["buttons"] else None,
                         )
                     except Exception as e:
                         self.logger.warning("Failed to send onboarding template: {}", e)
@@ -664,6 +742,25 @@ class TelegramMessagesMixin:
                     create_minimal_profile(uid, username=username)
                     onboarding_status = "minimal"
 
+            elif raw_content in ("bổ sung nhanh", "tiếp tục onboarding", "khai báo thông tin"):
+                profile = load_profile(uid) or create_minimal_profile(uid)
+                profile.setdefault("onboarding", {})["status"] = "in_progress"
+                save_profile(uid, profile)
+                step = build_adaptive_onboarding_step(profile)
+                try:
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "🧭 *Bổ sung Brand Profile*\n\n"
+                            f"{step['prompt']}\n\n"
+                            "_Bạn có thể bấm nút, nhập text, gửi URL hoặc tải file._"
+                        ),
+                        parse_mode="Markdown",
+                        reply_markup=self._build_keyboard(step["buttons"]) if step["buttons"] else None,
+                    )
+                finally:
+                    self._stop_typing(chat_id)
+                return
 
 
             metadata["onboarding_status"] = onboarding_status  # 'minimal'|'completed'

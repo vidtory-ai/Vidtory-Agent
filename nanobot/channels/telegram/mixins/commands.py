@@ -334,7 +334,9 @@ class TelegramCommandsMixin:
 
         elif cmd == "/brand":
             try:
-                from nanobot.utils.customer_profile import load_profile, get_logo_url
+                from nanobot.utils.brand_profile_view import render_brand_profile
+                from nanobot.utils.customer_profile import load_profile
+
                 uid = sender_id.split("|")[0].strip()
                 profile = load_profile(uid)
                 if not profile:
@@ -349,82 +351,13 @@ class TelegramCommandsMixin:
                         reply_markup=reply_markup,
                     )
                 else:
-                    biz = profile.get("business") or {}
-                    brand = profile.get("brand") or {}
-                    audience = profile.get("audience") or {}
-                    channels = profile.get("contentChannels") or {}
-                    onboarding = profile.get("onboarding") or {}
-                    learning = profile.get("learningData") or {}
-                    status_map = {
-                        "minimal": "Cơ bản ✅",
-                        "completed": "Hoàn chỉnh ✅",
-                        "in_progress": "Đang thiết lập 🔄",
-                    }
-                    status = status_map.get(onboarding.get("status", ""), onboarding.get("status", "—"))
-                    name = biz.get("name") or "—"
-                    industry = biz.get("industry") or "—"
-                    style = brand.get("style") or "—"
-                    colors = brand.get("colorPalette") or {}
-                    primary_color = colors.get("primary") or "—"
-                    mood = ", ".join(brand.get("moodKeywords") or []) or "—"
-                    avoid = ", ".join(brand.get("avoidList") or []) or "—"
-                    logo = (brand.get("logoUrl") or "").strip()
-                    photo_style = brand.get("photographyStyle") or "—"
-                    primary_channels = ", ".join(channels.get("primary") or []) or "—"
-                    aud_gender = audience.get("gender") or "—"
-                    aud_age = audience.get("ageRange") or "—"
-                    aud_seg = audience.get("segment") or "—"
-                    total_gens = learning.get("totalGenerations", 0)
-                    approved = learning.get("approvedCount", 0)
-                    rejected = learning.get("rejectedCount", 0)
-
-                    lines = [
-                        "📋 *Brand Profile*",
-                        "",
-                        "🏢 *Thương hiệu*",
-                        f"  Tên: {name}",
-                        f"  Ngành: {industry}",
-                        "",
-                        "🎨 *Phong cách*",
-                        f"  Style: {style}",
-                        f"  Mood: {mood}",
-                        f"  Màu chủ đạo: {primary_color}",
-                        f"  Photo style: {photo_style}",
-                        f"  Tránh: {avoid}",
-                        "",
-                    ]
-
-                    if logo:
-                        if logo.startswith(("http://", "https://")):
-                            lines.append(f"🖼️ *Logo:* [Xem logo]({logo})")
-                        else:
-                            lines.append(f"🖼️ *Logo:* _Đường dẫn không hợp lệ ({logo})_ — dùng /setlogo để cấu hình lại")
-                    else:
-                        lines.append("🖼️ *Logo:* _Chưa có_ — dùng /setlogo để thêm")
-                    lines.append("")
-
-                    lines.extend([
-                        "",
-                        "👥 *Đối tượng*",
-                        f"  Giới tính: {aud_gender} | Tuổi: {aud_age} | Phân khúc: {aud_seg}",
-                        "",
-                        f"📱 *Kênh:* {primary_channels}",
-                        "",
-                        f"📊 *Thống kê:* {total_gens} ảnh tạo | {approved} ✅ | {rejected} ❌",
-                        f"✅ *Onboarding:* {status}",
-                        "",
-                        "━━━━━━━━━━━━━━",
-                        "*Thay đổi nhanh:*",
-                        "  /setbrand name PTIT",
-                        "  /setbrand style luxury",
-                        "  /setbrand mood sang trọng, hiện đại",
-                        "  /setbrand industry tech",
-                        "  /setlogo — để thay đổi logo",
-                    ])
-                    # Enable web preview when logo exists and is a valid URL so Telegram shows the image inline
-                    show_preview = bool(logo) and logo.startswith(("http://", "https://"))
-                    await message.reply_text("\n".join(lines), parse_mode="Markdown",
-                                            disable_web_page_preview=not show_preview)
+                    view = render_brand_profile(profile)
+                    await message.reply_text(
+                        view.text,
+                        parse_mode="HTML",
+                        disable_web_page_preview=not view.show_logo_preview,
+                        reply_markup=self._build_keyboard(view.buttons),
+                    )
             except Exception as e:
                 self.logger.warning("Failed to load brand profile: {}", e)
                 await message.reply_text(
@@ -536,7 +469,11 @@ class TelegramCommandsMixin:
 
         elif cmd == "/setlogo":
             try:
-                from nanobot.utils.customer_profile import set_logo_url, get_logo_url, profile_exists
+                from nanobot.utils.customer_profile import (
+                    get_logo_url,
+                    profile_exists,
+                    set_logo_and_refresh_identity,
+                )
                 uid = sender_id.split("|")[0].strip()
 
                 if not profile_exists(uid):
@@ -588,11 +525,17 @@ class TelegramCommandsMixin:
                                 return True
                             final_logo_url = cdn_url
 
-                        if set_logo_url(uid, final_logo_url):
+                        logo_result = await set_logo_and_refresh_identity(uid, final_logo_url)
+                        if logo_result.get("saved"):
+                            identity_note = (
+                                "\n🎨 Màu sắc và phong cách đã được tự động cập nhật theo logo mới."
+                                if logo_result.get("identity_refreshed")
+                                else ""
+                            )
                             await message.reply_text(
                                 "✅ *Logo đã được lưu lên hệ thống!*\n\n"
                                 f"🖼️ [Xem logo]({final_logo_url})\n\n"
-                                "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                                f"_Logo sẽ tự động được áp dụng khi tạo ảnh._{identity_note}",
                                 parse_mode="Markdown",
                                 disable_web_page_preview=True,
                             )
@@ -633,11 +576,17 @@ class TelegramCommandsMixin:
                             api_key=api_key or "",
                             user_id=uid,
                         )
-                        if cdn_url and set_logo_url(uid, cdn_url):
+                        logo_result = (
+                            await set_logo_and_refresh_identity(
+                                uid, cdn_url, image_bytes=bytes(file_bytes)
+                            )
+                            if cdn_url else {"saved": False}
+                        )
+                        if logo_result.get("saved"):
                             await message.reply_text(
                                 "✅ *Logo đã được lưu lên hệ thống!*\n\n"
                                 f"🖼️ [Xem logo]({cdn_url})\n"
-                                "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                                "_Màu sắc và phong cách đã được cập nhật theo logo mới._",
                                 parse_mode="Markdown",
                                 disable_web_page_preview=True,
                             )
@@ -675,11 +624,17 @@ class TelegramCommandsMixin:
                             api_key=api_key or "",
                             user_id=uid,
                         )
-                        if cdn_url and set_logo_url(uid, cdn_url):
+                        logo_result = (
+                            await set_logo_and_refresh_identity(
+                                uid, cdn_url, image_bytes=bytes(file_bytes)
+                            )
+                            if cdn_url else {"saved": False}
+                        )
+                        if logo_result.get("saved"):
                             await message.reply_text(
                                 "✅ *Logo đã được lưu lên hệ thống!*\n\n"
                                 f"🖼️ [Xem logo]({cdn_url})\n"
-                                "_Logo sẽ tự động được áp dụng khi tạo ảnh._",
+                                "_Màu sắc và phong cách đã được cập nhật theo logo mới._",
                                 parse_mode="Markdown",
                                 disable_web_page_preview=True,
                             )
