@@ -535,6 +535,9 @@ class TelegramMessagesMixin:
         has_text = bool(message.text or message.caption)
         is_reply = reply is not None
         if has_media and not has_text and not is_reply:
+            # Add reaction immediately — this path returns early and never reaches
+            # the normal _add_reaction call later in the flow.
+            await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
             doc = getattr(message, "document", None)
             is_document_file = (
                 doc is not None
