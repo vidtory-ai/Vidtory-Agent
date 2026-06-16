@@ -731,7 +731,27 @@ class TelegramMessagesMixin:
             media_to_save = list(pending.get("media") or []) + list(media or [])
             if media_to_save:
                 uid_save = sender_id.split("|")[0].strip()
-                key_save = self.keystore.get_key(sender_id) or ""
+                key_save = self.keystore.get_key(sender_id)
+                # Guard: API key required to upload to Vidtory CDN
+                if not key_save:
+                    if self._app:
+                        with suppress(Exception):
+                            await self._app.bot.send_message(
+                                chat_id=chat_id,
+                                text=(
+                                    "🔐 *Cần kết nối Vidtory API Key để lưu logo*\n\n"
+                                    "Logo cần được lưu trên hệ thống Vidtory để tự động áp dụng vào mỗi ảnh tạo ra.\n\n"
+                                    "*Cách thiết lập nhanh:*\n"
+                                    "1️⃣ Vào https://app.vidtory.net/settings/api\n"
+                                    "2️⃣ Sao chép API Key\n"
+                                    "3️⃣ Gửi: `/apikey YOUR_KEY`\n\n"
+                                    "_Sau khi kết nối xong, gửi lại ảnh logo và chọn_ *Đặt làm logo thương hiệu* _là xong._"
+                                ),
+                                parse_mode="Markdown",
+                                disable_web_page_preview=True,
+                            )
+                    self._stop_typing(chat_id)
+                    return
                 cdn_url_save = None
                 try:
                     import mimetypes as _mimetypes
@@ -765,9 +785,9 @@ class TelegramMessagesMixin:
                             await self._app.bot.send_message(
                                 chat_id=chat_id,
                                 text=(
-                                    "⚠️ *Không thể upload logo lên hệ thống.*\n\n"
-                                    "Bạn cần cấu hình Vidtory API Key trước:\n"
-                                    "`/apikey YOUR_VIDTORY_KEY`"
+                                    "⚠️ *Upload logo thất bại.*\n\n"
+                                    "Có thể do kết nối mạng hoặc API Key chưa đúng.\n"
+                                    "Vui lòng thử lại hoặc dùng lệnh `/setlogo` để kiểm tra."
                                 ),
                                 parse_mode="Markdown",
                             )

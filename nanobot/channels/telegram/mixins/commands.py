@@ -552,8 +552,21 @@ class TelegramCommandsMixin:
                         # Non-Vidtory URLs: upload to CDN for permanence
                         if "vidtory" not in logo_url_arg.lower():
                             api_key = self.keystore.get_key(sender_id)
+                            if not api_key:
+                                await message.reply_text(
+                                    "🔐 *Cần kết nối Vidtory API Key để lưu logo*\n\n"
+                                    "Logo cần được lưu trên hệ thống Vidtory để tự động áp dụng vào mỗi ảnh tạo ra.\n\n"
+                                    "*Cách thiết lập nhanh:*\n"
+                                    "1️⃣ Vào https://app.vidtory.net/settings/api\n"
+                                    "2️⃣ Sao chép API Key\n"
+                                    "3️⃣ Gửi: `/apikey YOUR_KEY`\n\n"
+                                    "_Sau khi kết nối xong, dùng lại lệnh `/setlogo URL` là xong._",
+                                    parse_mode="Markdown",
+                                    disable_web_page_preview=True,
+                                )
+                                return True
                             cdn_url = await self._upload_image_to_vidtory_cdn(
-                                logo_url_arg, api_key=api_key or "", user_id=uid
+                                logo_url_arg, api_key=api_key, user_id=uid
                             )
                             if not cdn_url:
                                 await message.reply_text(
@@ -609,10 +622,23 @@ class TelegramCommandsMixin:
                             return True
                         # Upload bytes to Vidtory CDN via POST /media/upload
                         api_key = self.keystore.get_key(sender_id)
+                        if not api_key:
+                            await message.reply_text(
+                                "🔐 *Cần kết nối Vidtory API Key để lưu logo*\n\n"
+                                "Logo cần được lưu trên hệ thống Vidtory để tự động áp dụng vào mỗi ảnh tạo ra.\n\n"
+                                "*Cách thiết lập nhanh:*\n"
+                                "1️⃣ Vào https://app.vidtory.net/settings/api\n"
+                                "2️⃣ Sao chép API Key\n"
+                                "3️⃣ Gửi: `/apikey YOUR_KEY`\n\n"
+                                "_Sau khi kết nối xong, reply lại ảnh logo và gõ `/setlogo` là xong._",
+                                parse_mode="Markdown",
+                                disable_web_page_preview=True,
+                            )
+                            return True
                         cdn_url = await self._upload_logo_bytes_to_cdn(
                             bytes(file_bytes),
                             mime_type=reply_media["mime_type"],
-                            api_key=api_key or "",
+                            api_key=api_key,
                             user_id=uid,
                         )
                         logo_result = (
@@ -657,10 +683,23 @@ class TelegramCommandsMixin:
                             )
                             return True
                         api_key = self.keystore.get_key(sender_id)
+                        if not api_key:
+                            await message.reply_text(
+                                "🔐 *Cần kết nối Vidtory API Key để lưu logo*\n\n"
+                                "Logo cần được lưu trên hệ thống Vidtory để tự động áp dụng vào mỗi ảnh tạo ra.\n\n"
+                                "*Cách thiết lập nhanh:*\n"
+                                "1️⃣ Vào https://app.vidtory.net/settings/api\n"
+                                "2️⃣ Sao chép API Key\n"
+                                "3️⃣ Gửi: `/apikey YOUR_KEY`\n\n"
+                                "_Sau khi kết nối xong, gửi lại ảnh logo kèm caption `/setlogo` là xong._",
+                                parse_mode="Markdown",
+                                disable_web_page_preview=True,
+                            )
+                            return True
                         cdn_url = await self._upload_logo_bytes_to_cdn(
                             bytes(file_bytes),
                             mime_type=direct_media["mime_type"],
-                            api_key=api_key or "",
+                            api_key=api_key,
                             user_id=uid,
                         )
                         logo_result = (
