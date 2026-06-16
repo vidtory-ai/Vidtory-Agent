@@ -444,6 +444,78 @@ async def test_onboarding_website_button_uses_scripted_reply(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_pending_image_set_logo_choice_is_handled_without_llm(
+    tmp_path, monkeypatch, isolated_customer_db
+) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", require_user_api_key=True),
+        MessageBus(),
+    )
+    saved = []
+
+    async def fake_save_logo(*, chat_id: str, sender_id: str, media_path: str) -> bool:
+        saved.append((chat_id, sender_id, media_path))
+        return True
+
+    monkeypatch.setattr(channel, "_save_logo_from_media_path", fake_save_logo)
+    channel._pending_media_choices = {
+        "123:12345|alice": {
+            "media": [str(tmp_path / "logo.png")],
+            "metadata": {},
+            "session_key": "telegram:123",
+            "expires_at": 9999999999,
+        }
+    }
+
+    await channel._handle_message(
+        sender_id="12345|alice",
+        chat_id="123",
+        content="Dat lam logo",
+        metadata={},
+        session_key="telegram:123",
+    )
+
+    assert saved == [("123", "12345|alice", str(tmp_path / "logo.png"))]
+
+
+@pytest.mark.asyncio
+async def test_logo_reminder_decline_defers_ten_generations(
+    tmp_path, monkeypatch, isolated_customer_db
+) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    from nanobot.db.customer_db import get_db
+    from nanobot.utils.customer_profile import create_minimal_profile, load_profile, save_profile
+
+    profile = create_minimal_profile("12345", username="alice")
+    profile["onboarding"]["status"] = "completed"
+    profile.setdefault("preferences", {})["logoReminderAwaitingUpload"] = True
+    save_profile("12345", profile)
+    for index in range(3):
+        get_db().record_generation("12345", prompt=f"gen {index}")
+
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", require_user_api_key=True),
+        MessageBus(),
+    )
+    channel._app = SimpleNamespace(
+        bot=SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(message_id=1)))
+    )
+
+    await channel._handle_message(
+        sender_id="12345|alice",
+        chat_id="123",
+        content="Chua, nhac sau",
+        metadata={},
+        session_key="telegram:123",
+    )
+
+    prefs = load_profile("12345")["preferences"]
+    assert prefs["logoReminderAwaitingUpload"] is False
+    assert prefs["logoReminderNextGeneration"] == 13
+
+
+@pytest.mark.asyncio
 async def test_telegram_multi_user_metadata_injection(tmp_path, monkeypatch, isolated_customer_db) -> None:
     monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr("nanobot.config.paths.get_workspace_path", lambda: tmp_path)

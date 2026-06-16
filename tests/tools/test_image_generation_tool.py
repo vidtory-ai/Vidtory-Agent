@@ -96,6 +96,37 @@ async def test_generate_image_tool_reports_missing_key(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_generate_image_tool_blocks_telegram_vidtory_fallback_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "vidtory" else None,
+    )
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(enabled=True, provider="vidtory"),
+        provider_configs={"vidtory": ProviderConfig(api_key="system-vidtory-key")},
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            metadata={"user_api_key": ""},
+        )
+    )
+
+    result = await tool.execute(prompt="draw")
+
+    assert result.startswith("Error: Vidtory API key is not configured")
+    assert FakeImageClient.instances == []
+
+
+@pytest.mark.asyncio
 async def test_generate_image_tool_selects_aihubmix_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -936,6 +967,70 @@ async def test_auto_delivery_leaves_followup_buttons_for_text_response(
     assert sum(bool(message.media) for message in sent) == 1
     assert sent[-1].media == []
     assert sent[-1].buttons == [["1", "2", "3"]]
+
+
+@pytest.mark.asyncio
+async def test_generate_image_tool_sends_logo_reminder_after_third_logo_free_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.bus.events import OutboundMessage
+    from nanobot.db.customer_db import CustomerDatabase
+    from nanobot.utils.context_vars import telegram_customer_profile
+    from nanobot.utils.customer_profile import create_minimal_profile, load_profile, save_profile
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+    db = CustomerDatabase(tmp_path / "customers.db")
+    monkeypatch.setattr("nanobot.db.customer_db._db_instance", db)
+
+    profile = create_minimal_profile("12345", username="alice")
+    profile["onboarding"]["status"] = "completed"
+    save_profile("12345", profile)
+    db.record_generation("12345", prompt="first")
+    db.record_generation("12345", prompt="second")
+
+    sent: list[OutboundMessage] = []
+
+    async def capture(message: OutboundMessage) -> None:
+        sent.append(message)
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        send_callback=capture,
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            session_key="telegram:123",
+            metadata={"user_api_key": "user-vidtory-key"},
+        )
+    )
+    token = telegram_customer_profile.set(profile)
+    try:
+        await tool.execute(prompt="Draw a product poster")
+    finally:
+        telegram_customer_profile.reset(token)
+    reminders = [
+        msg for msg in sent
+        if msg.buttons == [["Có, tôi sẽ gửi logo", "Chưa, nhắc sau"]]
+    ]
+    assert len(reminders) == 1
+    assert "logo" in reminders[0].content.lower()
+    assert load_profile("12345")["preferences"]["logoReminderAwaitingUpload"] is True
+    db.close()
  
  
 @pytest.mark.asyncio

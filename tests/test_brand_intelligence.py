@@ -186,6 +186,25 @@ def test_agent_context_adds_logo_note_after_customer_skips_logo():
     assert "gửi thêm logo" in joined
 
 
+def test_agent_context_adds_logo_note_when_profile_has_no_logo():
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.events import InboundMessage
+
+    profile = _profile(industry="technology")
+    message = InboundMessage(
+        channel="telegram",
+        sender_id="u1",
+        chat_id="c1",
+        content="Tao anh tuyen sinh",
+        metadata={"onboarding_status": "completed", "customer_profile": profile},
+    )
+
+    lines = AgentLoop._build_customer_context_lines(message)
+    joined = "\n".join(lines)
+    assert "[LOGO_OPTIMIZATION_NOTE]" in joined
+    assert "logo" in joined.lower()
+
+
 def test_prompt_knowledge_adds_topic_specific_customer_insight():
     from nanobot.utils.vidtory_knowledge import (
         build_professional_prompt_suffix,
