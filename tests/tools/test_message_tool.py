@@ -380,6 +380,32 @@ async def test_message_tool_does_not_resend_media_already_delivered_by_generator
 
 
 @pytest.mark.asyncio
+async def test_message_tool_extracts_four_numbered_buttons_in_resident_designer() -> None:
+    sent: list[OutboundMessage] = []
+
+    async def _send(msg: OutboundMessage) -> None:
+        sent.append(msg)
+
+    from nanobot.agent.tools.context import RequestContext
+
+    tool = MessageTool(send_callback=_send, capability_profile="resident_designer")
+    tool.set_context(RequestContext(channel="telegram", chat_id="chat-1", metadata={}))
+
+    result = await tool.execute(
+        content=(
+            "Ban muon ghi dong chu gi tren poster?\n"
+            "1\ufe0f\u20e3 TUYEN SINH DAI HOC 2026\n"
+            "2\ufe0f\u20e3 PTIT 2026 - MO CUA TUONG LAI SO\n"
+            "3\ufe0f\u20e3 KHAM PHA HANH TRINH CONG NGHE CUNG PTIT\n"
+            "4\ufe0f\u20e3 Khong can chu, lam anh nen truoc"
+        )
+    )
+
+    assert result.startswith("Message sent")
+    assert sent[0].buttons == [["1", "2", "3"], ["4"]]
+
+
+@pytest.mark.asyncio
 async def test_message_tool_cross_target_does_not_track_turn_media(tmp_path) -> None:
     async def _send(msg: OutboundMessage) -> None:
         pass

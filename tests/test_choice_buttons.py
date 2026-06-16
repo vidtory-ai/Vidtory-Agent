@@ -12,6 +12,18 @@ def test_extract_numbered_choice_buttons_from_keycap_options() -> None:
     assert extract_numbered_choice_buttons(content) == [["1", "2", "3"]]
 
 
+def test_extract_numbered_choice_buttons_from_four_keycap_options() -> None:
+    content = (
+        "Goi y nhanh:\n"
+        "1\ufe0f\u20e3 TUYEN SINH DAI HOC 2026\n"
+        "2\ufe0f\u20e3 PTIT 2026 - MO CUA TUONG LAI SO\n"
+        "3\ufe0f\u20e3 KHAM PHA HANH TRINH CONG NGHE CUNG PTIT\n"
+        "4\ufe0f\u20e3 Khong can chu, lam anh nen truoc"
+    )
+
+    assert extract_numbered_choice_buttons(content) == [["1", "2", "3"], ["4"]]
+
+
 def test_extract_numbered_choice_buttons_from_plain_numbered_choices() -> None:
     content = (
         "Chọn một phương án:\n"

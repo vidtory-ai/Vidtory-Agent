@@ -39,11 +39,16 @@ def record_generated_media_delivery(media: list[str]) -> None:
 
 
 def _numbered_choice_buttons(content: str) -> list[list[str]]:
-    matches = re.findall(r"(?m)^\s*([1-3])\ufe0f?\u20e3\s+\S", content)
-    if matches == ["1", "2", "3"]:
-        return [matches]
-    matches = re.findall(r"(?m)^\s*([1-3])[.)]\s+\S", content)
-    return [matches] if matches == ["1", "2", "3"] else []
+    matches = re.findall(r"(?m)^\s*([1-9])\ufe0f?\u20e3\s+\S", content)
+    if not matches:
+        matches = re.findall(r"(?m)^\s*([1-9])[.)]\s+\S", content)
+    numbers = [int(match) for match in matches]
+    if not 2 <= len(numbers) <= 4:
+        return []
+    if numbers != list(range(1, len(numbers) + 1)):
+        return []
+    labels = [str(number) for number in numbers]
+    return [labels[:3], labels[3:]] if len(labels) > 3 else [labels]
 
 
 @tool_parameters(
