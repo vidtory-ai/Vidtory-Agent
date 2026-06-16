@@ -724,18 +724,28 @@ class TelegramMessagesMixin:
             content = choice_prompts.get(normalized_choice, content)
 
         # --- Direct logo save: when user explicitly selects "Đặt làm logo thương hiệu" ---
-        # Bypass LLM — call the CDN upload + DB save path directly, identical to /setlogo.
+        # Bypass LLM — read file bytes from disk then call _upload_logo_bytes_to_cdn,
+        # identical to the /setlogo Case 2 & 3 flow (most reliable path).
         plain_nc = self._plain_user_text(normalized_choice)
         if plain_nc in ("dat lam logo thuong hieu", "dat lam logo") and pending is not None:
             media_to_save = list(pending.get("media") or []) + list(media or [])
             if media_to_save:
                 uid_save = sender_id.split("|")[0].strip()
                 key_save = self.keystore.get_key(sender_id) or ""
-                cdn_url_save = await self._upload_image_to_vidtory_cdn(
-                    media_to_save[0],
-                    api_key=key_save,
-                    user_id=uid_save,
-                )
+                cdn_url_save = None
+                try:
+                    import mimetypes as _mimetypes
+                    logo_path = media_to_save[0]
+                    logo_bytes = Path(logo_path).read_bytes()
+                    logo_mime = _mimetypes.guess_type(logo_path)[0] or "image/jpeg"
+                    cdn_url_save = await self._upload_logo_bytes_to_cdn(
+                        logo_bytes,
+                        mime_type=logo_mime,
+                        api_key=key_save,
+                        user_id=uid_save,
+                    )
+                except Exception as _read_err:
+                    self.logger.warning("Logo save: failed to read/upload file {}: {}", media_to_save[0], _read_err)
                 if cdn_url_save:
                     try:
                         from nanobot.utils.customer_profile import set_logo_and_refresh_identity
