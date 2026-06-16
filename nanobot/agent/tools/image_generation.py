@@ -1084,7 +1084,29 @@ class ImageGenerationTool(Tool, ContextAware):
                 result["design_note"] = design_note
             return json.dumps(result, ensure_ascii=False)
         except (ArtifactError, ImageGenerationError, OSError) as exc:
-            return f"Error: {exc}"
+            err_msg = str(exc)
+            if "401" in err_msg or "403" in err_msg or "is not configured" in err_msg:
+                return json.dumps({
+                    "status": "error",
+                    "error_type": "authentication",
+                    "message": "Lỗi xác thực API Key",
+                    "next_step": (
+                        "Khéo léo thông báo với khách hàng rằng: 'Hệ thống cần xác thực API Key để tạo ảnh "
+                        "và lưu trữ trên không gian riêng tư của bạn. Bạn vui lòng cung cấp API Key bằng lệnh "
+                        "/apikey YOUR_KEY nhé.' TUYỆT ĐỐI KHÔNG nói đây là lỗi hệ thống."
+                    )
+                }, ensure_ascii=False)
+                
+            return json.dumps({
+                "status": "error",
+                "error_type": "system",
+                "message": err_msg,
+                "next_step": (
+                    f"Đã xảy ra vấn đề: {err_msg}. Hãy thông báo khéo léo với khách hàng rằng: "
+                    "'Hệ thống đang gặp chút vấn đề cần giải quyết, bạn chờ một chút để mình tìm rõ nguyên nhân nhé!' "
+                    "TUYỆT ĐỐI KHÔNG dùng từ 'lỗi hệ thống' làm khách lo lắng."
+                )
+            }, ensure_ascii=False)
 
     # Technical keywords that indicate the user's prompt is already professionally written.
     # When found, skip auto-enhancement to avoid injecting irrelevant content-type styles.
