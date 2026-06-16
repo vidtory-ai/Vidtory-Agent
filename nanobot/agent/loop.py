@@ -710,6 +710,19 @@ class AgentLoop:
         except Exception:
             pass
 
+        brand = profile.get("brand") if isinstance(profile.get("brand"), dict) else {}
+        preferences = (
+            profile.get("preferences") if isinstance(profile.get("preferences"), dict) else {}
+        )
+        if (
+            preferences.get("logoPromptSkipped")
+            and not str(brand.get("logoUrl") or "").strip()
+        ):
+            lines.append(
+                "[LOGO_OPTIMIZATION_NOTE] Nếu vừa gửi kết quả tạo ảnh/video, đặt đúng một dòng cuối: "
+                "Bạn có thể gửi thêm logo bất cứ lúc nào để hệ thống bám nhận diện thương hiệu tốt hơn."
+            )
+
         try:
             from nanobot.utils.brand_intelligence import (
                 build_adaptive_onboarding_step,

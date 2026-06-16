@@ -220,6 +220,7 @@ class TestUpdateCustomerProfileToolExecute:
 
         profile = db.load_profile("test_user_42")
         assert profile["brand"]["style"] == "luxury"
+        assert profile["brand"]["styleConfirmed"] is True
 
     @pytest.mark.asyncio
     async def test_brand_style_custom_preserved(self, tool_with_profile):

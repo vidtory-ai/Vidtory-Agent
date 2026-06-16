@@ -72,8 +72,16 @@ def get_profile_gaps(profile: dict[str, Any]) -> list[str]:
     )
     palette_value = brand.get("colorPalette")
     palette = palette_value if isinstance(palette_value, dict) else {}
+    preferences = profile.get("preferences") if isinstance(profile.get("preferences"), dict) else {}
+    logo_skipped = bool(preferences.get("logoPromptSkipped"))
+    inferred_from_logo = (brand.get("identityInference") or {}).get("source") == "logo"
+    style_confirmed = bool(brand.get("styleConfirmed")) or (
+        bool(str(brand.get("style") or "").strip()) and not inferred_from_logo
+    )
 
     checks = (
+        ("logo", logo_skipped or bool(str(brand.get("logoUrl") or "").strip())),
+        ("brand_style", style_confirmed),
         ("business_name", bool(str(business.get("name") or "").strip())),
         (
             "industry",
@@ -81,8 +89,6 @@ def get_profile_gaps(profile: dict[str, Any]) -> list[str]:
             and business.get("industry") != "other",
         ),
         ("business_description", bool(str(business.get("description") or "").strip())),
-        ("logo", bool(str(brand.get("logoUrl") or "").strip())),
-        ("brand_style", bool(str(brand.get("style") or "").strip())),
         ("primary_color", bool(palette.get("primary"))),
         ("mood", bool(brand.get("moodKeywords"))),
         ("photography_style", bool(str(brand.get("photographyStyle") or "").strip())),
@@ -91,15 +97,6 @@ def get_profile_gaps(profile: dict[str, Any]) -> list[str]:
         ("channels", bool(channels.get("primary"))),
     )
     return [field for field, present in checks if not present]
-
-
-_STYLE_CHOICES = {
-    "food": ["Ngon mắt gần gũi", "Tối giản cao cấp", "Tươi sáng tự nhiên"],
-    "fashion": ["Editorial cao cấp", "Trẻ trung cá tính", "Tối giản hiện đại"],
-    "beauty": ["Tinh tế cao cấp", "Mềm mại nữ tính", "Sạch và khoa học"],
-    "technology": ["Công nghệ chuyên nghiệp", "Tối giản tương lai", "Năng động sáng tạo"],
-    "realestate": ["Sang trọng tin cậy", "Hiện đại thoáng sáng", "Ấm áp gần gũi"],
-}
 
 
 def build_adaptive_onboarding_step(profile: dict[str, Any]) -> dict[str, Any]:
@@ -129,11 +126,24 @@ def build_adaptive_onboarding_step(profile: dict[str, Any]) -> dict[str, Any]:
             "buttons": [["Gửi logo", "Nhập website"], ["Chưa có logo"]],
         }
     if field == "brand_style":
-        choices = _STYLE_CHOICES.get(industry, ["Tối giản hiện đại", "Sang trọng cao cấp", "Trẻ trung năng động"])
+        inferred_style = str((profile.get("brand") or {}).get("style") or "").strip()
+        palette = (profile.get("brand") or {}).get("colorPalette") or {}
+        colors = ", ".join(
+            str(palette.get(key)) for key in ("primary", "secondary", "accent") if palette.get(key)
+        )
+        brand_read = ""
+        if colors or inferred_style:
+            brand_read = (
+                f"Mình đọc logo có màu chủ đạo {colors or 'đang được nhận diện'} "
+                f"và concept {inferred_style or 'đang được đề xuất'}. "
+            )
         return {
             "field": field,
-            "prompt": "Bạn muốn khách hàng cảm nhận thương hiệu theo hướng nào?",
-            "buttons": [choices],
+            "prompt": (
+                f"{brand_read}Chọn style reference gần gu nhất; "
+                "bạn cũng có thể gửi một ảnh tham chiếu riêng."
+            ),
+            "buttons": [["Clean Premium", "Bold Performance", "Editorial Fashion"]],
         }
     if field == "primary_color":
         return {
@@ -289,6 +299,7 @@ def apply_logo_identity(
     """Apply logo-derived visual fields without resetting business or audience data."""
     brand = profile.setdefault("brand", {})
     brand["logoUrl"] = logo_url
+    brand["styleConfirmed"] = False
     for key in ("style", "moodKeywords", "photographyStyle"):
         if analysis.get(key):
             brand[key] = analysis[key]

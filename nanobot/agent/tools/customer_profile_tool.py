@@ -333,6 +333,7 @@ class UpdateCustomerProfileTool(Tool):
             if brand_style is not None and brand_style.strip():
                 normalized = _normalize_brand_style(brand_style)
                 brand["style"] = normalized
+                brand["styleConfirmed"] = True
                 changed_fields.append(f"style({normalized})")
 
             if mood_keywords is not None and len(mood_keywords) > 0:

@@ -43,12 +43,12 @@ def test_does_not_steal_an_image_edit_request():
     )
 
 
-def test_profile_gaps_prioritize_visual_identity_after_business_fields():
+def test_profile_gaps_prioritize_logo_and_style_reference():
     gaps = get_profile_gaps(_profile())
-    assert gaps[:3] == ["business_description", "logo", "brand_style"]
+    assert gaps[:2] == ["logo", "brand_style"]
 
 
-def test_adaptive_onboarding_uses_industry_specific_choices():
+def test_adaptive_onboarding_starts_with_logo():
     profile = _profile(industry="food")
     profile["business"]["description"] = "Nhà hàng món Việt hiện đại"
     step = build_adaptive_onboarding_step(profile)
@@ -56,6 +56,37 @@ def test_adaptive_onboarding_uses_industry_specific_choices():
     assert step["field"] == "logo"
     assert "logo" in step["prompt"].lower()
     assert step["buttons"] == [["Gửi logo", "Nhập website"], ["Chưa có logo"]]
+
+
+def test_skipped_logo_moves_onboarding_to_style_reference():
+    profile = _profile(industry="food")
+    profile["business"]["description"] = "Nhà hàng món Việt hiện đại"
+    profile["preferences"]["logoPromptSkipped"] = True
+
+    step = build_adaptive_onboarding_step(profile)
+
+    assert step["field"] == "brand_style"
+    assert "style reference" in step["prompt"].lower()
+
+
+def test_logo_inference_still_requests_customer_style_reference():
+    profile = _profile(industry="food")
+    profile["brand"].update(
+        {
+            "logoUrl": "https://cdn.example/logo.png",
+            "style": "playful",
+            "colorPalette": {"primary": "#E53935", "secondary": "#FDD835"},
+            "identityInference": {"source": "logo", "confidence": 0.9},
+        }
+    )
+
+    step = build_adaptive_onboarding_step(profile)
+
+    assert step["field"] == "brand_style"
+    assert "style reference" in step["prompt"].lower()
+    assert step["buttons"] == [
+        ["Clean Premium", "Bold Performance", "Editorial Fashion"]
+    ]
 
 
 def test_logo_analysis_extracts_palette_and_dynamic_style():
@@ -133,6 +164,26 @@ def test_agent_context_routes_brand_update_and_exposes_button_suggestions():
     assert "[BRAND_UPDATE_INTENT]" in joined
     assert "update_customer_profile" in joined
     assert "KHÔNG tạo ảnh" in joined
+
+
+def test_agent_context_adds_logo_note_after_customer_skips_logo():
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.events import InboundMessage
+
+    profile = _profile(industry="technology")
+    profile["preferences"]["logoPromptSkipped"] = True
+    message = InboundMessage(
+        channel="telegram",
+        sender_id="u1",
+        chat_id="c1",
+        content="Tạo ảnh quảng cáo sản phẩm",
+        metadata={"onboarding_status": "completed", "customer_profile": profile},
+    )
+
+    lines = AgentLoop._build_customer_context_lines(message)
+    joined = "\n".join(lines)
+    assert "[LOGO_OPTIMIZATION_NOTE]" in joined
+    assert "gửi thêm logo" in joined
 
 
 def test_prompt_knowledge_adds_topic_specific_customer_insight():

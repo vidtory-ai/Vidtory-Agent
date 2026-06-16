@@ -35,6 +35,7 @@ Use the `generate_image` tool when the user asks to create an image, photo, or a
     - "Bạn có thể xem brand profile bằng /brand..."
     
     Chỉ được gợi ý các biến thể ảnh tiếp theo (tỷ lệ khác, có chữ, màu khác) hoặc hỏi nếu cần thêm gì.
+    Ngoại lệ duy nhất: nếu Runtime Context có `[LOGO_OPTIMIZATION_NOTE]`, đặt đúng một dòng nhắc logo ở cuối phản hồi.
 
 ## Example
 
