@@ -673,6 +673,17 @@ class AgentLoop:
         lines: list[str] = []
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
 
+        # ── API Key Status — inform LLM so it never asks for /apikey ─────────
+        # metadata["user_api_key"] is set by TelegramMessagesMixin._handle_message()
+        # from keystore. Injecting this prevents the LLM from asking for a key that
+        # the user has already provided.
+        user_api_key_present = bool((metadata.get("user_api_key") or "").strip())
+        if user_api_key_present:
+            lines.append(
+                "[API_KEY_STATUS] Người dùng đã cấu hình Vidtory API Key thành công. "
+                "KHÔNG hỏi /apikey hay API Key nữa. Hệ thống sẵn sàng tạo ảnh/video ngay."
+            )
+
         # ── Auto-create minimal profile for new users (silent, no blocking) ──
         # New users get a minimal profile created automatically so they can
         # start working immediately without any onboarding questionnaire.

@@ -106,6 +106,35 @@ class TelegramMessagesMixin:
         except Exception as e:
             self.logger.warning("Failed to remember logo skip preference: {}", e)
 
+    @staticmethod
+    def _profile_needs_brand_prompt(profile: dict, generation_count: int) -> bool:
+        """Return True nếu cần hiển thị brand onboarding prompt trước khi tạo ảnh.
+
+        Logic nhắc lại thông minh:
+        - Nếu completeness >= 60% → không bao giờ nhắc (đủ dữ liệu).
+        - Lần 1 bỏ qua → nhắc lại ở generation thứ 3.
+        - Lần 2 bỏ qua → nhắc lại ở generation thứ 5.
+        - Lần 3+ bỏ qua → không nhắc nữa (user đã quyết định rõ ràng).
+        """
+        try:
+            from nanobot.utils.customer_profile import get_profile_completeness
+            completeness = get_profile_completeness(profile)
+            if completeness >= 60:
+                return False
+        except Exception:
+            pass
+
+        preferences = profile.get("preferences") or {}
+        skip_count = int(preferences.get("brandPromptSkipCount", 0))
+        if skip_count >= 3:
+            return False  # User đã bỏ qua 3 lần — không nhắc nữa
+
+        next_gen = int(preferences.get("brandPromptNextGeneration", 0))
+        if next_gen == 0:
+            # Chưa từng hỏi → hỏi ngay
+            return True
+        return generation_count >= next_gen
+
     async def _handle_onboarding_quick_reply(
         self,
         *,
@@ -117,6 +146,61 @@ class TelegramMessagesMixin:
         value = self._plain_user_text(content)
         text = ""
         buttons: list[list[str]] | None = None
+
+        # ── Brand Prompt: Đồng ý → bắt đầu onboarding ────────────────────────
+        if value == "dong y":
+            try:
+                from nanobot.utils.brand_intelligence import build_adaptive_onboarding_step
+                from nanobot.utils.customer_profile import load_profile, save_profile
+                uid_ob = sender_id.split("|")[0].strip()
+                profile_ob = load_profile(uid_ob) or {}
+                
+                # Check guard: only trigger if they actually need onboarding
+                if not self._profile_needs_brand_prompt(profile_ob, 999999) and profile_ob.get("onboarding", {}).get("status") != "minimal":
+                    return False
+                    
+                profile_ob.setdefault("onboarding", {})["status"] = "in_progress"
+                save_profile(uid_ob, profile_ob)
+                step = build_adaptive_onboarding_step(profile_ob)
+                if self._app:
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "🎨 *Thiết lập Brand Profile*\n\n"
+                            f"{step['prompt']}\n\n"
+                            "_Bạn có thể bấm nút hoặc nhập câu trả lời theo cách tự nhiên._"
+                        ),
+                        parse_mode="Markdown",
+                        reply_markup=self._build_keyboard(step["buttons"]) if step["buttons"] else None,
+                    )
+                return True
+            except Exception as e:
+                self.logger.warning("Brand prompt agree handler error: {}", e)
+
+        # ── Brand Prompt: Bỏ qua → nhắc lại sau theo generation count ────────
+        if value == "bo qua":
+            try:
+                from nanobot.utils.customer_profile import load_profile, save_profile
+                from nanobot.db.customer_db import get_db as _brand_skip_get_db
+                uid_skip = sender_id.split("|")[0].strip()
+                profile_skip = load_profile(uid_skip) or {}
+                prefs_skip = profile_skip.setdefault("preferences", {})
+                skip_count = int(prefs_skip.get("brandPromptSkipCount", 0)) + 1
+                prefs_skip["brandPromptSkipCount"] = skip_count
+                # Schedule next reminder: skip 1 → gen 3, skip 2 → gen 5
+                REMIND_AT = {1: 3, 2: 5}
+                current_gen = _brand_skip_get_db().get_generation_count(uid_skip)
+                remind_offset = REMIND_AT.get(skip_count, 0)
+                if remind_offset:
+                    prefs_skip["brandPromptNextGeneration"] = current_gen + remind_offset
+                else:
+                    # 3rd skip — mark as never remind again
+                    prefs_skip["brandPromptNextGeneration"] = 999999
+                save_profile(uid_skip, profile_skip)
+            except Exception as e:
+                self.logger.warning("Brand prompt skip handler error: {}", e)
+            # Do NOT return True — let the original request fall through to LLM
+            return False
 
         if value == "gui logo":
             # Set flag: next photo from this user = set as logo directly
@@ -685,6 +769,35 @@ class TelegramMessagesMixin:
                 return
         except Exception as e:
             self.logger.warning("Error in logo pre-flight check: {}", e)
+
+        # Guard: Brand Profile empty — prompt user to provide brand info before generating
+        # Only when creative request + profile is nearly empty (completeness < 60%).
+        # Reminder schedule: skip 1 → remind at gen+3; skip 2 → remind at gen+5;
+        # skip 3+ → stop reminding. Never blocks when completeness >= 60%.
+        try:
+            from nanobot.utils.customer_profile import load_profile, profile_exists
+            from nanobot.db.customer_db import get_db as _gen_count_db
+            uid_brand = sender_id.split("|")[0].strip()
+            if (
+                creative_request
+                and onboarding_status not in ("in_progress",)
+                and profile_exists(uid_brand)
+            ):
+                profile_brand = load_profile(uid_brand) or {}
+                gen_count = _gen_count_db().get_generation_count(uid_brand)
+                if self._profile_needs_brand_prompt(profile_brand, gen_count):
+                    brand_buttons = [["Đồng ý", "Bỏ qua"]]
+                    await message.reply_text(
+                        "📋 *Thông tin thương hiệu của bạn còn khá ít!*\n\n"
+                        "Cung cấp thêm thông tin giúp AI tạo ảnh *bám sát thương hiệu* hơn rất nhiều — "
+                        "tên thương hiệu, phong cách, lĩnh vực hoạt động, v.v.\n\n"
+                        "Bạn có muốn khai báo nhanh (~1 phút) để có kết quả tốt hơn không?",
+                        parse_mode="Markdown",
+                        reply_markup=self._build_keyboard(brand_buttons),
+                    )
+                    return
+        except Exception as e:
+            self.logger.warning("Error in brand profile pre-flight check: {}", e)
 
         if (
             getattr(self.config, "require_user_api_key", False)
