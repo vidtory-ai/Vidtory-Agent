@@ -119,11 +119,11 @@ class TelegramMessagesMixin:
         buttons: list[list[str]] | None = None
 
         if value == "gui logo":
-            text = (
-                "Bạn gửi ảnh logo trực tiếp vào đây nhé.\n\n"
-                "Mình sẽ đọc màu sắc chủ đạo, độ tương phản và concept thị giác từ logo, "
-                "sau đó đề xuất style reference phù hợp để bạn chọn nhanh."
-            )
+            # Set flag: next photo from this user = set as logo directly
+            pending_intent = getattr(self, "_pending_logo_intent", {})
+            pending_intent[sender_id] = time.monotonic() + 600
+            self._pending_logo_intent = pending_intent
+            text = "Bạn gửi ảnh logo vào đây, mình đặt làm logo thương hiệu luôn nhé."
         elif value in {"nhap website", "gui website", "dung website"}:
             text = (
                 "Bạn gửi link website của thương hiệu vào đây nhé.\n\n"
@@ -535,14 +535,38 @@ class TelegramMessagesMixin:
         has_text = bool(message.text or message.caption)
         is_reply = reply is not None
         if has_media and not has_text and not is_reply:
-            # Always ask the user what they want to do with the uploaded image.
-            # Never auto-set logo or auto-generate from a bare image upload,
-            # even during onboarding — user must explicitly choose their intent.
             doc = getattr(message, "document", None)
             is_document_file = (
                 doc is not None
                 and not (getattr(doc, "mime_type", "") or "").startswith(("image/", "video/"))
             )
+
+            # Fast-path: user is in "gui logo" intent flow → set photo as logo directly
+            pending_logo_intent = getattr(self, "_pending_logo_intent", {})
+            logo_intent_expires = pending_logo_intent.get(sender_id, 0)
+            if not is_document_file and logo_intent_expires > time.monotonic():
+                # Clear the intent
+                pending_logo_intent.pop(sender_id, None)
+                self._pending_logo_intent = pending_logo_intent
+                # Trigger logo save directly — inject as choice selection
+                pending_choices = getattr(self, "_pending_media_choices", {})
+                pending_choices[f"{str_chat_id}:{sender_id}"] = {
+                    "media": list(media_paths),
+                    "metadata": dict(metadata),
+                    "session_key": session_key,
+                    "expires_at": time.monotonic() + 60,
+                }
+                self._pending_media_choices = pending_choices
+                # Re-invoke handler with "Đặt logo" as the choice
+                await self._handle_message(
+                    sender_id=sender_id,
+                    chat_id=str_chat_id,
+                    content="Đặt logo",
+                    media=list(media_paths),
+                    metadata=metadata,
+                    session_key=session_key,
+                )
+                return
 
             if is_document_file:
                 file_name = getattr(doc, "file_name", "file") or "file"
@@ -586,10 +610,10 @@ class TelegramMessagesMixin:
                 self._pending_media_choices = pending
                 await message.reply_text(
                     "📷 *Ảnh đã nhận!*\n\n"
-                    "Bạn muốn tôi làm gì với ảnh này?",
+                    "Bạn muốn làm gì với ảnh này?",
                     parse_mode="Markdown",
                     reply_markup=self._build_keyboard([
-                        ["Đặt làm logo thương hiệu", "Chỉnh ảnh này"],
+                        ["Đặt logo", "Chỉnh ảnh này"],
                         ["Dùng làm tham chiếu"],
                     ]),
                 )
@@ -705,6 +729,7 @@ class TelegramMessagesMixin:
         if pending and float(pending.get("expires_at") or 0) < time.monotonic():
             pending = None
         choice_prompts = {
+            "đặt logo": "Đặt ảnh đính kèm làm logo thương hiệu và tự cập nhật phong cách theo logo mới.",
             "đặt làm logo": "Đặt ảnh đính kèm làm logo thương hiệu và tự cập nhật phong cách theo logo mới.",
             "đặt làm logo thương hiệu": "Đặt ảnh đính kèm làm logo thương hiệu và tự cập nhật phong cách theo logo mới.",
             "chỉnh ảnh này": "Tôi muốn chỉnh ảnh đính kèm. Hãy hỏi một câu ngắn kèm các nút gợi ý sát với ảnh.",
@@ -727,7 +752,7 @@ class TelegramMessagesMixin:
         # Bypass LLM — read file bytes from disk then call _upload_logo_bytes_to_cdn,
         # identical to the /setlogo Case 2 & 3 flow (most reliable path).
         plain_nc = self._plain_user_text(normalized_choice)
-        if plain_nc in ("dat lam logo thuong hieu", "dat lam logo") and pending is not None:
+        if plain_nc in ("dat logo", "dat lam logo thuong hieu", "dat lam logo") and pending is not None:
             media_to_save = list(pending.get("media") or []) + list(media or [])
             if media_to_save:
                 uid_save = sender_id.split("|")[0].strip()
