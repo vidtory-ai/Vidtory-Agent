@@ -506,6 +506,12 @@ class ImageGenerationTool(Tool, ContextAware):
     """Generate persistent image artifacts through the configured image provider."""
 
     config_key = "image_generation"
+    _MISSING_USER_VIDTORY_KEY = (
+        "Error: Vidtory API key is not configured. "
+        "Dùng /apikey YOUR_VIDTORY_KEY để cấu hình trước khi tạo ảnh."
+    )
+    _LOGO_REMINDER_FIRST_GENERATION = 3
+    _LOGO_REMINDER_BUTTONS = [["Có, tôi sẽ gửi logo", "Chưa, nhắc sau"]]
 
     @classmethod
     def config_cls(cls):
@@ -584,20 +590,103 @@ class ImageGenerationTool(Tool, ContextAware):
     def _provider_config(self) -> ProviderConfig | None:
         return self.provider_configs.get(self.config.provider)
 
-    def _provider_client(self) -> ImageGenerationProvider | None:
+    def _request_user_api_key(self) -> str:
         from nanobot.utils.context_vars import telegram_vidtory_api_key
-        user_key = telegram_vidtory_api_key.get()
+
+        user_key = (telegram_vidtory_api_key.get() or "").strip()
+        if user_key:
+            return user_key
+        ctx = _image_gen_request_ctx.get()
+        if ctx and isinstance(ctx.metadata, dict):
+            return str(ctx.metadata.get("user_api_key") or "").strip()
+        return ""
+
+    def _requires_telegram_user_vidtory_key(self) -> bool:
+        ctx = _image_gen_request_ctx.get()
+        return bool(
+            self.config.provider == "vidtory"
+            and ctx
+            and ctx.channel == "telegram"
+            and isinstance(ctx.metadata, dict)
+            and "user_api_key" in ctx.metadata
+        )
+
+    def _provider_client(self) -> ImageGenerationProvider | None:
+        user_key = self._request_user_api_key()
         provider = self._provider_config()
         cls = get_image_gen_provider(self.config.provider)
         if cls is None:
             return None
+        # SECURITY: Never fall back to system api_key.
+        # Every generation request MUST use the user's own Vidtory key.
+        # Passing None when user_key is absent lets the provider raise a
+        # descriptive error (missing_key_message) rather than silently
+        # consuming system quota.
         kwargs = {
-            "api_key": user_key or (provider.api_key if provider else None),
+            "api_key": user_key or None,
             "api_base": provider.api_base if provider else None,
             "extra_headers": provider.extra_headers if provider else None,
             "extra_body": provider.extra_body if provider else None,
         }
         return cls(**kwargs)
+
+    @staticmethod
+    def _profile_logo_url(profile: dict[str, Any] | None, user_id: str = "") -> str:
+        try:
+            if user_id:
+                from nanobot.db.customer_db import get_db
+
+                indexed = (get_db().get_logo_url(user_id) or "").strip()
+                if indexed:
+                    return indexed
+        except Exception:
+            pass
+        brand = (profile or {}).get("brand") if isinstance(profile, dict) else {}
+        return str((brand or {}).get("logoUrl") or "").strip()
+
+    async def _maybe_send_logo_reminder_after_generation(self, user_id: str) -> None:
+        if not user_id or not self._send_callback:
+            return
+        ctx = _image_gen_request_ctx.get()
+        if not ctx:
+            return
+        try:
+            from nanobot.db.customer_db import get_db
+            from nanobot.utils.customer_profile import load_profile, save_profile
+
+            profile = load_profile(user_id)
+            if not profile or self._profile_logo_url(profile, user_id):
+                return
+
+            preferences = profile.setdefault("preferences", {})
+            if preferences.get("logoReminderAwaitingUpload"):
+                return
+
+            count = get_db().get_generation_count(user_id)
+            next_at = int(
+                preferences.get("logoReminderNextGeneration")
+                or self._LOGO_REMINDER_FIRST_GENERATION
+            )
+            if count < next_at:
+                return
+
+            preferences["logoReminderAwaitingUpload"] = True
+            save_profile(user_id, profile)
+            await self._send_callback(
+                OutboundMessage(
+                    channel=ctx.channel,
+                    chat_id=ctx.chat_id,
+                    content=(
+                        "Bạn đã tạo vài sản phẩm khi chưa có logo thương hiệu.\n\n"
+                        "Nếu gửi logo, các ảnh tiếp theo sẽ bám màu sắc và nhận diện tốt hơn. "
+                        "Bạn muốn gửi logo ngay không?"
+                    ),
+                    metadata=dict(ctx.metadata or {}),
+                    buttons=self._LOGO_REMINDER_BUTTONS,
+                )
+            )
+        except Exception as exc:
+            logger.debug("Logo reminder check failed: {}", exc)
 
     def _resolve_reference_image(self, value: str) -> str:
         """Resolve a reference image path or URL.
@@ -771,6 +860,9 @@ class ImageGenerationTool(Tool, ContextAware):
                 )
                 return clarification
 
+        if self._requires_telegram_user_vidtory_key() and not self._request_user_api_key():
+            return self._MISSING_USER_VIDTORY_KEY
+
         client = self._provider_client()
         if client is None:
             return f"Error: unsupported image generation provider '{self.config.provider}'"
@@ -891,6 +983,7 @@ class ImageGenerationTool(Tool, ContextAware):
             # ── Record task + build design note ──────────────────────────
             task_id = ""
             design_note = ""
+            customer_user_id = ""
             try:
                 profile = telegram_customer_profile.get()
                 user_id = str(
@@ -919,6 +1012,7 @@ class ImageGenerationTool(Tool, ContextAware):
                     )
 
                     db = get_db()
+                    customer_user_id = user_id
                     db.create_task(
                         user_id,
                         task_id=task_id,
@@ -956,6 +1050,7 @@ class ImageGenerationTool(Tool, ContextAware):
                     )
                     await self._send_callback(outbound)
                     record_generated_media_delivery(delivery_paths)
+                    await self._maybe_send_logo_reminder_after_generation(customer_user_id)
                     logger.info(
                         "ImageGenerationTool: auto-sent {} image(s) to {}:{}",
                         len(delivery_paths), ctx.channel, ctx.chat_id,
@@ -967,7 +1062,9 @@ class ImageGenerationTool(Tool, ContextAware):
                         "next_step": (
                             "The image is already delivered. Do not send the artifact media again. "
                             "Reply with a short completion note, the design note, and exactly three "
-                            "numbered follow-up options formatted as 1️⃣, 2️⃣, 3️⃣ so the UI renders buttons."
+                            "numbered follow-up options formatted as 1️⃣, 2️⃣, 3️⃣ so the UI renders buttons. "
+                            "If the customer has no logo, end with one short line reminding them to upload a logo "
+                            "for better brand consistency."
                         ),
                     }
                     if task_id:
@@ -980,6 +1077,7 @@ class ImageGenerationTool(Tool, ContextAware):
                     # Fall through to returning artifacts for manual delivery.
 
             result = json.loads(generated_image_tool_result(artifacts))
+            await self._maybe_send_logo_reminder_after_generation(customer_user_id)
             if task_id:
                 result["task_id"] = task_id
             if design_note:

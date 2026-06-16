@@ -28,13 +28,14 @@ class TelegramMediaMixin:
         Args:
             image_source: A remote HTTP(S) URL or local file path of the logo.
             filename: Suggested filename (mime type is auto-detected from content).
-            api_key: User's Vidtory API key. Falls back to system config key.
+            api_key: User's Vidtory API key. Required — no system key fallback.
             user_id: Telegram user ID (used as customer_id in CDN metadata).
 
         Returns:
             Permanent CDN URL string on success, or None on any failure.
         """
-        # Resolve system API key from config (preferred — merchant key has upload rights)
+        # Use only the user-supplied key — no system key fallback.
+        # api_base is still read from config for endpoint routing.
         effective_key = api_key
         api_base = "https://bapi.vidtory.net"
 
@@ -44,14 +45,11 @@ class TelegramMediaMixin:
             provider_cfg = (cfg.providers or {}).get("vidtory") if cfg.providers else None
             if provider_cfg:
                 api_base = getattr(provider_cfg, "api_base", None) or api_base
-                sys_key = getattr(provider_cfg, "api_key", None) or ""
-                if sys_key:
-                    effective_key = sys_key
         except Exception:
             pass
 
         if not effective_key:
-            self.logger.debug("setlogo CDN upload skipped: no API key available")
+            self.logger.debug("setlogo CDN upload skipped: no user API key available")
             return None
 
         try:
@@ -88,7 +86,7 @@ class TelegramMediaMixin:
         Args:
             image_bytes: Raw image bytes downloaded from Telegram.
             mime_type: MIME type of the image (auto-detected from magic bytes when possible).
-            api_key: User's Vidtory API key. Falls back to system config key.
+            api_key: User's Vidtory API key. Required — no system key fallback.
             user_id: Telegram user ID (used as customer_id in CDN metadata).
 
         Returns:
@@ -109,7 +107,8 @@ class TelegramMediaMixin:
         }
         filename = ext_map.get(mime_type, "logo.jpg")
 
-        # Resolve system API key
+        # Use only the user-supplied key — no system key fallback.
+        # api_base is still read from config for endpoint routing.
         effective_key = api_key
         api_base = "https://bapi.vidtory.net"
 
@@ -119,14 +118,11 @@ class TelegramMediaMixin:
             provider_cfg = (cfg.providers or {}).get("vidtory") if cfg.providers else None
             if provider_cfg:
                 api_base = getattr(provider_cfg, "api_base", None) or api_base
-                sys_key = getattr(provider_cfg, "api_key", None) or ""
-                if sys_key:
-                    effective_key = sys_key
         except Exception:
             pass
 
         if not effective_key:
-            self.logger.debug("setlogo bytes upload skipped: no API key available")
+            self.logger.debug("setlogo bytes upload skipped: no user API key available")
             return None
 
         try:
