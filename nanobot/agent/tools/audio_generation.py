@@ -118,9 +118,11 @@ class AudioGenerationTool(Tool, ContextAware):
         )
 
     def _provider_client(self) -> VidtoryAudioGenerationClient:
-        from nanobot.utils.context_vars import telegram_vidtory_api_key
-        user_key = telegram_vidtory_api_key.get()
-        api_key = user_key or (self.provider_config.api_key if self.provider_config else None)
+        from nanobot.utils.context_vars import effective_vidtory_api_key
+
+        api_key = effective_vidtory_api_key(
+            self.provider_config.api_key if self.provider_config else None
+        )
         api_base = self.provider_config.api_base if self.provider_config else None
         return VidtoryAudioGenerationClient(
             api_key=api_key,
