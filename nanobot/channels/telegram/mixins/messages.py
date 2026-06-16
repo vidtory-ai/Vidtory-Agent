@@ -551,6 +551,8 @@ class TelegramMessagesMixin:
                 # Clear the intent
                 pending_logo_intent.pop(sender_id, None)
                 self._pending_logo_intent = pending_logo_intent
+                # Show typing indicator while processing
+                self._start_typing(str_chat_id)
                 # Trigger logo save directly — inject as choice selection
                 pending_choices = getattr(self, "_pending_media_choices", {})
                 pending_choices[f"{str_chat_id}:{sender_id}"] = {
@@ -758,6 +760,8 @@ class TelegramMessagesMixin:
         if plain_nc in ("dat logo", "dat lam logo thuong hieu", "dat lam logo") and pending is not None:
             media_to_save = list(pending.get("media") or []) + list(media or [])
             if media_to_save:
+                # Show typing while processing logo upload
+                self._start_typing(chat_id)
                 uid_save = sender_id.split("|")[0].strip()
                 key_save = self.keystore.get_key(sender_id)
                 # Guard: API key required to upload to Vidtory CDN
@@ -767,13 +771,13 @@ class TelegramMessagesMixin:
                             await self._app.bot.send_message(
                                 chat_id=chat_id,
                                 text=(
-                                    "🔐 *Cần kết nối Vidtory API Key để lưu logo*\n\n"
-                                    "Logo cần được lưu trên hệ thống Vidtory để tự động áp dụng vào mỗi ảnh tạo ra.\n\n"
-                                    "*Cách thiết lập nhanh:*\n"
+                                    "🔐 *Để lưu logo vào hồ sơ thương hiệu, bạn cần kết nối tài khoản Vidtory.*\n\n"
+                                    "Sau khi kết nối, logo sẽ tự động xuất hiện trên mọi ảnh tạo ra.\n\n"
+                                    "*Thiết lập chỉ mất 1 phút:*\n"
                                     "1️⃣ Vào https://app.vidtory.net/settings/api\n"
-                                    "2️⃣ Sao chép API Key\n"
+                                    "2️⃣ Sao chép key\n"
                                     "3️⃣ Gửi: `/apikey YOUR_KEY`\n\n"
-                                    "_Sau khi kết nối xong, gửi lại ảnh logo và chọn_ *Đặt làm logo thương hiệu* _là xong._"
+                                    "_Gửi lại logo ngay sau khi hoàn tất là xong._"
                                 ),
                                 parse_mode="Markdown",
                                 disable_web_page_preview=True,
