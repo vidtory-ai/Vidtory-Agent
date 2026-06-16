@@ -53,11 +53,49 @@ class TelegramCallbacksMixin:
             return
         if not self.is_allowed(sender_id):
             return
-        if getattr(self.config, "require_user_api_key", False):
-            if not self.keystore.get_key(sender_id):
-                await query.answer("Vui lòng cấu hình API Key trước bằng lệnh /apikey", show_alert=True)
-                return
         button_label = query.data or ""
+        plain_button = self._plain_user_text(button_label)
+        requires_key = getattr(self.config, "require_user_api_key", False)
+        if (
+            requires_key
+            and not self.keystore.get_key(sender_id)
+            and "tao khong can logo" in plain_button
+        ):
+            self._remember_logo_prompt_skipped(sender_id.split("|")[0].strip())
+            await query.answer()
+            if query.message:
+                with suppress(Exception):
+                    await query.message.edit_reply_markup(reply_markup=None)
+                await self._reply_api_key_required(query.message)
+            return
+        if (
+            requires_key
+            and not self.keystore.get_key(sender_id)
+            and self._is_creative_generation_request(button_label)
+        ):
+            await query.answer(
+                "Brand Profile đã sẵn sàng. Hãy cấu hình API Key trước khi tạo sản phẩm.",
+                show_alert=True,
+            )
+            return
+        keyless_setup_buttons = {
+            "them logo ngay",
+            "gui logo",
+            "nhap website",
+            "gui website",
+            "dung website",
+            "chua co logo",
+            "khong co logo",
+        }
+        if (
+            self._api_key_required_now(sender_id)
+            and plain_button not in keyless_setup_buttons
+        ):
+            await query.answer(
+                "Brand Profile đã sẵn sàng. Hãy cấu hình API Key trước khi tạo sản phẩm.",
+                show_alert=True,
+            )
+            return
         await query.answer()
         if query.message:
             with suppress(Exception):

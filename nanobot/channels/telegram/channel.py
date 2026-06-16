@@ -62,7 +62,8 @@ class TelegramChannel(
         BotCommand("setbrand", "Update a brand field: /setbrand style luxury"),
         BotCommand("setlogo", "Set or change your brand logo"),
         BotCommand("new", "Start a new conversation"),
-        BotCommand("clear", "Delete all your data and API key"),
+        BotCommand("clearkey", "Delete only your Vidtory API key"),
+        BotCommand("clearall", "Delete all your data and API key"),
         BotCommand("stop", "Stop the current task"),
         BotCommand("status", "Show bot status and model info"),
         BotCommand("model", "Switch AI model preset"),
@@ -169,7 +170,7 @@ class TelegramChannel(
         # API key management commands (multi-user mode)
         self._app.add_handler(
             MessageHandler(
-                filters.Regex(r"^/(apikey|mykey|clear|credits|brand|setbrand|setlogo|profile)(?:@\w+)?(?:\s+.*)?$"),
+                filters.Regex(r"^/(apikey|mykey|clearkey|clearall|credits|brand|setbrand|setlogo|profile)(?:@\w+)?(?:\s+.*)?$"),
                 self._on_api_key_management,
             )
         )

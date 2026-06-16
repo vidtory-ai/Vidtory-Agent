@@ -449,6 +449,8 @@ class CustomerDatabase:
             conn.execute("DELETE FROM api_keys WHERE user_id = ?", (uid,))
             conn.execute("DELETE FROM feedback WHERE user_id = ?", (uid,))
             conn.execute("DELETE FROM generation_history WHERE user_id = ?", (uid,))
+            conn.execute("DELETE FROM brand_memory WHERE user_id = ?", (uid,))
+            conn.execute("DELETE FROM generation_tasks WHERE user_id = ?", (uid,))
         logger.info("All data deleted for user {}", uid)
 
     def list_users(self) -> list[dict[str, Any]]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import unicodedata
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,125 @@ class TelegramMessagesMixin:
         if content == "/dream_restore" or content.startswith("/dream_restore "):
             return content.replace("/dream_restore", "/dream-restore", 1)
         return content
+
+    @staticmethod
+    def _plain_user_text(text: str) -> str:
+        normalized = unicodedata.normalize("NFD", text.lower())
+        without_marks = "".join(
+            char for char in normalized if unicodedata.category(char) != "Mn"
+        )
+        return " ".join(without_marks.split())
+
+    @classmethod
+    def _is_logo_skip_request(cls, text: str) -> bool:
+        value = cls._plain_user_text(text)
+        return any(
+            phrase in value
+            for phrase in (
+                "khong co logo",
+                "bo qua logo",
+                "khong can logo",
+                "skip logo",
+                "no logo",
+                "tao khong can logo",
+            )
+        )
+
+    @classmethod
+    def _is_creative_generation_request(cls, text: str) -> bool:
+        value = cls._plain_user_text(text)
+        if not value:
+            return False
+        if "tao khong can logo" in value:
+            return True
+        generation_terms = ("tao", "ve", "thiet ke", "lam", "generate")
+        output_terms = (
+            "anh",
+            "hinh",
+            "poster",
+            "banner",
+            "quang cao",
+            "creative",
+            "visual",
+            "san pham",
+            "thumbnail",
+            "cover",
+            "flyer",
+            "story",
+            "reels",
+        )
+        return any(term in value for term in generation_terms) and any(
+            term in value for term in output_terms
+        )
+
+    def _remember_logo_prompt_skipped(self, uid: str) -> None:
+        try:
+            from nanobot.utils.customer_profile import load_profile, save_profile
+
+            profile = load_profile(uid)
+            if not profile:
+                return
+            profile.setdefault("preferences", {})["logoPromptSkipped"] = True
+            save_profile(uid, profile)
+        except Exception as e:
+            self.logger.warning("Failed to remember logo skip preference: {}", e)
+
+    async def _handle_onboarding_quick_reply(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        sender_id: str,
+        reply_message=None,
+    ) -> bool:
+        value = self._plain_user_text(content)
+        text = ""
+        buttons: list[list[str]] | None = None
+
+        if value == "gui logo":
+            text = (
+                "Bạn gửi ảnh logo trực tiếp vào đây nhé.\n\n"
+                "Mình sẽ đọc màu sắc chủ đạo, độ tương phản và concept thị giác từ logo, "
+                "sau đó đề xuất style reference phù hợp để bạn chọn nhanh."
+            )
+        elif value in {"nhap website", "gui website", "dung website"}:
+            text = (
+                "Bạn gửi link website của thương hiệu vào đây nhé.\n\n"
+                "Ví dụ:\n"
+                "• https://vidtory.ai\n\n"
+                "Mình sẽ dựa vào website để nhận diện:\n"
+                "• tên thương hiệu\n"
+                "• màu sắc chính\n"
+                "• phong cách hình ảnh\n"
+                "• mô tả ngắn về lĩnh vực hoạt động\n\n"
+                "Bạn gửi URL website đi, mình xem cho."
+            )
+        elif value in {"chua co logo", "khong co logo"}:
+            self._remember_logo_prompt_skipped(sender_id.split("|")[0].strip())
+            text = (
+                "Không sao, mình vẫn có thể thiết lập gu thiết kế trước.\n\n"
+                "Bạn chọn một style reference gần nhất nhé:\n"
+                "1. Clean Premium - tối giản, cao cấp, sạch và dễ dùng.\n"
+                "2. Bold Performance - nổi bật, mạnh, hợp quảng cáo chuyển đổi.\n"
+                "3. Editorial Fashion - giàu cảm xúc, có chất biên tập và nghệ thuật.\n\n"
+                "Sau này khi có logo, bạn gửi thêm để hệ thống bám nhận diện tốt hơn."
+            )
+            buttons = [["Clean Premium", "Bold Performance", "Editorial Fashion"]]
+        else:
+            return False
+
+        reply_markup = self._build_keyboard(buttons) if buttons else None
+        if reply_message is not None:
+            await reply_message.reply_text(text, reply_markup=reply_markup)
+            return True
+        if self._app:
+            await self._app.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=reply_markup,
+            )
+            return True
+        return False
 
     @staticmethod
     def _sender_id(user) -> str:
@@ -302,18 +422,6 @@ class TelegramMessagesMixin:
                             reply_markup=reply_markup,
                         )
                     return
-                else:
-                    await message.reply_text(
-                        "🔑 *Bạn chưa có Vidtory API Key.*\n\n"
-                        "*Cách lấy API Key:*\n"
-                        "1\u20e3 Truy cập: https://app.vidtory.net/settings/api\n"
-                        "2\u20e3 Đăng nhập và tạo/copy API Key\n"
-                        "3\u20e3 Gửi lệnh: `/apikey YOUR_API_KEY`\n\n"
-                        "_Chỉ cần thực hiện một lần duy nhất!_",
-                        parse_mode="Markdown",
-                        disable_web_page_preview=True,
-                    )
-                    return
         else:
             # Even when require_user_api_key=False, auto-detect and save bare
             # Vidtory API keys so the user doesn't have to use /apikey explicitly.
@@ -404,6 +512,14 @@ class TelegramMessagesMixin:
         metadata["reply_media"] = list(reply_media)
         metadata["current_media"] = list(current_media_paths)
         session_key = self._derive_topic_session_key(message)
+
+        if await self._handle_onboarding_quick_reply(
+            chat_id=str_chat_id,
+            content=content,
+            sender_id=sender_id,
+            reply_message=message,
+        ):
+            return
 
         # Telegram media groups: buffer briefly, forward as one aggregated turn.
         if media_group_id := getattr(message, "media_group_id", None):
@@ -500,27 +616,22 @@ class TelegramMessagesMixin:
                     )
                 return
 
+        creative_request = self._is_creative_generation_request(content)
+        onboarding_status = "none"
+
         # Guard: New user onboarding prompt
         try:
             from nanobot.utils.customer_profile import get_onboarding_status
             uid = sender_id.split("|")[0].strip()
-            if get_onboarding_status(uid) == "none":
-                raw_text = (message.text or "").strip().lower()
-                # If user hasn't made a choice yet, show the prompt and stop processing
-                if raw_text not in ("dùng ngay", "bỏ qua, dùng ngay", "bắt đầu khai báo", "khai báo thông tin"):
-                    buttons = [
-                        ["Bắt đầu khai báo", "Dùng ngay"]
-                    ]
-                    reply_markup = self._build_keyboard(buttons)
-                    await message.reply_text(
-                        "👋 *Chào mừng bạn đến với Vidtory Agent!*\n\n"
-                        "Để tôi có thể tạo ra hình ảnh và video bám sát nhận diện thương hiệu của bạn, "
-                        "chúng ta nên thực hiện một bài khai báo ngắn (khoảng 3 câu hỏi).\n\n"
-                        "Bạn muốn khai báo ngay, hay bỏ qua để dùng thử profile cơ bản?",
-                        parse_mode="Markdown",
-                        reply_markup=reply_markup
-                    )
-                    return
+            status = get_onboarding_status(uid)
+            onboarding_status = status
+            if status == "none" or (
+                status == "minimal"
+                and not self.keystore.get_key(sender_id)
+                and not creative_request
+            ):
+                await self._begin_onboarding(message, user)
+                return
         except Exception as e:
             self.logger.warning("Error checking onboarding status for prompt: {}", e)
 
@@ -528,32 +639,25 @@ class TelegramMessagesMixin:
         # When user asks to create advertising/promotional content but has no logo set,
         # prompt them to add a logo first (or explicitly skip) before proceeding.
         try:
-            from nanobot.utils.customer_profile import get_logo_url, profile_exists
+            from nanobot.utils.customer_profile import (
+                get_logo_url,
+                get_onboarding_status,
+                load_profile,
+                profile_exists,
+            )
             uid_logo = sender_id.split("|")[0].strip()
-            raw_req = (message.text or message.caption or "").strip().lower()
-            _AD_KEYWORDS = (
-                # Quảng cáo / marketing
-                "quảng cáo", "quảng bá", "banner", "poster", "flyer", "truyền thông",
-                "marketing", "khuyến mãi", "sale", "promotion", "advertis",
-                "social media", "facebook ads", "instagram", "thumbnail", "cover", "landing",
-                # Thương hiệu / sản phẩm
-                "sản phẩm", "thương hiệu", "brand", "nhãn hàng",
-                # Sự kiện / tổ chức
-                "sự kiện", "tuyển sinh", "vinh danh", "tri ân", "kỷ niệm", "chào mừng",
-                "lễ tốt nghiệp", "hội nghị", "hội thảo", "khai giảng", "bế giảng",
-                "giải thưởng", "thành tích", "chương trình", "hoạt động",
-                # Tổ chức / trường học
-                "trường", "cục", "phòng", "viện", "nhà trường", "nhà máy", "công ty",
-            )
-            _LOGO_SKIP_PHRASES = (
-                "không có logo", "bỏ qua logo", "không cần logo",
-                "skip logo", "no logo", "tạo không cần logo",
-            )
-            is_ad_request = any(kw in raw_req for kw in _AD_KEYWORDS)
-            user_skipping_logo = any(kw in raw_req for kw in _LOGO_SKIP_PHRASES)
+            raw_req = (message.text or message.caption or "").strip()
+            user_skipping_logo = self._is_logo_skip_request(raw_req)
+            if user_skipping_logo:
+                self._remember_logo_prompt_skipped(uid_logo)
+            profile = load_profile(uid_logo) or {}
+            preferences = profile.get("preferences") if isinstance(profile, dict) else {}
+            logo_prompt_skipped = bool((preferences or {}).get("logoPromptSkipped"))
             if (
-                is_ad_request
+                creative_request
                 and not user_skipping_logo
+                and not logo_prompt_skipped
+                and get_onboarding_status(uid_logo) != "in_progress"
                 and profile_exists(uid_logo)
                 and not get_logo_url(uid_logo)
             ):
@@ -572,6 +676,15 @@ class TelegramMessagesMixin:
                 return
         except Exception as e:
             self.logger.warning("Error in logo pre-flight check: {}", e)
+
+        if (
+            getattr(self.config, "require_user_api_key", False)
+            and not self.keystore.get_key(sender_id)
+            and onboarding_status != "in_progress"
+            and (creative_request or self._api_key_required_now(sender_id))
+        ):
+            await self._reply_api_key_required(message)
+            return
 
         # Start typing indicator before processing
         self._start_typing(str_chat_id)
@@ -598,6 +711,14 @@ class TelegramMessagesMixin:
         is_dm: bool = False,
     ) -> None:
         metadata = dict(metadata or {})
+
+        if await self._handle_onboarding_quick_reply(
+            chat_id=chat_id,
+            content=content,
+            sender_id=sender_id,
+        ):
+            self._stop_typing(chat_id)
+            return
 
         pending_choices = getattr(self, "_pending_media_choices", {})
         pending = pending_choices.pop(f"{chat_id}:{sender_id}", None)
@@ -645,6 +766,7 @@ class TelegramMessagesMixin:
             return
         if _raw_content in ("\u23e9 t\u1ea1o kh\u00f4ng c\u1ea7n logo", "t\u1ea1o kh\u00f4ng c\u1ea7n logo"):
             # User explicitly skips logo — pass through with a hint so LLM knows
+            self._remember_logo_prompt_skipped(sender_id.split("|")[0].strip())
             metadata["logo_skipped"] = True
             content = content + "\n[Người dùng chọn tạo ảnh không cần logo thương hiệu]"
 

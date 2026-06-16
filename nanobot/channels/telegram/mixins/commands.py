@@ -13,6 +13,63 @@ if TYPE_CHECKING:
     from nanobot.channels.telegram.channel import TelegramChannel
 
 class TelegramCommandsMixin:
+    def _api_key_required_now(self, sender_id: str) -> bool:
+        """Require a user key only after the free onboarding flow."""
+        if not getattr(self.config, "require_user_api_key", False):
+            return False
+        if self.keystore.get_key(sender_id):
+            return False
+        try:
+            from nanobot.utils.customer_profile import get_onboarding_status
+
+            uid = sender_id.split("|")[0].strip()
+            return get_onboarding_status(uid) == "completed"
+        except Exception:
+            return True
+
+    async def _reply_api_key_required(self, message) -> None:
+        await message.reply_text(
+            "Brand Profile của bạn đã sẵn sàng.\n\n"
+            "Để tạo sản phẩm mới, vui lòng kết nối Vidtory API Key:\n"
+            "1. Mở https://app.vidtory.net/settings/api\n"
+            "2. Sao chép API Key\n"
+            "3. Gửi: /apikey YOUR_API_KEY\n\n"
+            "Key chỉ cần thiết khi bắt đầu tạo nội dung và được lưu riêng cho tài khoản của bạn.",
+            disable_web_page_preview=True,
+        )
+
+    async def _begin_onboarding(self, message, user) -> None:
+        """Create or resume the concise logo-first onboarding flow."""
+        from nanobot.utils.brand_intelligence import build_adaptive_onboarding_step
+        from nanobot.utils.customer_profile import (
+            create_minimal_profile,
+            get_onboarding_status,
+            load_profile,
+            save_profile,
+        )
+
+        uid = self._sender_id(user).split("|")[0].strip()
+        is_new = get_onboarding_status(uid) == "none"
+        profile = load_profile(uid)
+        if profile is None:
+            profile = create_minimal_profile(uid, username=user.username or "")
+        profile.setdefault("onboarding", {})["status"] = "in_progress"
+        profile["onboarding"]["currentStep"] = "visual_identity"
+        save_profile(uid, profile)
+
+        step = build_adaptive_onboarding_step(profile)
+        intro = (
+            f"Xin chào {user.first_name}, chào mừng bạn đến với Vidtory AI Designer.\n\n"
+            "Chỉ cần gửi logo, mình sẽ nhận diện màu sắc chủ đạo và đề xuất concept phù hợp. "
+            "Sau đó bạn chọn một style reference gần gu nhất; các thông tin khác có thể bổ sung dần."
+            if is_new
+            else "Chào mừng bạn quay lại. Mình đã giữ nguyên tiến độ thiết lập thương hiệu."
+        )
+        await message.reply_text(
+            f"{intro}\n\n{step['prompt']}",
+            reply_markup=self._build_keyboard(step["buttons"]) if step["buttons"] else None,
+        )
+
     async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /start command."""
         if not update.message or not update.effective_user:
@@ -24,54 +81,34 @@ class TelegramCommandsMixin:
             return
         await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
 
-        # When multi-user API key mode is enabled, guide new users to set up their key.
+        try:
+            from nanobot.utils.customer_profile import get_onboarding_status
+
+            status = get_onboarding_status(sender_id.split("|")[0].strip())
+        except Exception:
+            status = "none"
+
+        if status in {"none", "in_progress"} or (
+            status == "minimal" and not self.keystore.get_key(sender_id)
+        ):
+            await self._begin_onboarding(update.message, user)
+            return
+
+        if self._api_key_required_now(sender_id):
+            await self._reply_api_key_required(update.message)
+            return
+
         if getattr(self.config, "require_user_api_key", False):
-            key = self.keystore.get_key(sender_id)
-            if not key:
-                await update.message.reply_text(
-                    f"👋 *Xin chào {user.first_name}! Chào mừng bạn đến với Vidtory AI.*\n\n"
-                    "🤖 *Vidtory AI* là hệ thống trợ lý thiết kế tự động, đồng hành cùng doanh nghiệp và thương hiệu để tạo ra các ấn phẩm hình ảnh tiếp thị (ảnh sản phẩm, banner quảng cáo, bài viết mạng xã hội) đồng bộ thương hiệu chỉ trong vài giây.\n\n"
-                    "💡 **Giải pháp thiết kế từ Vidtory AI mang lại:**\n"
-                    "• *Đồng nhất thương hiệu:* Tự động nhận diện logo và màu sắc chủ đạo để áp dụng đồng bộ vào mọi ấn phẩm.\n"
-                    "• *Tối ưu hình ảnh tiếp thị:* Định hình phong cách thiết kế riêng biệt cho từng chiến dịch (Brand Marketing hoặc Fashion Studio).\n"
-                    "• *Nhanh chóng & Tiết kiệm:* Tạo ra hình ảnh chất lượng cao ngay lập tức mà không cần qua quy trình chỉnh sửa phức tạp.\n\n"
-                    "--- \n"
-                    "🔑 *Để bắt đầu trải nghiệm, vui lòng kết nối Vidtory API Key của bạn:*\n"
-                    "1. Truy cập: https://app.vidtory.net/settings/api\n"
-                    "2. Sao chép API Key của bạn\n"
-                    "3. Gửi lệnh: `/apikey YOUR_API_KEY` (Ví dụ: `/apikey vidtory_123...`)\n\n"
-                    "_Thiết lập này chỉ cần thực hiện một lần duy nhất và hoàn toàn bảo mật._",
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True,
-                )
-                return
             await update.message.reply_text(
-                f"👋 *Chào mừng quay trở lại, {user.first_name}!* Hệ thống thiết kế thông minh Vidtory AI đã sẵn sàng phục vụ bạn.\n\n"
-                "🚀 **Bạn muốn thực hiện công việc nào tiếp theo?**\n"
-                "• `/brand` - Xem và quản lý cấu hình thương hiệu (logo, phong cách).\n"
-                "• `/new` - Khởi tạo một phiên thiết kế hình ảnh mới.\n"
-                "• `/help` - Xem danh sách câu lệnh và hướng dẫn chi tiết.\n\n"
-                "Hãy gửi yêu cầu hoặc chọn lệnh để bắt đầu nhé!",
-                parse_mode="Markdown",
+                f"Chào mừng quay trở lại, {user.first_name}. "
+                "Vidtory AI Designer đã sẵn sàng.\n\n"
+                "Bạn có thể gửi brief mới, dùng /brand để xem Brand Profile "
+                "hoặc /new để bắt đầu một phiên thiết kế.",
             )
             return
 
-        buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
-        reply_markup = self._build_keyboard(buttons)
         await update.message.reply_text(
-            f"👋 *Xin chào {user.first_name}! Chào mừng bạn đến với Vidtory AI.*\n\n"
-            "🤖 *Vidtory AI* là hệ thống trợ lý thiết kế tự động, đồng hành cùng doanh nghiệp và thương hiệu để tạo ra các ấn phẩm hình ảnh tiếp thị (ảnh sản phẩm, banner quảng cáo, bài viết mạng xã hội) đồng bộ thương hiệu chỉ trong vài giây.\n\n"
-            "💡 **Giải pháp thiết kế từ Vidtory AI mang lại:**\n"
-            "• *Đồng nhất thương hiệu:* Tự động nhận diện logo và màu sắc chủ đạo để áp dụng đồng bộ vào mọi ấn phẩm.\n"
-            "• *Tối ưu hình ảnh tiếp thị:* Định hình phong cách thiết kế riêng biệt cho từng chiến dịch (Brand Marketing hoặc Fashion Studio).\n"
-            "• *Nhanh chóng & Tiết kiệm:* Tạo ra hình ảnh chất lượng cao ngay lập tức mà không cần qua quy trình chỉnh sửa phức tạp.\n\n"
-            "--- \n"
-            "🚀 **Hãy bắt đầu thiết lập nhanh:**\n"
-            "Bạn có thể thiết lập phong cách thương hiệu để AI hiểu chính xác định hướng thiết kế, hoặc trải nghiệm trực tiếp:\n\n"
-            "• Chọn **Bắt đầu khai báo** để thiết lập nhanh Brand Profile (~1 phút).\n"
-            "• Chọn **Dùng ngay** để trực tiếp gửi yêu cầu thiết kế của bạn.",
-            parse_mode="Markdown",
-            reply_markup=reply_markup,
+            f"Chào mừng quay trở lại, {user.first_name}. Vidtory AI Designer đã sẵn sàng."
         )
 
 
@@ -86,15 +123,9 @@ class TelegramCommandsMixin:
         await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
 
         # When multi-user mode is on and user has no key yet, remind them to set it up.
-        if getattr(self.config, "require_user_api_key", False):
-            if not self.keystore.get_key(sender_id):
-                await update.message.reply_text(
-                    "❌ Bạn chưa cấu hình API Key.\n"
-                    "Hãy dùng lệnh:\n`/apikey YOUR_API_KEY`\n\n"
-                    "Để bắt đầu sử dụng bot.",
-                    parse_mode="Markdown",
-                )
-                return
+        if self._api_key_required_now(sender_id):
+            await self._reply_api_key_required(update.message)
+            return
 
         await update.message.reply_text(build_help_text())
 
@@ -107,7 +138,7 @@ class TelegramCommandsMixin:
         return bool(re.fullmatch(r'vidtory_[a-fA-F0-9]{64,}', stripped))
 
     async def _on_api_key_management(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Dedicated handler for /apikey, /mykey, /clear, /credits, /profile commands."""
+        """Dedicated handler for API key and brand profile management commands."""
         if not update.effective_user:
             return
         if not self.is_allowed(self._sender_id(update.effective_user)):
@@ -232,7 +263,15 @@ class TelegramCommandsMixin:
                 )
             return True
 
-        elif cmd == "/clear":
+        elif cmd == "/clearkey":
+            self.keystore.remove_key(sender_id)
+            await message.reply_text(
+                "✅ Đã xóa API key của bạn.\n"
+                "Brand Profile vẫn được giữ nguyên, nên khi kết nối key mới bạn có thể tiếp tục làm việc ngay."
+            )
+            return True
+
+        elif cmd == "/clearall":
             self.keystore.remove_key(sender_id)
 
             # Delete customer profile from DB
@@ -701,16 +740,8 @@ class TelegramCommandsMixin:
         if getattr(self.config, "require_user_api_key", False):
             if await self._handle_api_key_commands(update):
                 return
-            if not self.keystore.get_key(sender_id):
-                await message.reply_text(
-                    "🔑 *Bạn chưa cấu hình Vidtory API Key.*\n\n"
-                    "Để sử dụng bot, vui lòng:\n"
-                    "1. Truy cập https://app.vidtory.net/settings/api\n"
-                    "2. Lấy API Key của bạn\n"
-                    "3. Gửi: `/apikey YOUR_API_KEY`",
-                    parse_mode="Markdown",
-                    disable_web_page_preview=True,
-                )
+            if self._api_key_required_now(sender_id):
+                await self._reply_api_key_required(message)
                 return
 
         self._remember_thread_context(message)
