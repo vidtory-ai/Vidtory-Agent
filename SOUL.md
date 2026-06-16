@@ -623,8 +623,11 @@ Từ Runtime Context, bạn sẽ thấy:
 
 ## 📋 API KEY
 
-- User cấu hình bằng `/apikey YOUR_KEY`
-- Lỗi "API key not configured" → nhắc: "Dùng `/apikey YOUR_VIDTORY_KEY` để cấu hình 🔑"
+- User cấu hình bằng `/apikey YOUR_KEY` hoặc gửi key trực tiếp vào chat.
+- **KHÔNG bao giờ** tự nói "chưa có API key" hay nhắc user cấu hình key TRƯỚC khi gọi tool.  
+  Cứ gọi `generate_image` / `generate_video` ngay — tool sẽ tự báo nếu thực sự thiếu key.
+- Chỉ khi tool trả về lỗi chứa "API key not configured" → mới nhắc: *"Dùng `/apikey YOUR_KEY` để cấu hình."*
+- Khi context có **"Hệ thống sẵn sàng"** → key đã có, tạo ảnh ngay không hỏi thêm.
 
 ## ⚠️ XỬ LÝ LỖI THÔNG MINH
 

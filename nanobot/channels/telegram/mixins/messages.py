@@ -403,23 +403,17 @@ class TelegramMessagesMixin:
                         pass
                     if has_profile:
                         await message.reply_text(
-                            "✅ *Đã lưu Vidtory API Key thành công!*\n"
-                            "Bot đang sẵn sàng. Gõ /help để xem danh sách lệnh.\n\n"
-                            "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
+                            "✅ *API Key đã được cấu hình. Hệ thống sẵn sàng.*\n"
+                            "Gửi yêu cầu tạo ảnh hoặc video bất kỳ lúc nào.\n\n"
+                            "_(Để bảo mật, tin nhắn chứa API Key đã được xóa tự động)_",
                             parse_mode="Markdown"
                         )
                     else:
-                        buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
-                        reply_markup = self._build_keyboard(buttons)
                         await message.reply_text(
-                            "✅ *Đã lưu Vidtory API Key thành công!*\n\n"
-                            "🎯 Để bot tạo nội dung *bám sát thương hiệu* của bạn, "
-                            "mình cần biết thêm một chút về brand.\n\n"
-                            "Bạn muốn thiết lập brand profile ngay không?\n"
-                            "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_\n\n"
-                            "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
+                            "✅ *API Key đã được cấu hình. Hệ thống sẵn sàng.*\n\n"
+                            "Gửi yêu cầu tạo ảnh, video hoặc gửi logo thương hiệu để bắt đầu.\n\n"
+                            "_(Để bảo mật, tin nhắn chứa API Key đã được xóa tự động)_",
                             parse_mode="Markdown",
-                            reply_markup=reply_markup,
                         )
                     return
         else:
@@ -438,23 +432,17 @@ class TelegramMessagesMixin:
                     pass
                 if has_profile:
                     await message.reply_text(
-                        "✅ *Đã lưu Vidtory API Key thành công!*\n"
-                        "Bot đang sẵn sàng phục vụ bạn.\n\n"
-                        "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
+                        "✅ *API Key đã được cấu hình. Hệ thống sẵn sàng.*\n"
+                        "Gửi yêu cầu tạo ảnh hoặc video bất kỳ lúc nào.\n\n"
+                        "_(Để bảo mật, tin nhắn chứa API Key đã được xóa tự động)_",
                         parse_mode="Markdown"
                     )
                 else:
-                    buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
-                    reply_markup = self._build_keyboard(buttons)
                     await message.reply_text(
-                        "✅ *Đã lưu Vidtory API Key thành công!*\n\n"
-                        "🎯 Để bot tạo nội dung *bám sát thương hiệu* của bạn, "
-                        "mình cần biết thêm một chút về brand.\n\n"
-                        "Bạn muốn thiết lập brand profile ngay không?\n"
-                        "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_\n\n"
-                        "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
+                        "✅ *API Key đã được cấu hình. Hệ thống sẵn sàng.*\n\n"
+                        "Gửi yêu cầu tạo ảnh, video hoặc gửi logo thương hiệu để bắt đầu.\n\n"
+                        "_(Để bảo mật, tin nhắn chứa API Key đã được xóa tự động)_",
                         parse_mode="Markdown",
-                        reply_markup=reply_markup,
                     )
                 return
 
@@ -734,6 +722,98 @@ class TelegramMessagesMixin:
             metadata["current_media"] = list(media)
             session_key = session_key or pending.get("session_key")
             content = choice_prompts.get(normalized_choice, content)
+
+        # --- Direct logo save: when user explicitly selects "Đặt làm logo thương hiệu" ---
+        # Bypass LLM — call the CDN upload + DB save path directly, identical to /setlogo.
+        plain_nc = self._plain_user_text(normalized_choice)
+        if plain_nc in ("dat lam logo thuong hieu", "dat lam logo") and pending is not None:
+            media_to_save = list(pending.get("media") or []) + list(media or [])
+            if media_to_save:
+                uid_save = sender_id.split("|")[0].strip()
+                key_save = self.keystore.get_key(sender_id) or ""
+                cdn_url_save = await self._upload_image_to_vidtory_cdn(
+                    media_to_save[0],
+                    api_key=key_save,
+                    user_id=uid_save,
+                )
+                if cdn_url_save:
+                    try:
+                        from nanobot.utils.customer_profile import set_logo_and_refresh_identity
+                        await set_logo_and_refresh_identity(uid_save, cdn_url_save)
+                    except Exception as _e:
+                        self.logger.warning("set_logo_and_refresh_identity failed: {}", _e)
+                    if self._app:
+                        with suppress(Exception):
+                            await self._app.bot.send_message(
+                                chat_id=chat_id,
+                                text="✅ *Logo đã được lưu thành công!*\nMọi ảnh tạo tiếp theo sẽ tự động chèn logo này.",
+                                parse_mode="Markdown",
+                            )
+                else:
+                    if self._app:
+                        with suppress(Exception):
+                            await self._app.bot.send_message(
+                                chat_id=chat_id,
+                                text=(
+                                    "⚠️ *Không thể upload logo lên hệ thống.*\n\n"
+                                    "Bạn cần cấu hình Vidtory API Key trước:\n"
+                                    "`/apikey YOUR_VIDTORY_KEY`"
+                                ),
+                                parse_mode="Markdown",
+                            )
+            self._stop_typing(chat_id)
+            return
+
+        # --- Silent logo CDN upload for brand-profile update with image ---
+        # When user selects "Cập nhật thương hiệu" and the pending media is an IMAGE
+        # (not a document), upload that image to CDN and set it as logo BEFORE
+        # sending to LLM. This ensures the profile already has logo_url populated
+        # when the LLM processes the brand update, so it will never say
+        # "file logo gốc chưa upload được lên CDN".
+        if plain_nc == "cap nhat thuong hieu" and pending is not None:
+            image_media = [
+                p for p in (pending.get("media") or []) + list(media or [])
+                if p  # non-empty path
+            ]
+            # Only auto-set logo for image files (not PDFs/documents)
+            if image_media:
+                import mimetypes
+                first_mime = mimetypes.guess_type(image_media[0])[0] or ""
+                is_image = first_mime.startswith("image/") or image_media[0].lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".webp", ".gif")
+                )
+                if is_image:
+                    # Fire-and-forget: upload to CDN silently. Even if this fails,
+                    # we still proceed with the brand-profile LLM update.
+                    try:
+                        uid_logo_auto = sender_id.split("|")[0].strip()
+                        key_logo_auto = self.keystore.get_key(sender_id) or ""
+                        if key_logo_auto:
+                            cdn_url = await self._upload_image_to_vidtory_cdn(
+                                image_media[0],
+                                api_key=key_logo_auto,
+                                user_id=uid_logo_auto,
+                            )
+                            if cdn_url:
+                                from nanobot.utils.customer_profile import set_logo_and_refresh_identity
+                                await set_logo_and_refresh_identity(uid_logo_auto, cdn_url)
+                                self.logger.info(
+                                    "Auto-set logo from brand update image for {}: {}",
+                                    uid_logo_auto, cdn_url,
+                                )
+                                # Patch metadata so LLM gets up-to-date profile with logo_url
+                                try:
+                                    from nanobot.utils.customer_profile import load_profile
+                                    fresh_profile = load_profile(uid_logo_auto)
+                                    if fresh_profile:
+                                        metadata["customer_profile"] = fresh_profile
+                                except Exception:
+                                    pass
+                    except Exception as _logo_auto_exc:
+                        self.logger.debug(
+                            "Silent logo CDN upload on brand update failed (non-critical): {}",
+                            _logo_auto_exc,
+                        )
 
         # Handle logo pre-flight button responses
         _raw_content = content.strip().lower()
