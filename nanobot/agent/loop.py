@@ -683,6 +683,13 @@ class AgentLoop:
                 "[API_KEY_STATUS] Người dùng đã cấu hình Vidtory API Key thành công. "
                 "KHÔNG hỏi /apikey hay API Key nữa. Hệ thống sẵn sàng tạo ảnh/video ngay."
             )
+        else:
+            lines.append(
+                "[API_KEY_STATUS] Người dùng CHƯA có Vidtory API Key. "
+                "Bạn VẪN PHẢI lưu phong cách, màu sắc và thông tin từ logo/website vào brand profile bằng update_customer_profile. "
+                "CHỈ yêu cầu API Key khi user muốn tạo ảnh/video. Nhắc nhẹ: 'Mình đã lưu phong cách. Khi nào bạn có API key, mình sẽ hướng dẫn tải logo lên sau nhé'. "
+                "KHÔNG ĐƯỢC TỪ CHỐI LƯU PHONG CÁCH VÌ THIẾU API KEY."
+            )
 
         # ── Auto-create minimal profile for new users (silent, no blocking) ──
         # New users get a minimal profile created automatically so they can

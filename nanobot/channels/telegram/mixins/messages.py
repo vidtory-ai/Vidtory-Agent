@@ -781,7 +781,6 @@ class TelegramMessagesMixin:
             if (
                 creative_request
                 and onboarding_status not in ("in_progress",)
-                and profile_exists(uid_brand)
             ):
                 profile_brand = load_profile(uid_brand) or {}
                 gen_count = _gen_count_db().get_generation_count(uid_brand)
