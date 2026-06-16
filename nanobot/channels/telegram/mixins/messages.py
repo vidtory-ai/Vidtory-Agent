@@ -547,74 +547,66 @@ class TelegramMessagesMixin:
         has_text = bool(message.text or message.caption)
         is_reply = reply is not None
         if has_media and not has_text and not is_reply:
-            # Bypass this guard during onboarding since the user is expected to send a logo/signal
-            in_onboarding = False
-            try:
-                from nanobot.utils.customer_profile import get_onboarding_status
-                uid_check = sender_id.split("|")[0].strip()
-                in_onboarding = get_onboarding_status(uid_check) == "in_progress"
-            except Exception:
-                pass
+            # Always ask the user what they want to do with the uploaded image.
+            # Never auto-set logo or auto-generate from a bare image upload,
+            # even during onboarding — user must explicitly choose their intent.
+            doc = getattr(message, "document", None)
+            is_document_file = (
+                doc is not None
+                and not (getattr(doc, "mime_type", "") or "").startswith(("image/", "video/"))
+            )
 
-            if not in_onboarding:
-                # Determine if this is a document file (not image/video)
-                doc = getattr(message, "document", None)
-                is_document_file = (
-                    doc is not None
-                    and not (getattr(doc, "mime_type", "") or "").startswith(("image/", "video/"))
+            if is_document_file:
+                file_name = getattr(doc, "file_name", "file") or "file"
+
+                # Early rejection for blocked file types
+                from nanobot.utils.document_sanitizer import sanitize_document
+                if media_paths:
+                    scan = sanitize_document(media_paths[0])
+                    if scan.status == "blocked":
+                        await message.reply_text(
+                            scan.user_message,
+                            parse_mode="Markdown",
+                        )
+                        return
+
+                pending = getattr(self, "_pending_media_choices", {})
+                pending[f"{str_chat_id}:{sender_id}"] = {
+                    "media": list(media_paths),
+                    "metadata": dict(metadata),
+                    "session_key": session_key,
+                    "expires_at": time.monotonic() + 600,
+                }
+                self._pending_media_choices = pending
+                await message.reply_text(
+                    f"📄 *File đã nhận: `{file_name}`*\n\n"
+                    "Bạn muốn tôi dùng file này theo cách nào?",
+                    parse_mode="Markdown",
+                    reply_markup=self._build_keyboard([
+                        ["Cập nhật thương hiệu", "Dùng làm brief"],
+                        ["Đọc và tóm tắt"],
+                    ]),
                 )
+            else:
+                pending = getattr(self, "_pending_media_choices", {})
+                pending[f"{str_chat_id}:{sender_id}"] = {
+                    "media": list(media_paths),
+                    "metadata": dict(metadata),
+                    "session_key": session_key,
+                    "expires_at": time.monotonic() + 600,
+                }
+                self._pending_media_choices = pending
+                await message.reply_text(
+                    "📷 *Ảnh đã nhận!*\n\n"
+                    "Bạn muốn tôi làm gì với ảnh này?",
+                    parse_mode="Markdown",
+                    reply_markup=self._build_keyboard([
+                        ["Đặt làm logo thương hiệu", "Chỉnh ảnh này"],
+                        ["Dùng làm tham chiếu"],
+                    ]),
+                )
+            return
 
-                if is_document_file:
-                    file_name = getattr(doc, "file_name", "file") or "file"
-                    file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
-
-                    # Early rejection for blocked file types
-                    from nanobot.utils.document_sanitizer import sanitize_document
-                    if media_paths:
-                        scan = sanitize_document(media_paths[0])
-                        if scan.status == "blocked":
-                            await message.reply_text(
-                                scan.user_message,
-                                parse_mode="Markdown",
-                            )
-                            return
-
-                    pending = getattr(self, "_pending_media_choices", {})
-                    pending[f"{str_chat_id}:{sender_id}"] = {
-                        "media": list(media_paths),
-                        "metadata": dict(metadata),
-                        "session_key": session_key,
-                        "expires_at": time.monotonic() + 600,
-                    }
-                    self._pending_media_choices = pending
-                    await message.reply_text(
-                        f"📄 *File đã nhận: `{file_name}`*\n\n"
-                        "Bạn muốn tôi dùng file này theo cách nào?",
-                        parse_mode="Markdown",
-                        reply_markup=self._build_keyboard([
-                            ["Cập nhật thương hiệu", "Dùng làm brief"],
-                            ["Đọc và tóm tắt"],
-                        ]),
-                    )
-                else:
-                    pending = getattr(self, "_pending_media_choices", {})
-                    pending[f"{str_chat_id}:{sender_id}"] = {
-                        "media": list(media_paths),
-                        "metadata": dict(metadata),
-                        "session_key": session_key,
-                        "expires_at": time.monotonic() + 600,
-                    }
-                    self._pending_media_choices = pending
-                    await message.reply_text(
-                        "📷 *Ảnh đã nhận!*\n\n"
-                        "Bạn muốn tôi làm gì với ảnh này?",
-                        parse_mode="Markdown",
-                        reply_markup=self._build_keyboard([
-                            ["Đặt làm logo", "Chỉnh ảnh này"],
-                            ["Dùng làm tham chiếu"],
-                        ]),
-                    )
-                return
 
         creative_request = self._is_creative_generation_request(content)
         onboarding_status = "none"
@@ -726,6 +718,7 @@ class TelegramMessagesMixin:
             pending = None
         choice_prompts = {
             "đặt làm logo": "Đặt ảnh đính kèm làm logo thương hiệu và tự cập nhật phong cách theo logo mới.",
+            "đặt làm logo thương hiệu": "Đặt ảnh đính kèm làm logo thương hiệu và tự cập nhật phong cách theo logo mới.",
             "chỉnh ảnh này": "Tôi muốn chỉnh ảnh đính kèm. Hãy hỏi một câu ngắn kèm các nút gợi ý sát với ảnh.",
             "dùng làm tham chiếu": "Dùng ảnh đính kèm làm ảnh tham chiếu cho yêu cầu sáng tạo tiếp theo.",
             "cập nhật thương hiệu": "Đọc file đính kèm và cập nhật Brand Profile từ toàn bộ thông tin phù hợp.",

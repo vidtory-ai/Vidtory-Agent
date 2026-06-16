@@ -714,9 +714,28 @@ class AgentLoop:
         preferences = (
             profile.get("preferences") if isinstance(profile.get("preferences"), dict) else {}
         )
+        # Authoritative logo check: read from indexed DB column (set by /setlogo and set_logo_and_refresh_identity).
+        # profile JSON brand.logoUrl can be stale; DB is always up-to-date.
+        _uid_for_logo = str(
+            profile.get("telegramUserId") or profile.get("telegram_user_id") or ""
+        ).strip().split("|")[0]
+        _has_logo = False
+        try:
+            from nanobot.utils.customer_profile import get_logo_url as _get_logo_url
+            _has_logo = bool(_get_logo_url(_uid_for_logo)) if _uid_for_logo else bool(str(brand.get("logoUrl") or "").strip())
+        except Exception:
+            _has_logo = bool(str(brand.get("logoUrl") or "").strip())
+        if (
+            not preferences.get("logoPromptSkipped")
+            and not _has_logo
+        ):
+            lines.append(
+                "[LOGO_OPTIMIZATION_NOTE] Khi đưa gợi ý hướng thiết kế hoặc vừa gửi kết quả tạo ảnh/video, "
+                "đặt đúng một dòng cuối: Bạn có thể gửi logo bất cứ lúc nào để kết quả bám nhận diện thương hiệu tốt hơn."
+            )
         if (
             preferences.get("logoPromptSkipped")
-            and not str(brand.get("logoUrl") or "").strip()
+            and not _has_logo
         ):
             lines.append(
                 "[LOGO_OPTIMIZATION_NOTE] Nếu vừa gửi kết quả tạo ảnh/video, đặt đúng một dòng cuối: "
@@ -844,12 +863,21 @@ class AgentLoop:
         Returns (final_content, tools_used, messages, stop_reason, had_injections).
         """
         from nanobot.utils.context_vars import (
+            telegram_requires_user_vidtory_api_key,
             telegram_user_api_key,
             telegram_user_workspace,
             telegram_vidtory_api_key,
         )
         # telegram_vidtory_api_key: Vidtory merchant key for image/video/audio tools
         # telegram_user_api_key: intentionally left empty so LLM providers use system keys
+        requires_user_vidtory_key = bool(
+            channel == "telegram"
+            and metadata is not None
+            and "user_api_key" in metadata
+        )
+        token_requires_vidtory_key = telegram_requires_user_vidtory_api_key.set(
+            requires_user_vidtory_key
+        )
         token_vidtory_key = telegram_vidtory_api_key.set(metadata.get("user_api_key", "") if metadata else "")
         token_key = telegram_user_api_key.set("")  # LLM always uses system config keys
 
@@ -962,6 +990,7 @@ class AgentLoop:
         finally:
             telegram_user_api_key.reset(token_key)
             telegram_vidtory_api_key.reset(token_vidtory_key)
+            telegram_requires_user_vidtory_api_key.reset(token_requires_vidtory_key)
             telegram_user_workspace.reset(token_ws)
 
 
