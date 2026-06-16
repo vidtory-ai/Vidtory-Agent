@@ -1145,13 +1145,15 @@ class ImageGenerationTool(Tool, ContextAware):
             return None
         
         # Check 1: Did the user upload/reply with a media file in the current request?
-        media = ctx.metadata.get("media")
-        if isinstance(media, list) and media:
-            # Filter for files that exist
-            valid_media = [m for m in media if m and (m.startswith(("http://", "https://")) or Path(m).is_file())]
-            if valid_media:
-                logger.info("Found reference image from current request media: {}", valid_media[0])
-                return valid_media[0]
+        # Skip this shortcut when called for a numbered follow-up choice (recent_turn_only=True)
+        # because we want the last GENERATED image, not the user's uploaded source images.
+        if not recent_turn_only:
+            media = ctx.metadata.get("media")
+            if isinstance(media, list) and media:
+                valid_media = [m for m in media if m and (m.startswith(("http://", "https://")) or Path(m).is_file())]
+                if valid_media:
+                    logger.info("Found reference image from current request media: {}", valid_media[0])
+                    return valid_media[0]
 
         if not ctx.session_key or not self.sessions:
             logger.debug("Cannot find last generated image from history: session_key or sessions not available")
@@ -1255,9 +1257,9 @@ class ImageGenerationTool(Tool, ContextAware):
             )
 
         merged = list(dict.fromkeys(request_media + list(reference_images or [])))
-        if request_media:
-            return merged
 
+        # Numbered follow-up (user tapped 1/2/3): always use the last GENERATED
+        # image, never the original uploaded source images.
         if numbered_choice:
             last_img = self._find_last_generated_image(recent_turn_only=True)
             if last_img:
@@ -1267,6 +1269,9 @@ class ImageGenerationTool(Tool, ContextAware):
                 )
                 return [last_img]
             return merged or None
+
+        if request_media:
+            return merged
 
         if (
             _references_latest_image(prompt)
