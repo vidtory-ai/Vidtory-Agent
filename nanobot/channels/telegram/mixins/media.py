@@ -152,10 +152,15 @@ class TelegramMediaMixin:
             if not (buf := self._media_group_buffers.pop(key, None)):
                 return
             content = "\n".join(buf["contents"]) or "[empty message]"
+            all_media = list(dict.fromkeys(buf["media"]))
+            # Patch metadata so _merge_revision_references sees ALL images from
+            # the media group, not just the first message's current_media.
+            metadata = dict(buf["metadata"])
+            metadata["current_media"] = all_media
             await self._handle_message(
                 sender_id=buf["sender_id"], chat_id=buf["chat_id"],
-                content=content, media=list(dict.fromkeys(buf["media"])),
-                metadata=buf["metadata"],
+                content=content, media=all_media,
+                metadata=metadata,
                 session_key=buf.get("session_key"),
             )
         finally:
