@@ -650,7 +650,10 @@ class TelegramMessagesMixin:
                         self._flush_text_media_buffer(_tmb_key)
                     )
                     self._text_media_tasks = _tmb_tasks
-                await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
+                # Do NOT add a reaction here — the reaction was already added
+                # when the text+media buffer was first created (for the
+                # caption-bearing photo). Adding it again for every subsequent
+                # bare photo would show duplicate eye icons to the user.
                 return
 
             # Add reaction immediately — this path returns early and never reaches
