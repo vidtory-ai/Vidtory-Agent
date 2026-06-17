@@ -229,6 +229,38 @@ def build_logo_instruction(target_lang: str) -> str:
     )
 
 
+def build_temp_logo_instruction(logo_count: int, target_lang: str) -> str:
+    """Instruction injected when the user provides temporary logo image(s) for this request.
+
+    Tells Gemini AI that the appended images are brand logo assets that must
+    appear in the final design — not just style/composition references.
+    Works for 1 or multiple logos, and for combined profile + temp logos.
+    """
+    if target_lang == "vi":
+        if logo_count == 1:
+            return (
+                "Ảnh logo đính kèm là tài sản thương hiệu cần xuất hiện trong thiết kế. "
+                "Chèn logo đúng vị trí, tự nhiên và chuyên nghiệp; giữ nguyên hình dáng, "
+                "tỷ lệ và chi tiết; không vẽ lại hoặc biến dạng logo."
+            )
+        return (
+            f"Có {logo_count} ảnh logo đính kèm — đây đều là tài sản thương hiệu cần xuất hiện "
+            "trong thiết kế. Bố trí các logo hài hòa, tự nhiên và chuyên nghiệp; giữ nguyên "
+            "hình dáng, tỷ lệ và chi tiết của từng logo; không vẽ lại hoặc biến dạng."
+        )
+    if logo_count == 1:
+        return (
+            "The attached logo image is a brand asset that must appear in the design. "
+            "Position it naturally and professionally; preserve its shape, proportions, "
+            "and details exactly; do not redraw or distort it."
+        )
+    return (
+        f"There are {logo_count} attached logo images — all are brand assets that must appear "
+        "in the design. Arrange them harmoniously, naturally, and professionally; preserve "
+        "the exact shape, proportions, and details of each logo; do not redraw or distort any."
+    )
+
+
 def build_layout_instruction(target_lang: str) -> str:
     """Return one compact layout rule in the prompt's language."""
     if target_lang == "vi":
@@ -564,6 +596,23 @@ class ImageGenerationToolConfig(Base):
                 "OR in recent conversation context. Omit only when no logo preference has been expressed."
             ),
         ),
+        logo_images=ArraySchema(
+            StringSchema("Local path of an uploaded logo image to use for this request only."),
+            description=(
+                "TEMPORARY LOGO OVERRIDE: List of uploaded image paths to use as brand logo(s) "
+                "for THIS generation only. Do NOT persist to profile, do NOT change logoSuppressed. "
+                "\n\nPass this when the user explicitly refers to an uploaded image as a logo:\n"
+                "- Single temp logo: 'dùng logo này', 'chèn logo này vào', 'use this logo', '用这个logo'\n"
+                "- Multiple logos: 'dùng cả hai logo', 'kết hợp logo của tôi và logo này', 'use both logos'\n"
+                "- Combined with profile logo: 'logo của tôi và logo này' (also keep logo_preference unset)\n"
+                "\nDo NOT pass this when:\n"
+                "- User uploads an image as a composition/style/subject reference (not logo)\n"
+                "- User did not mention anything about logo\n"
+                "\nImages here are appended to reference_images and sent as startImages to Gemini. "
+                "Gemini will treat all startImages equally, so the AI integrates all logos naturally. "
+                "If user says 'only use this logo' (not profile logo), also pass logo_preference='disabled'."
+            ),
+        ),
         required=["prompt"],
     )
 )
@@ -883,6 +932,7 @@ class ImageGenerationTool(Tool, ContextAware):
         image_size: str | None = None,
         count: int | None = None,
         logo_preference: str | None = None,
+        logo_images: list[str] | None = None,
         **kwargs: Any,
     ) -> str:
         if is_resident_designer_profile(self.capability_profile):
@@ -990,6 +1040,33 @@ class ImageGenerationTool(Tool, ContextAware):
             )
             multi_image_instruction = build_multi_image_instruction(target_lang)
             optimized_prompt = f"{optimized_prompt}. {multi_image_instruction}"
+
+        # ── Temporary logo image(s) override ────────────────────────────────
+        # When the user uploads logo image(s) and explicitly asks to use them
+        # for THIS generation (not as a reference), the LLM passes them via
+        # logo_images.  These are appended to reference_images so Vidtory
+        # includes them in startImages — Gemini then integrates all logos
+        # naturally alongside any profile logo that is still active.
+        #
+        # Profile logo (logo_url) and logoSuppressed flag are NOT modified.
+        # The LLM independently passes logo_preference='disabled' if it detects
+        # the user wants ONLY the temp logo (not the profile logo too).
+        if logo_images:
+            valid_logo_images = [p for p in logo_images if p and str(p).strip()]
+            if valid_logo_images:
+                target_lang_for_logo = get_target_text_language(
+                    prompt,
+                    customer_language_preference(),
+                )
+                reference_images = list(reference_images or []) + valid_logo_images
+                temp_logo_hint = build_temp_logo_instruction(
+                    len(valid_logo_images), target_lang_for_logo
+                )
+                optimized_prompt = f"{optimized_prompt}. {temp_logo_hint}"
+                logger.info(
+                    "Temporary logo override: {} logo image(s) appended to startImages",
+                    len(valid_logo_images),
+                )
 
         # Log logo status for traceability
         if logo_url:
