@@ -311,6 +311,28 @@ def _is_numbered_followup_choice(content: str) -> bool:
     )
 
 
+# Supported output aspect ratios that customers commonly request as variants.
+_EXPORT_VARIANT_RATIOS = frozenset(["4:3", "3:4", "9:16", "16:9", "1:1", "3:2", "2:3"])
+
+
+def _is_export_variant_prompt(content: str) -> bool:
+    """Return True when the user is asking for an aspect-ratio variant of the
+    just-generated image (e.g. 'xuất bản 4:3', 'tỉ lệ 9:16 nhé', '4:3 đi').
+
+    Distinct from _is_numbered_followup_choice — these are natural-language
+    ratio requests, not tapped numbered buttons.  Both cases must resolve to
+    the last GENERATED image, not the original uploaded source images.
+    """
+    content_lower = (content or "").lower()
+    # Fast path: check for any ratio token (e.g. '4:3', '9:16') in the text
+    if not any(ratio in content_lower for ratio in _EXPORT_VARIANT_RATIOS):
+        return False
+    # Guard: a bare ratio token is enough to qualify — the context already
+    # established this is a follow-up turn (called only from _merge_revision_references
+    # which has already gated on _is_revision_prompt or similar).
+    return True
+
+
 def _is_revision_prompt(prompt: str) -> bool:
     """Check if the user's prompt is a revision or edit request."""
     prompt_lower = prompt.lower()
@@ -1239,10 +1261,12 @@ class ImageGenerationTool(Tool, ContextAware):
             else ""
         )
         numbered_choice = _is_numbered_followup_choice(original_user_content)
+        export_variant = _is_export_variant_prompt(original_user_content)
         if not (
             _is_revision_prompt(prompt)
             or _is_revision_prompt(original_user_content)
             or numbered_choice
+            or export_variant
         ):
             return reference_images
 
@@ -1258,13 +1282,16 @@ class ImageGenerationTool(Tool, ContextAware):
 
         merged = list(dict.fromkeys(request_media + list(reference_images or [])))
 
-        # Numbered follow-up (user tapped 1/2/3): always use the last GENERATED
-        # image, never the original uploaded source images.
-        if numbered_choice:
+        # Numbered follow-up (user tapped 1/2/3) OR export-variant request
+        # (e.g. 'xuất bản 4:3', 'tỉ lệ 9:16'): always use the last GENERATED
+        # image, never the original uploaded source images that may still be
+        # present in context.metadata['media'] from the initial upload turn.
+        if numbered_choice or export_variant:
             last_img = self._find_last_generated_image(recent_turn_only=True)
             if last_img:
                 logger.info(
-                    "Numbered follow-up choice uses image from previous turn: {}",
+                    "{} follow-up uses image from previous turn: {}",
+                    "Numbered" if numbered_choice else "Export-variant",
                     last_img,
                 )
                 return [last_img]

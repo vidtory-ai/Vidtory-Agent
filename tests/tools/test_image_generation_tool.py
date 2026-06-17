@@ -1081,3 +1081,258 @@ async def test_execute_blocks_general_vague_request_before_generation(
     assert FakeImageClient.instances == []
 
 
+# ── Export-variant follow-up: aspect-ratio change must use last generated image ──
+
+
+def test_is_export_variant_prompt_detects_aspect_ratio_keywords() -> None:
+    """_is_export_variant_prompt() must fire on every natural phrase a customer
+    might use when asking for a different-ratio version of the just-generated image.
+    """
+    from nanobot.agent.tools.image_generation import _is_export_variant_prompt
+
+    positives = [
+        "xuất bản 4:3",
+        "xuất bản 9:16",
+        "xuất bản 16:9",
+        "xuất bản 1:1",
+        "xuất tiếp bản 4:3",
+        "xuất thêm bản 9:16",
+        "cho tôi bản 4:3",
+        "bản 4:3 đi",
+        "ra bản 9:16",
+        "tỉ lệ 4:3",
+        "tỉ lệ 9:16",
+        "tỷ lệ 4:3",
+        "tỷ lệ 9:16",
+        "4:3 nhé",
+        "9:16 nha",
+        "đổi sang 4:3",
+        "đổi tỉ lệ 9:16",
+    ]
+    for phrase in positives:
+        assert _is_export_variant_prompt(phrase), (
+            f"Expected _is_export_variant_prompt({phrase!r}) == True"
+        )
+
+
+def test_is_export_variant_prompt_ignores_unrelated_phrases() -> None:
+    """Phrases that mention revisions without aspect-ratio intent must NOT fire."""
+    from nanobot.agent.tools.image_generation import _is_export_variant_prompt
+
+    negatives = [
+        "sửa màu sắc",
+        "thêm chữ tiêu đề",
+        "chỉnh độ sáng",
+        "1",  # numbered choice — handled separately
+        "2",
+        "chọn 3",
+        "tạo ảnh mới",
+        "",
+    ]
+    for phrase in negatives:
+        assert not _is_export_variant_prompt(phrase), (
+            f"Expected _is_export_variant_prompt({phrase!r}) == False"
+        )
+
+
+@pytest.mark.asyncio
+async def test_export_variant_followup_uses_last_generated_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When user asks for an aspect-ratio variant ('xuất bản 4:3'),
+    the system MUST pass the last generated image as reference — not the
+    original uploaded source images still present in context.metadata['media'].
+
+    Regression: before the fix, request_media from the original upload was
+    returned before the export-variant branch ran, causing the wrong image.
+    """
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+
+    original_upload = tmp_path / "original-upload.png"
+    original_upload.write_bytes(PNG_BYTES)
+    last_generated = tmp_path / "last-generated-poster.png"
+    last_generated.write_bytes(PNG_BYTES)
+
+    session = Session(key="telegram:123")
+    session.add_message("user", "Tạo poster tuyển dụng", media=[str(original_upload.resolve())])
+    session.add_message(
+        "tool",
+        json.dumps({"artifacts": [{"path": str(last_generated.resolve())}]}),
+        name="generate_image",
+    )
+    session.add_message(
+        "assistant",
+        "Đã tạo xong! Muốn mình làm tiếp:\n1️⃣ Sáng hơn\n2️⃣ Ấm hơn\n3️⃣ Xuất bản 4:3",
+    )
+    session.add_message("user", "xuất bản 4:3")
+
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions(),
+    )
+    # context.metadata still carries original_upload in "media" — this is the
+    # exact bug condition: Telegram context keeps the original media group alive.
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="123",
+            session_key="telegram:123",
+            metadata={
+                "original_user_content": "xuất bản 4:3",
+                "media": [str(original_upload.resolve())],
+            },
+        )
+    )
+
+    await tool.execute(
+        prompt="Xuất ảnh poster tuyển dụng theo tỷ lệ 4:3, giữ nguyên nội dung và phong cách",
+        aspect_ratio="4:3",
+        reference_images=None,
+    )
+
+    refs = FakeImageClient.instances[0].calls[0]["reference_images"]
+    assert refs == [str(last_generated.resolve())], (
+        f"Expected last-generated image as reference, got: {refs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_export_variant_followup_uses_last_generated_image_9_16(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same regression for 9:16 — the most common vertical format for Stories."""
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+
+    set_config_path(tmp_path / "config.json")
+    FakeImageClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        lambda name: FakeImageClient if name == "openrouter" else None,
+    )
+
+    original_upload = tmp_path / "brand-photo.png"
+    original_upload.write_bytes(PNG_BYTES)
+    last_generated = tmp_path / "generated-banner.png"
+    last_generated.write_bytes(PNG_BYTES)
+
+    session = Session(key="telegram:456")
+    session.add_message("user", "Tạo banner", media=[str(original_upload.resolve())])
+    session.add_message(
+        "tool",
+        json.dumps({"artifacts": [{"path": str(last_generated.resolve())}]}),
+        name="generate_image",
+    )
+    session.add_message("assistant", "Xong rồi nhé! Bạn muốn gì tiếp theo?")
+    session.add_message("user", "tỉ lệ 9:16 nhé")
+
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(
+            enabled=True,
+            provider="openrouter",
+            model="openai/gpt-5.4-image-2",
+        ),
+        provider_configs={"openrouter": ProviderConfig(api_key="sk-or-test")},
+        sessions=FakeSessions(),
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="456",
+            session_key="telegram:456",
+            metadata={
+                "original_user_content": "tỉ lệ 9:16 nhé",
+                "media": [str(original_upload.resolve())],
+            },
+        )
+    )
+
+    await tool.execute(
+        prompt="Xuất bản ảnh này theo tỷ lệ 9:16 cho Stories",
+        aspect_ratio="9:16",
+        reference_images=None,
+    )
+
+    refs = FakeImageClient.instances[0].calls[0]["reference_images"]
+    assert refs == [str(last_generated.resolve())], (
+        f"Expected last-generated image, got: {refs}"
+    )
+
+
+def test_merge_revision_references_export_variant_ignores_context_media(
+    tmp_path: Path,
+) -> None:
+    """Unit test: _merge_revision_references() with an export-variant request
+    must skip request_media from context and resolve to the last generated image.
+    """
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.session.manager import Session
+
+    gen_img = tmp_path / "gen.png"
+    gen_img.write_bytes(PNG_BYTES)
+    source_img = tmp_path / "source.png"
+    source_img.write_bytes(PNG_BYTES)
+
+    session = Session(key="telegram:789")
+    session.add_message("user", "Tạo ảnh", media=[str(source_img.resolve())])
+    session.add_message(
+        "tool",
+        json.dumps({"artifacts": [{"path": str(gen_img.resolve())}]}),
+        name="generate_image",
+    )
+    session.add_message("assistant", "Xong!")
+    session.add_message("user", "xuất bản 4:3")
+
+    class FakeSessions:
+        def get_or_create(self, key: str):
+            return session
+
+    tool = ImageGenerationTool(
+        workspace=tmp_path,
+        config=ImageGenerationToolConfig(enabled=True),
+        sessions=FakeSessions(),
+    )
+    tool.set_context(
+        RequestContext(
+            channel="telegram",
+            chat_id="789",
+            session_key="telegram:789",
+            metadata={
+                "original_user_content": "xuất bản 4:3",
+                # context.media still holds the original uploaded photo
+                "media": [str(source_img.resolve())],
+            },
+        )
+    )
+
+    result = tool._merge_revision_references(
+        "Xuất ảnh theo tỷ lệ 4:3, giữ nguyên nội dung",
+        None,
+    )
+    # Must resolve to last generated, not the source upload
+    assert result == [str(gen_img.resolve())]
