@@ -496,10 +496,19 @@ def _prompt_requests_no_logo(prompt: str) -> bool:
 # Keywords indicating the user wants the logo re-enabled after a no-logo request.
 # Checked in _update_logo_preference to set preferences.logoSuppressed = False,
 # re-enabling logo injection for all subsequent image generation requests.
+# NOTE: Vietnamese tones matter — "dùng" (huyền) ≠ "dụng" (nặng).
+# Keep both forms to avoid false negatives.
 _WANT_LOGO_KEYWORDS: tuple[str, ...] = (
-    "chèn logo", "thêm logo", "đặt logo", "có logo", "logo lại",
-    "logo trở lại", "dùng logo", "với logo", "kèm logo", "hiện logo",
-    "add logo", "with logo", "include logo", "show logo", "logo back",
+    # Explicit use/insert
+    "chèn logo", "thêm logo", "đặt logo", "gắn logo",
+    "dùng logo", "sử dụng logo",           # dùng (huyền) vs dụng (nặng) — both needed
+    "cho logo", "bật logo", "muốn logo", "cần logo",
+    # State / presence
+    "có logo", "kèm logo", "với logo", "hiện logo",
+    "logo lại", "logo trở lại",
+    # English
+    "add logo", "with logo", "include logo", "show logo",
+    "use logo", "logo back", "enable logo",
 )
 
 
