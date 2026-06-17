@@ -74,10 +74,10 @@ async def test_vidtory_image_generation() -> None:
         image_size="1K",
     )
 
-    assert len(res.images) == 1
-    assert res.images[0].startswith("data:image/png;base64,")
+    assert len(res.image_urls) == 1
+    assert res.image_urls[0] == "https://cdn/img.png"
     
-    assert len(fake.calls) == 3
+    assert len(fake.calls) == 2
     init_call = fake.calls[0]
     assert init_call["method"] == "POST"
     assert init_call["url"] == "https://bapi.vidtory.net/generative-core/image"
@@ -87,6 +87,43 @@ async def test_vidtory_image_generation() -> None:
     poll_call = fake.calls[1]
     assert poll_call["method"] == "GET"
     assert poll_call["url"] == "https://bapi.vidtory.net/generative-core/jobs/img-123/status"
+
+
+@pytest.mark.asyncio
+async def test_vidtory_image_generation_sends_single_reference_and_logo_together() -> None:
+    responses = [
+        FakeResponse({"success": True, "data": {"generationHistoryId": "img-refs"}}),
+        FakeResponse(
+            {
+                "success": True,
+                "data": {
+                    "status": "COMPLETED",
+                    "result": {"url": "https://cdn/result.png"},
+                },
+            }
+        ),
+    ]
+    fake = FakeClient(responses)
+    client = VidtoryImageGenerationClient(
+        api_key="test-api-key",
+        api_base="https://bapi.vidtory.net",
+        extra_body={"startImages": ["https://stale.example/old.png"]},
+        client=fake,  # type: ignore[arg-type]
+    )
+
+    await client.generate(
+        prompt="Sửa tiêu đề poster",
+        model="gemini-3.1-flash-image-preview",
+        reference_images=["https://b2b.vidtory.net/images/latest-poster.png"],
+        logo_url="https://b2b.vidtory.net/assets/brand-logo.png",
+    )
+
+    body = fake.calls[0]["json"]
+    assert "refImageUrl" not in body
+    assert body["startImages"] == [
+        "https://b2b.vidtory.net/images/latest-poster.png",
+        "https://b2b.vidtory.net/assets/brand-logo.png",
+    ]
 
 
 @pytest.mark.asyncio

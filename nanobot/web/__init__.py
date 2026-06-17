@@ -1,8 +1,6 @@
-"""Embedded web UI assets.
+"""Optional static asset namespace.
 
-The ``dist/`` subdirectory holds the production WebUI bundle served by the
-gateway. It is shipped inside the published wheel and is rebuilt automatically
-by the ``webui-build`` Hatch hook during ``python -m build``. In an editable
-source checkout it stays empty until you run ``cd webui && bun run build``
-(or use the Vite dev server at ``cd webui && bun run dev``).
+The React/Vite WebUI frontend is not bundled in this Telegram-focused build.
+The package remains so older imports can resolve, and deployments may still
+mount a custom ``dist/`` directory for the WebSocket channel if needed.
 """

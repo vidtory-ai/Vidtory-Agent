@@ -11,6 +11,10 @@ from nanobot.config.loader import set_config_path
 from nanobot.config.schema import ProviderConfig
 from nanobot.providers.video_generation import GeneratedVideoResponse
 from nanobot.providers.audio_generation import GeneratedAudioResponse
+from nanobot.utils.context_vars import (
+    telegram_requires_user_vidtory_api_key,
+    telegram_vidtory_api_key,
+)
 
 
 class FakeVideoClient:
@@ -63,6 +67,7 @@ async def test_video_generation_tool(tmp_path: Path, monkeypatch: pytest.MonkeyP
     payload = json.loads(result)
     assert "artifacts" in payload
     assert len(payload["artifacts"]) == 1
+    assert "exactly three numbered follow-up options" in payload["next_step"]
     artifact = payload["artifacts"][0]
     assert artifact["mime"] == "video/mp4"
     assert Path(artifact["path"]).is_file()
@@ -73,6 +78,35 @@ async def test_video_generation_tool(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert fake.calls[0]["prompt"] == "a space journey video"
     assert fake.calls[0]["aspect_ratio"] == "16:9"
     assert fake.calls[0]["duration"] == 4
+
+
+@pytest.mark.asyncio
+async def test_video_generation_does_not_fallback_to_system_key_when_user_key_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_config_path(tmp_path / "config.json")
+    FakeVideoClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.video_generation.VidtoryVideoGenerationClient",
+        FakeVideoClient,
+    )
+    require_token = telegram_requires_user_vidtory_api_key.set(True)
+    key_token = telegram_vidtory_api_key.set("")
+    try:
+        tool = VideoGenerationTool(
+            workspace=tmp_path,
+            config=VideoGenerationToolConfig(enabled=True),
+            provider_config=ProviderConfig(api_key="system-key-must-not-be-used"),
+        )
+
+        await tool.execute(prompt="a product video")
+
+        fake = FakeVideoClient.instances[0]
+        assert fake.kwargs["api_key"] is None
+    finally:
+        telegram_vidtory_api_key.reset(key_token)
+        telegram_requires_user_vidtory_api_key.reset(require_token)
 
 
 @pytest.mark.asyncio
@@ -111,3 +145,32 @@ async def test_audio_generation_tool(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert fake.calls[0]["voice_id"] == "custom-voice-id"
     assert fake.calls[0]["speed"] == 1.1
     assert fake.calls[0]["language_code"] == "en"
+
+
+@pytest.mark.asyncio
+async def test_audio_generation_does_not_fallback_to_system_key_when_user_key_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    set_config_path(tmp_path / "config.json")
+    FakeAudioClient.instances = []
+    monkeypatch.setattr(
+        "nanobot.agent.tools.audio_generation.VidtoryAudioGenerationClient",
+        FakeAudioClient,
+    )
+    require_token = telegram_requires_user_vidtory_api_key.set(True)
+    key_token = telegram_vidtory_api_key.set("")
+    try:
+        tool = AudioGenerationTool(
+            workspace=tmp_path,
+            config=AudioGenerationToolConfig(enabled=True),
+            provider_config=ProviderConfig(api_key="system-key-must-not-be-used"),
+        )
+
+        await tool.execute(prompt="voice over")
+
+        fake = FakeAudioClient.instances[0]
+        assert fake.kwargs["api_key"] is None
+    finally:
+        telegram_vidtory_api_key.reset(key_token)
+        telegram_requires_user_vidtory_api_key.reset(require_token)

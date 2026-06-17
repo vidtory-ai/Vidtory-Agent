@@ -10,6 +10,13 @@ from loguru import logger
 
 from nanobot.providers.base import LLMProvider, LLMResponse
 
+# Model name patterns that do NOT support vision (image_url content blocks).
+# When falling back to these models, images are proactively stripped to avoid
+# wasting a round-trip on a request that would fail and then retry without images.
+_NON_VISION_MODEL_PATTERNS = (
+    "deepseek",
+)
+
 # Circuit breaker tuned to match OpenAICompatProvider's Responses API breaker.
 _PRIMARY_FAILURE_THRESHOLD = 3
 _PRIMARY_COOLDOWN_S = 60
@@ -52,6 +59,16 @@ _FALLBACK_ERROR_TOKENS = (
     "insufficient_balance",
     "balance",
     "out of credits",
+    # Token / context-window limit errors (e.g. OpenRouter 402)
+    "prompt tokens limit exceeded",
+    "tokens limit exceeded",
+    "token limit exceeded",
+    "context length exceeded",
+    "context_length_exceeded",
+    "maximum context length",
+    "reduce the length",
+    "input is too long",
+    "prompt is too long",
 )
 
 
@@ -212,9 +229,30 @@ class FallbackProvider(LLMProvider):
                 kwargs.pop("reasoning_effort", None)
             else:
                 kwargs["reasoning_effort"] = fallback.reasoning_effort
+
+            # Proactively strip images for non-vision fallback models (e.g. DeepSeek).
+            # This avoids a wasted round-trip where the model would reject the image,
+            # then _run_with_retry would strip and retry anyway.
+            original_messages = kwargs.get("messages")
+            stripped_messages = None
+            model_lower = fallback_model.lower()
+            if any(pat in model_lower for pat in _NON_VISION_MODEL_PATTERNS):
+                stripped = LLMProvider._strip_image_content(original_messages or [])
+                if stripped is not None:
+                    stripped_messages = original_messages
+                    kwargs["messages"] = stripped
+                    logger.info(
+                        "Stripped images from messages for non-vision fallback '{}'",
+                        fallback_model,
+                    )
+
             try:
                 fallback_response = await call(fallback_provider, kwargs)
             finally:
+                # Restore original messages so subsequent fallbacks (or the
+                # caller's reference) are not permanently mutated.
+                if stripped_messages is not None:
+                    kwargs["messages"] = stripped_messages
                 for name, value in original_values.items():
                     if value is _MISSING:
                         kwargs.pop(name, None)
@@ -258,8 +296,23 @@ class FallbackProvider(LLMProvider):
         code = (response.error_code or "").lower()
         text = (response.content or "").lower()
 
-        if status in {400, 401, 403, 404, 422}:
+        if status in {401, 403, 404, 422}:
             return False
+        # 400 Bad Request is generally non-fallbackable (invalid request parameters, etc.),
+        # EXCEPT when it is a token limit or rate limit error disguised as a 400
+        # (e.g. Groq TPM limits or context window limits).
+        if status == 400:
+            has_fallback_token = any(
+                token in value
+                for value in (kind, error_type, code, text)
+                for token in _FALLBACK_ERROR_TOKENS
+            )
+            if not has_fallback_token:
+                return False
+
+        # 402 Payment Required from OpenRouter = token/credit limit → try fallback
+        if status == 402:
+            return True
         if kind in _NON_FALLBACK_ERROR_KINDS:
             return False
         if any(token in value for value in (kind, error_type, code) for token in _NON_FALLBACK_ERROR_KINDS):
@@ -271,3 +324,4 @@ class FallbackProvider(LLMProvider):
         if kind in _FALLBACK_ERROR_KINDS:
             return True
         return any(token in value for value in (kind, error_type, code, text) for token in _FALLBACK_ERROR_TOKENS)
+

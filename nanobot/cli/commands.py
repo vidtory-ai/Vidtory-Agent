@@ -51,6 +51,26 @@ from nanobot import __logo__, __version__
 from nanobot.agent.loop import AgentLoop
 
 
+def _publish_runtime_model_update(
+    bus: Any,
+    model: str,
+    model_preset: str | None,
+) -> None:
+    """Publish WebSocket runtime-model metadata without importing the WebSocket channel."""
+    from nanobot.bus.events import OutboundMessage
+
+    bus.outbound.put_nowait(OutboundMessage(
+        channel="websocket",
+        chat_id="*",
+        content="",
+        metadata={
+            "_runtime_model_updated": True,
+            "model": model,
+            "model_preset": model_preset,
+        },
+    ))
+
+
 def _sanitize_surrogates(text: str) -> str:
     """Reconstruct surrogate pairs into real characters; replace lone surrogates.
 
@@ -708,14 +728,12 @@ def _run_gateway(
     config: Config,
     *,
     port: int | None = None,
-    open_browser_url: str | None = None,
 ) -> None:
-    """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
-    from nanobot.agent.tools.cron import CronTool
+    """Shared gateway runtime."""
     from nanobot.agent.tools.message import MessageTool
+    from nanobot.bus.events import OutboundMessage
     from nanobot.bus.queue import MessageBus
     from nanobot.channels.manager import ChannelManager
-    from nanobot.channels.websocket import publish_runtime_model_update
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronJob
     from nanobot.heartbeat.service import HeartbeatService
@@ -753,7 +771,7 @@ def _run_gateway(
         session_manager=session_manager,
         image_generation_provider_configs=image_gen_provider_configs(config),
         provider_snapshot_loader=load_provider_snapshot,
-        runtime_model_publisher=lambda model, preset: publish_runtime_model_update(
+        runtime_model_publisher=lambda model, preset: _publish_runtime_model_update(
             bus,
             model,
             preset,
@@ -762,7 +780,6 @@ def _run_gateway(
     )
 
     from nanobot.agent.loop import UNIFIED_SESSION_KEY
-    from nanobot.bus.events import OutboundMessage
 
     def _channel_session_key(channel: str, chat_id: str) -> str:
         return (
@@ -829,10 +846,6 @@ def _run_gateway(
             f"Reminder: {job.payload.message}"
         )
 
-        cron_tool = agent.tools.get("cron")
-        cron_token = None
-        if isinstance(cron_tool, CronTool):
-            cron_token = cron_tool.set_cron_context(True)
 
         async def _silent(*_args, **_kwargs):
             pass
@@ -850,8 +863,6 @@ def _run_gateway(
                 on_progress=_silent,
             )
         finally:
-            if isinstance(cron_tool, CronTool) and cron_token is not None:
-                cron_tool.reset_cron_context(cron_token)
             if isinstance(message_tool, MessageTool) and message_record_token is not None:
                 message_tool.reset_record_channel_delivery(message_record_token)
 
@@ -1041,29 +1052,6 @@ def _run_gateway(
     ))
     console.print(f"[green]✓[/green] Dream: {dream_cfg.describe_schedule()}")
 
-    async def _open_browser_when_ready() -> None:
-        """Wait for the gateway to bind, then point the user's browser at the webui."""
-        if not open_browser_url:
-            return
-        import webbrowser
-        # Channels start asynchronously; a short poll lets us avoid racing the bind.
-        for _ in range(40):  # ~4s max
-            try:
-                reader, writer = await asyncio.open_connection(
-                    config.gateway.host or "127.0.0.1", port
-                )
-                writer.close()
-                with suppress(Exception):
-                    await writer.wait_closed()
-                break
-            except OSError:
-                await asyncio.sleep(0.1)
-        try:
-            webbrowser.open(open_browser_url)
-            console.print(f"[green]✓[/green] Opened browser at {open_browser_url}")
-        except Exception as e:
-            console.print(f"[yellow]Could not open browser ({e}); visit {open_browser_url}[/yellow]")
-
     async def run():
         try:
             await cron.start()
@@ -1073,8 +1061,6 @@ def _run_gateway(
                 channels.start_all(),
                 _health_server(config.gateway.host, port),
             ]
-            if open_browser_url:
-                tasks.append(_open_browser_when_ready())
             await asyncio.gather(*tasks)
         except KeyboardInterrupt:
             console.print("\nShutting down...")
@@ -1540,7 +1526,6 @@ _LOGOUT_HANDLERS: dict[str, Callable[[], None]] = {}
 
 _PROVIDER_DISPLAY: dict[str, str] = {
     "openai_codex": "OpenAI Codex",
-    "github_copilot": "GitHub Copilot",
 }
 
 
@@ -1643,19 +1628,6 @@ def _logout_openai_codex() -> None:
     _delete_oauth_files(storage.get_token_path(), _PROVIDER_DISPLAY["openai_codex"])
 
 
-@_register_logout("github_copilot")
-def _logout_github_copilot() -> None:
-    """Clear local OAuth credentials for GitHub Copilot."""
-    try:
-        from nanobot.providers.github_copilot_provider import get_storage
-    except ImportError:
-        console.print("[red]GitHub Copilot provider unavailable. Ensure oauth-cli-kit is installed.[/red]")
-        raise typer.Exit(1)
-
-    storage = get_storage()
-    _delete_oauth_files(storage.get_token_path(), _PROVIDER_DISPLAY["github_copilot"])
-
-
 def _delete_oauth_files(token_path: Path, provider_label: str) -> None:
     """Delete OAuth token and lock files, reporting the result."""
     removed_paths: list[Path] = []
@@ -1680,23 +1652,6 @@ def _delete_oauth_files(token_path: Path, provider_label: str) -> None:
             console.print(f"[dim]Removed: {path}[/dim]")
     for path, exc in skipped:
         console.print(f"[yellow]! Could not remove {path}: {exc}[/yellow]")
-
-
-@_register_login("github_copilot")
-def _login_github_copilot() -> None:
-    try:
-        from nanobot.providers.github_copilot_provider import login_github_copilot
-
-        console.print("[cyan]Starting GitHub Copilot device flow...[/cyan]\n")
-        token = login_github_copilot(
-            print_fn=lambda s: console.print(s),
-            prompt_fn=lambda s: typer.prompt(s),
-        )
-        account = token.account_id or "GitHub"
-        console.print(f"[green]✓ Authenticated with GitHub Copilot[/green]  [dim]{account}[/dim]")
-    except Exception as e:
-        console.print(f"[red]Authentication error: {e}[/red]")
-        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

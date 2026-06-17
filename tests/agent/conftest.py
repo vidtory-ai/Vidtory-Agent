@@ -11,6 +11,19 @@ import pytest
 from nanobot.agent.loop import AgentLoop
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
+from nanobot.agent.router import Intent
+
+
+@pytest.fixture(autouse=True)
+def mock_intent_router(request):
+    """Mock IntentRouter globally so it doesn't consume the mocked LLM responses in loop tests."""
+    if "test_router" in request.node.nodeid:
+        yield None
+        return
+        
+    with patch("nanobot.agent.router.IntentRouter.classify", new_callable=AsyncMock) as mock_classify:
+        mock_classify.return_value = Intent.GENERAL
+        yield mock_classify
 
 
 def make_provider(

@@ -1,10 +1,21 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+When addressing the developer (the user), you MUST call them "anh chai". However, the end product (the chatbot used by customers) must always address customers professionally (using "bạn", "quý khách", "khách hàng"), and never use informal address (like "anh chai").
+You MUST also report all project issues, warnings, bugs, and failures transparently and honestly, never hiding or masking them, to allow the developer to identify and fix issues as early as possible.
+
+## 🌟 Agent Skills (CRITICAL)
+
+To ensure high quality, production-grade code, you MUST adhere to the following core agent-skills for every task. You MUST read these skills carefully before executing any tasks:
+- `@.agents/skills/incremental-implementation/SKILL.md`
+- `@.agents/skills/code-review-and-quality/SKILL.md`
+- `@.agents/skills/git-workflow-and-versioning/SKILL.md`
+
+When working on specific domains, please load the relevant skill from `.agents/skills/` (e.g., `test-driven-development` for tests, `frontend-ui-engineering` for UI, `api-and-interface-design` for API).
 
 ## Project Overview
 
-nanobot is a lightweight, open-source AI agent framework written in Python with a React/TypeScript WebUI. It centers around a small agent loop that receives messages from chat channels, invokes an LLM provider, executes tools, and manages session memory.
+nanobot is a lightweight, open-source AI agent framework written in Python. It centers around a small agent loop that receives messages from chat channels, invokes an LLM provider, executes tools, and manages session memory.
 
 ## Development Commands
 
@@ -13,11 +24,7 @@ nanobot is a lightweight, open-source AI agent framework written in Python with 
 pytest tests/test_openai_api.py::test_function -v
 ruff check nanobot/
 
-# WebUI: dev server (proxies API/WS to gateway :8765), build, test
-# Build outputs to ../nanobot/web/dist (bundled into the Python wheel)
-cd webui && bun run dev      # or NANOBOT_API_URL=... bun run dev
-cd webui && bun run build
-cd webui && bun run test
+
 
 # Gateway
 nanobot gateway
@@ -37,14 +44,14 @@ Messages flow through an async `MessageBus` (`nanobot/bus/queue.py`) that decoup
 ### Key Subsystems
 
 - **Agent Loop** (`nanobot/agent/loop.py`, `runner.py`): The core processing engine. `AgentLoop` manages session keys, hooks, and context building. `AgentRunner` executes the multi-turn LLM conversation with tool execution.
-- **LLM Providers** (`nanobot/providers/`): Provider implementations (Anthropic, OpenAI-compatible, OpenAI Responses API, Azure, Bedrock, GitHub Copilot, OpenAI Codex, etc.) built on a common base (`base.py`). Includes image generation (`image_generation.py`) and audio transcription (`transcription.py`). `factory.py` and `registry.py` handle instantiation and model discovery.
-- **Channels** (`nanobot/channels/`): Platform integrations (Telegram, Discord, Slack, Feishu, Matrix, WhatsApp, QQ, WeChat, WeCom, DingTalk, Email, MoChat, MS Teams, WebSocket). `manager.py` discovers and coordinates them. Channels are auto-discovered via `pkgutil` scan + entry-point plugins.
+- **LLM Providers** (`nanobot/providers/`): Provider implementations (Anthropic, OpenAI-compatible, Vidtory LLM, etc.) built on a common base (`base.py`). Includes image generation (`image_generation.py`) and audio transcription (`transcription.py`). `factory.py` and `registry.py` handle instantiation and model discovery.
+- **Channels** (`nanobot/channels/`): Platform integrations (Telegram, WebSocket). `manager.py` discovers and coordinates them. Channels are auto-discovered via `pkgutil` scan + entry-point plugins.
 - **Tools** (`nanobot/agent/tools/`): Agent capabilities exposed to the LLM: filesystem (read/write/edit/list), shell execution (with sandbox backends), web search/fetch, MCP servers, cron, notebook editing, subagent spawning, long-running tasks / sustained goals (`long_task.py`), image generation, and self-modification. Tools are auto-discovered via `pkgutil` scan + entry-point plugins.
 - **Memory** (`nanobot/agent/memory.py`): Session history persistence with Dream two-phase memory consolidation. Uses atomic writes with fsync for durability.
 - **Session Management** (`nanobot/session/`): Per-session history, context compaction, TTL-based auto-compaction (`manager.py`), and sustained goal state tracking (`goal_state.py`).
 - **Config** (`nanobot/config/schema.py`, `loader.py`): Pydantic-based configuration loaded from `~/.nanobot/config.json`. Supports camelCase aliases for JSON compatibility.
 - **Bridge** (`bridge/`): TypeScript services (e.g. WhatsApp bridge) bundled into the wheel via `pyproject.toml` `force-include`.
-- **WebUI** (`webui/`): Vite-based React SPA that talks to the gateway over a WebSocket multiplex protocol. The dev server proxies `/api`, `/webui`, `/auth`, and WebSocket traffic to the gateway.
+
 - **API Server** (`nanobot/api/server.py`): OpenAI-compatible HTTP API (`/v1/chat/completions`, `/v1/models`) for programmatic access.
 - **Command Router** (`nanobot/command/`): Slash command routing and built-in command handlers.
 - **Heartbeat** (`nanobot/heartbeat/`): Periodic agent wake-up service for scheduled task checking.
@@ -80,5 +87,77 @@ See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the full two-branch model (`main`
 - Provider base / new provider template: `nanobot/providers/base.py`
 - Channel base / new channel template: `nanobot/channels/base.py`
 - Tool registry: `nanobot/agent/tools/registry.py`
-- WebUI dev proxy config: `webui/vite.config.ts`
+
 - Tests mirror the `nanobot/` package structure.
+
+
+
+--------------------
+
+
+
+# CLAUDE.md
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

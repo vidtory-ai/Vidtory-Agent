@@ -1,2 +1,2 @@
-"""Backend helpers for the bundled WebUI surface."""
+"""Backend helpers for the optional WebSocket UI surface."""
 

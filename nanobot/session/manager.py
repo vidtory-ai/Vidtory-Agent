@@ -20,7 +20,6 @@ from nanobot.utils.helpers import (
     image_placeholder_text,
     safe_filename,
 )
-from nanobot.utils.subagent_channel_display import scrub_subagent_announce_body
 
 FILE_MAX_MESSAGES = 2000
 _MESSAGE_TIME_PREFIX_RE = re.compile(r"^\[Message Time: [^\]]+\]\n?")
@@ -67,10 +66,8 @@ def _text_preview(content: Any) -> str:
 
 
 def _message_preview_text(message: dict[str, Any]) -> str:
-    """Session list preview text; subagent inject blobs are shortened for display."""
+    """Session list preview text."""
     content: Any = message.get("content")
-    if message.get("injected_event") == "subagent_result" and isinstance(content, str):
-        content = scrub_subagent_announce_body(content)
     return _text_preview(content)
 
 

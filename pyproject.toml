@@ -1,15 +1,14 @@
 [project]
 name = "vidtoryagent"
 version = "0.2.0"
-description = "A lightweight personal AI assistant framework"
+description = "Vidtory AI Resident Designer — Telegram-based AI creative agent for brand design"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "Xubin Ren"},
-    {name = "the nanobot contributors"}
+    {name = "Vidtory Team"},
 ]
-keywords = ["ai", "agent", "chatbot"]
+keywords = ["ai", "agent", "design", "telegram", "creative"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -19,7 +18,6 @@ classifiers = [
 ]
 license-files = [
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md",
 ]
 
 dependencies = [
@@ -30,25 +28,14 @@ dependencies = [
     "websockets>=16.0,<17.0",
     "websocket-client>=1.9.0,<2.0.0",
     "httpx>=0.28.0,<1.0.0",
-    "ddgs>=9.5.5,<10.0.0",
-    "oauth-cli-kit>=0.1.3,<1.0.0",
     "loguru>=0.7.3,<1.0.0",
-    "readability-lxml>=0.8.4,<1.0.0",
     "rich>=14.0.0,<15.0.0",
     "croniter>=6.0.0,<7.0.0",
-    "dingtalk-stream>=0.24.0,<1.0.0",
     "python-telegram-bot[socks]>=22.6,<23.0",
-    "lark-oapi>=1.5.0,<2.0.0",
     "socksio>=1.0.0,<2.0.0",
-    "python-socketio>=5.16.0,<6.0.0",
     "msgpack>=1.1.0,<2.0.0",
-    "slack-sdk>=3.39.0,<4.0.0",
-    "slackify-markdown>=0.2.0,<1.0.0",
-    "qq-botpy>=1.2.0,<2.0.0",
-    "python-socks[asyncio]>=2.8.0,<3.0.0; sys_platform != 'win32'",
     "prompt-toolkit>=3.0.50,<4.0.0",
     "questionary>=2.0.0,<3.0.0",
-    "mcp>=1.26.0,<2.0.0",
     "json-repair>=0.57.0,<1.0.0",
     "chardet>=3.0.2,<6.0.0",
     "openai>=2.8.0",
@@ -61,41 +48,20 @@ dependencies = [
     "openpyxl>=3.1.0,<4.0.0",
     "python-pptx>=1.0.0,<2.0.0",
     "filelock>=3.25.2",
-    "boto3>=1.43.0",
+    "imageio>=2.30.0",
+    "psutil>=5.9.0",
+    "chromadb>=0.5.0",
 ]
 
 [project.optional-dependencies]
 api = [
     "aiohttp>=3.9.0,<4.0.0",
 ]
-wecom = [
-    "wecom-aibot-sdk-python>=0.1.5",
-]
-weixin = [
-    "qrcode[pil]>=8.0",
-    "pycryptodome>=3.20.0",
-]
-msteams = [
-    "PyJWT>=2.0,<3.0",
-    "cryptography>=41.0",
-]
-
-matrix = [
-    "matrix-nio[e2e]>=0.25.2; sys_platform != 'win32'",
-    "mistune>=3.0.0,<4.0.0",
-    "nh3>=0.2.17,<1.0.0",
-]
-discord = [
-    "discord.py>=2.5.2,<3.0.0",
-]
 langsmith = [
     "langsmith>=0.1.0",
 ]
 pdf = [
     "pymupdf>=1.25.0",
-]
-olostep = [
-    "olostep>=0.1.0",
 ]
 dev = [
     "pytest>=9.0.0,<10.0.0",
@@ -121,22 +87,12 @@ build-backend = "hatchling.build"
 [tool.hatch.metadata]
 allow-direct-references = true
 
-[tool.hatch.build.hooks.custom]
-# Implementation lives in the conventional `hatch_build.py` at the repo root.
-
 [tool.hatch.build]
 include = [
     "nanobot/**/*.py",
     "nanobot/templates/**/*.md",
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
-    "nanobot/web/dist/**/*",
-]
-# nanobot/web/dist/ is produced by `cd webui && bun run build` and is
-# git-ignored. List it as an artifact so hatch ships it in both wheel and
-# sdist even though VCS does not track it.
-artifacts = [
-    "nanobot/web/dist/**/*",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -145,18 +101,11 @@ packages = ["nanobot"]
 [tool.hatch.build.targets.wheel.sources]
 "nanobot" = "nanobot"
 
-[tool.hatch.build.targets.wheel.force-include]
-"bridge" = "nanobot/bridge"
-
 [tool.hatch.build.targets.sdist]
 include = [
     "nanobot/",
-    "nanobot/web/dist/",
-    "bridge/",
-    "hatch_build.py",
     "README.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md",
     "pyproject.toml",
 ]
 

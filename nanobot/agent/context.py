@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+from nanobot.security.request_policy import is_resident_designer_profile
 from nanobot.session.goal_state import goal_state_runtime_lines
 from nanobot.utils.helpers import (
     current_time_str,
@@ -28,9 +29,16 @@ class ContextBuilder:
     _MAX_HISTORY_CHARS = 32_000  # hard cap on recent history section size
     _RUNTIME_CONTEXT_END = "[/Runtime Context]"
 
-    def __init__(self, workspace: Path, timezone: str | None = None, disabled_skills: list[str] | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        timezone: str | None = None,
+        disabled_skills: list[str] | None = None,
+        capability_profile: str = "standard",
+    ):
         self.workspace = workspace
         self.timezone = timezone
+        self.capability_profile = capability_profile
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace, disabled_skills=set(disabled_skills) if disabled_skills else None)
 
@@ -39,9 +47,14 @@ class ContextBuilder:
         skill_names: list[str] | None = None,
         channel: str | None = None,
         session_summary: str | None = None,
+        current_message: str | None = None,
+        intent: str = "general",
     ) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity(channel=channel)]
+
+        if is_resident_designer_profile(self.capability_profile):
+            parts.append(render_template("agent/resident_designer_policy.md"))
 
         bootstrap = self._load_bootstrap_files()
         if bootstrap:
@@ -49,6 +62,33 @@ class ContextBuilder:
 
         parts.append(render_template("agent/tool_contract.md"))
 
+        # Inject Vidtory creative knowledge
+        with suppress(Exception):
+            from nanobot.utils.vidtory_knowledge import get_system_knowledge_block
+            knowledge_block = get_system_knowledge_block()
+            if knowledge_block:
+                parts.append(knowledge_block)
+
+        # Phase 1: Semantic Intent System Prompts
+        if intent == "fashion":
+            parts.append(render_template("agent/prompt_fashion.md"))
+        elif intent == "advertisement":
+            parts.append(render_template("agent/prompt_advertisement.md"))
+        else:
+            parts.append(render_template("agent/prompt_general.md"))
+
+        # Phase 2: BM25 Vector Memory RAG
+        if current_message:
+            try:
+                retrieved_memory = self.memory.search_memory.search(current_message, top_k=3)
+                if retrieved_memory:
+                    memory_block = "\n".join([f"- {m}" for m in retrieved_memory])
+                    parts.append(f"# Relevant Knowledge Context\n\n{memory_block}")
+            except Exception as e:
+                import logging
+                logging.getLogger("nanobot").warning(f"Memory retrieval failed: {e}")
+
+        # Static file memory
         memory = self.memory.get_memory_context()
         if memory and not self._is_template_content(self.memory.read_memory(), "memory/MEMORY.md"):
             parts.append(f"# Memory\n\n{memory}")
@@ -62,6 +102,18 @@ class ContextBuilder:
         skills_summary = self.skills.build_skills_summary(exclude=set(always_skills))
         if skills_summary:
             parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
+
+        # Phase 3: Reflexion Enforce via Tool
+        parts.append(
+            "# BẮT BUỘC (REFLEXION & QUALITY ASSURANCE)\n"
+            "Bạn đang ở trạng thái CẤM XUẤT CÂU TRẢ LỜI TRỰC TIẾP cho các tác vụ quan trọng (sáng tạo, tư vấn, lập kế hoạch).\n"
+            "Thay vào đó, bạn PHẢI tuân thủ quy trình sau:\n"
+            "1. Dùng tool `review_draft` và gửi bản nháp câu trả lời hoàn chỉnh của bạn vào tham số `draft_content`.\n"
+            "2. Hệ thống sẽ nhận xét bản nháp.\n"
+            "3. Khi công cụ nhận xét trả về kết quả `[PERFECT]`, bạn mới được phép trả lời chính thức ra màn hình.\n"
+            "4. Nếu công cụ trả về gợi ý sửa chữa, bạn phải tiếp tục viết lại nháp và gọi lại `review_draft`.\n"
+            "⚠️ Bỏ qua quy tắc này sẽ gây ra lỗi nghiêm trọng!"
+        )
 
         entries = self.memory.read_unprocessed_history(since_cursor=self.memory.get_last_dream_cursor())
         if entries:
@@ -157,6 +209,7 @@ class ContextBuilder:
         session_summary: str | None = None,
         session_metadata: Mapping[str, Any] | None = None,
         current_runtime_lines: Sequence[str] | None = None,
+        intent: str = "general",
     ) -> list[dict[str, Any]]:
         """Build the complete message list for an LLM call."""
         extra = [
@@ -182,7 +235,7 @@ class ContextBuilder:
         else:
             merged = user_content + [{"type": "text", "text": runtime_ctx}]
         messages = [
-            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel, session_summary=session_summary)},
+            {"role": "system", "content": self.build_system_prompt(skill_names, channel=channel, session_summary=session_summary, current_message=current_message, intent=intent)},
             *history,
         ]
         if messages[-1].get("role") == current_role:
@@ -216,4 +269,14 @@ class ContextBuilder:
 
         if not images:
             return text
-        return images + [{"type": "text", "text": text}]
+
+        # Prepend the image placeholders so the LLM knows the local path of each uploaded image.
+        from nanobot.utils.helpers import image_placeholder_text
+        placeholders = "\n".join(
+            image_placeholder_text(block["_meta"]["path"])
+            for block in images
+            if block.get("_meta", {}).get("path")
+        )
+        text_with_paths = f"{placeholders}\n\n{text}" if placeholders else text
+
+        return images + [{"type": "text", "text": text_with_paths}]

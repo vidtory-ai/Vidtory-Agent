@@ -1,5 +1,6 @@
 """Message tool for sending messages to users."""
 
+import re
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -10,13 +11,51 @@ from nanobot.agent.tools.path_utils import resolve_workspace_path
 from nanobot.agent.tools.schema import ArraySchema, StringSchema, tool_parameters_schema
 from nanobot.bus.events import OutboundMessage
 from nanobot.config.paths import get_workspace_path
+from nanobot.security.request_policy import (
+    evaluate_request,
+    is_resident_designer_profile,
+)
+
+_generated_media_delivered_var: ContextVar[tuple[str, ...]] = ContextVar(
+    "generated_media_delivered_in_turn",
+    default=(),
+)
+
+
+def _media_identity(value: str) -> str:
+    if value.startswith(("http://", "https://")):
+        return value
+    try:
+        return str(Path(value).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return value
+
+
+def record_generated_media_delivery(media: list[str]) -> None:
+    """Record media already delivered directly by a generation tool."""
+    previous = _generated_media_delivered_var.get()
+    identities = tuple(_media_identity(str(path)) for path in media if path)
+    _generated_media_delivered_var.set(tuple(dict.fromkeys(previous + identities)))
+
+
+def _numbered_choice_buttons(content: str) -> list[list[str]]:
+    matches = re.findall(r"(?m)^\s*([1-9])\ufe0f?\u20e3\s+\S", content)
+    if not matches:
+        matches = re.findall(r"(?m)^\s*([1-9])[.)]\s+\S", content)
+    numbers = [int(match) for match in matches]
+    if not 2 <= len(numbers) <= 4:
+        return []
+    if numbers != list(range(1, len(numbers) + 1)):
+        return []
+    labels = [str(number) for number in numbers]
+    return [labels[:3], labels[3:]] if len(labels) > 3 else [labels]
 
 
 @tool_parameters(
     tool_parameters_schema(
         content=StringSchema(
-            "Message content for proactive or cross-channel delivery. "
-            "Do not use this for a normal reply in the current chat."
+            "Message content for proactive delivery, attachments, or a current-chat "
+            "reply that needs interactive buttons."
         ),
         channel=StringSchema(
             "Optional target channel for cross-channel/proactive delivery. "
@@ -53,12 +92,14 @@ class MessageTool(Tool, ContextAware):
         default_message_id: str | None = None,
         workspace: str | Path | None = None,
         restrict_to_workspace: bool = False,
+        capability_profile: str = "standard",
     ):
         self._send_callback = send_callback
         self._workspace = (
             Path(workspace).expanduser() if workspace is not None else get_workspace_path()
         )
         self._restrict_to_workspace = restrict_to_workspace
+        self._capability_profile = capability_profile
         self._default_channel: ContextVar[str] = ContextVar(
             "message_default_channel", default=default_channel
         )
@@ -90,6 +131,7 @@ class MessageTool(Tool, ContextAware):
             send_callback=send_callback,
             workspace=ctx.workspace,
             restrict_to_workspace=ctx.config.restrict_to_workspace,
+            capability_profile=getattr(ctx.config, "capability_profile", "standard"),
         )
 
     def set_context(self, ctx: RequestContext) -> None:
@@ -107,6 +149,7 @@ class MessageTool(Tool, ContextAware):
         """Reset per-turn send tracking."""
         self._sent_in_turn = False
         self._turn_delivered_media_var.set(())
+        _generated_media_delivered_var.set(())
 
     def turn_delivered_media_paths(self) -> list[str]:
         """Absolute paths attached via this tool to the active chat in the current turn."""
@@ -136,10 +179,11 @@ class MessageTool(Tool, ContextAware):
     def description(self) -> str:
         return (
             "Proactively send a message to a user/channel, optionally with file attachments. "
-            "Use this for reminders, cross-channel delivery, or explicit proactive sends. "
-            "Do not use this for the normal reply in the current chat: answer naturally instead. "
+            "Use this for reminders, cross-channel delivery, explicit proactive sends, "
+            "or a current-chat reply that needs buttons or media. "
+            "For an ordinary text-only reply, answer naturally instead. "
             "If channel/chat_id would target the current runtime conversation, do not call this tool "
-            "unless the user explicitly asked you to proactively send an existing file attachment. "
+            "unless you are attaching media or presenting interactive choices. "
             "When generate_image creates images in the current chat, use the message tool "
             "with the artifact paths in the media parameter to deliver the images to the user. "
             "For proactive attachment delivery, use the 'media' parameter with file paths. "
@@ -173,6 +217,8 @@ class MessageTool(Tool, ContextAware):
         from nanobot.utils.helpers import strip_think
 
         content = strip_think(content)
+        if buttons is None and is_resident_designer_profile(self._capability_profile):
+            buttons = _numbered_choice_buttons(content)
 
         if buttons is not None:
             if not isinstance(buttons, list) or any(
@@ -204,6 +250,27 @@ class MessageTool(Tool, ContextAware):
         # conversation via their Reply API, which would route the message
         # to the wrong chat entirely.
         same_target = channel == default_channel and chat_id == default_chat_id
+        if (
+            is_resident_designer_profile(self._capability_profile)
+            and not same_target
+        ):
+            return (
+                "Error: cross-channel and cross-chat sends are disabled by "
+                "the resident_designer security policy"
+            )
+        policy = evaluate_request(self._capability_profile, content)
+        if policy.blocked:
+            return (
+                "Error: message content blocked by resident_designer "
+                f"security policy ({policy.reason})"
+            )
+        if policy.redacted_text and policy.redacted_text.strip() and policy.redacted_text.strip() != content.strip():
+            content = policy.redacted_text
+        if is_resident_designer_profile(self._capability_profile) and not media and not buttons:
+            return (
+                "Error: text-only message sends are disabled by the "
+                "resident_designer security policy"
+            )
         if same_target:
             message_id = message_id or self._default_message_id.get()
         else:
@@ -220,6 +287,10 @@ class MessageTool(Tool, ContextAware):
                 media = self._resolve_media(media)
             except (OSError, PermissionError, ValueError) as e:
                 return f"Error: media path is not allowed: {str(e)}"
+            delivered = set(_generated_media_delivered_var.get())
+            media = [path for path in media if _media_identity(path) not in delivered]
+            if not media and not content and not buttons:
+                return "Media already delivered in this turn"
 
         metadata = dict(self._default_metadata.get()) if same_target else {}
         if message_id:

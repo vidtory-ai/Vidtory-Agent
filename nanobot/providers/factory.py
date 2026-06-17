@@ -9,6 +9,7 @@ from nanobot.config.schema import Config, InlineFallbackConfig, ModelPresetConfi
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.fallback_provider import FallbackProvider
 from nanobot.providers.registry import find_by_name
+from nanobot.providers.vision_aware_provider import VisionAwareProvider
 
 
 @dataclass(frozen=True)
@@ -38,37 +39,40 @@ def _make_provider_core(
     """Create a plain LLM provider without failover wrapping."""
     resolved = _resolve_model_preset(config, preset_name=preset_name, preset=preset)
     model = model or resolved.model
+    requested_provider = (
+        resolved.provider
+        if resolved.provider and resolved.provider != "auto"
+        else model.split("/", 1)[0]
+    )
+    requested_provider = requested_provider.lower().replace("-", "_")
+    unavailable = {"openai_codex", "azure_openai", "github_copilot", "bedrock"}
+    if requested_provider in unavailable:
+        raise ValueError(
+            f"Provider '{requested_provider}' is not available in this build. "
+            "Use an OpenAI-compatible, Anthropic, or Vidtory provider."
+        )
     provider_name = config.get_provider_name(model, preset=resolved)
     p = config.get_provider(model, preset=resolved)
     spec = find_by_name(provider_name) if provider_name else None
     backend = spec.backend if spec else "openai_compat"
 
-    if backend == "azure_openai":
-        if not p or not p.api_key or not p.api_base:
-            raise ValueError("Azure OpenAI requires api_key and api_base in config.")
-    elif backend == "openai_compat" and not model.startswith("bedrock/"):
+    if backend in unavailable:
+        raise ValueError(
+            f"Provider backend '{backend}' is not available. "
+            f"Only 'openai_compat', 'anthropic', and 'vidtory' are supported."
+        )
+
+    if backend == "openai_compat" and not model.startswith("bedrock/"):
         needs_key = not (p and p.api_key)
         exempt = spec and (spec.is_oauth or spec.is_local or spec.is_direct)
         if needs_key and not exempt:
             raise ValueError(f"No API key configured for provider '{provider_name}'.")
+    elif backend == "vidtory":
+        # Vidtory key may not be in config — it's injected per-user at runtime via Telegram.
+        # Validation is deferred to request time inside VidtoryLLMProvider.
+        pass
 
-    if backend == "openai_codex":
-        from nanobot.providers.openai_codex_provider import OpenAICodexProvider
-
-        provider = OpenAICodexProvider(default_model=model)
-    elif backend == "azure_openai":
-        from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
-
-        provider = AzureOpenAIProvider(
-            api_key=p.api_key,
-            api_base=p.api_base,
-            default_model=model,
-        )
-    elif backend == "github_copilot":
-        from nanobot.providers.github_copilot_provider import GitHubCopilotProvider
-
-        provider = GitHubCopilotProvider(default_model=model)
-    elif backend == "anthropic":
+    if backend == "anthropic":
         from nanobot.providers.anthropic_provider import AnthropicProvider
 
         provider = AnthropicProvider(
@@ -77,16 +81,21 @@ def _make_provider_core(
             default_model=model,
             extra_headers=p.extra_headers if p else None,
         )
-    elif backend == "bedrock":
-        from nanobot.providers.bedrock_provider import BedrockProvider
+    elif backend == "vidtory":
+        from nanobot.providers.vidtory_llm_provider import (
+            _DEFAULT_WORKER_ID,
+            VidtoryLLMProvider,
+        )
 
-        provider = BedrockProvider(
+        # Allow overriding workerId via providers.vidtory.extra_body.workerId in config
+        extra_body = (p.extra_body or {}) if p else {}
+        worker_id = extra_body.get("workerId", _DEFAULT_WORKER_ID)
+
+        provider = VidtoryLLMProvider(
             api_key=p.api_key if p else None,
-            api_base=p.api_base if p else None,
+            api_base=config.get_api_base(model, preset=resolved),
             default_model=model,
-            region=getattr(p, "region", None) if p else None,
-            profile=getattr(p, "profile", None) if p else None,
-            extra_body=p.extra_body if p else None,
+            worker_id=worker_id,
         )
     else:
         from nanobot.providers.openai_compat_provider import OpenAICompatProvider
@@ -238,4 +247,55 @@ def load_provider_snapshot(
     return build_provider_snapshot(
         resolve_config_env_vars(load_config(config_path)),
         preset_name=preset_name,
+    )
+
+
+def build_vision_aware_snapshot(
+    config: Config,
+    *,
+    text_preset_name: str | None = None,
+    vision_preset_name: str | None = None,
+) -> ProviderSnapshot:
+    """Build a VisionAwareProvider that routes:
+
+    - Text-only messages  → text_preset  (e.g. DeepSeek via DS2API — fast, free)
+    - Messages with images → vision_preset (e.g. Codex — can read images)
+
+    If vision_preset_name is not given, falls back to text_preset for both.
+    Config example::
+
+        model_presets:
+          deepseek_text:
+            model: deepseek-v4-pro-nothinking
+            provider: deepseek
+          codex_vision:
+            model: gpt-5.4
+            provider: custom   # → CLIProxyAPI → Codex
+    """
+    text_snapshot = build_provider_snapshot(config, preset_name=text_preset_name)
+
+    if vision_preset_name is None or vision_preset_name == text_preset_name:
+        # No separate vision preset configured — use text provider for everything.
+        return text_snapshot
+
+    vision_snapshot = build_provider_snapshot(config, preset_name=vision_preset_name)
+
+    router = VisionAwareProvider(
+        text_provider=text_snapshot.provider,
+        vision_provider=vision_snapshot.provider,
+    )
+
+    # Use text preset as the representative model/context_window for the snapshot.
+    return ProviderSnapshot(
+        provider=router,
+        model=text_snapshot.model,
+        context_window_tokens=min(
+            text_snapshot.context_window_tokens,
+            vision_snapshot.context_window_tokens,
+        ),
+        signature=(
+            "vision_aware",
+            text_snapshot.signature,
+            vision_snapshot.signature,
+        ),
     )

@@ -21,16 +21,21 @@ if TYPE_CHECKING:
     )
 )
 class SpawnTool(Tool, ContextAware):
-    """Tool to spawn a subagent for background task execution."""
+    """Spawn an isolated background subagent."""
 
-    def __init__(self, manager: "SubagentManager"):
+    def __init__(self, manager: SubagentManager):
         self._manager = manager
-        self._origin_channel: ContextVar[str] = ContextVar("spawn_origin_channel", default="cli")
-        self._origin_chat_id: ContextVar[str] = ContextVar("spawn_origin_chat_id", default="direct")
-        self._session_key: ContextVar[str] = ContextVar("spawn_session_key", default="cli:direct")
+        self._origin_channel: ContextVar[str] = ContextVar(
+            "spawn_origin_channel", default="cli"
+        )
+        self._origin_chat_id: ContextVar[str] = ContextVar(
+            "spawn_origin_chat_id", default="direct"
+        )
+        self._session_key: ContextVar[str] = ContextVar(
+            "spawn_session_key", default="cli:direct"
+        )
         self._origin_message_id: ContextVar[str | None] = ContextVar(
-            "spawn_origin_message_id",
-            default=None,
+            "spawn_origin_message_id", default=None
         )
 
     @classmethod
@@ -38,7 +43,6 @@ class SpawnTool(Tool, ContextAware):
         return cls(manager=ctx.subagent_manager)
 
     def set_context(self, ctx: RequestContext) -> None:
-        """Set the origin context for subagent announcements."""
         self._origin_channel.set(ctx.channel)
         self._origin_chat_id.set(ctx.chat_id)
         self._session_key.set(ctx.session_key or f"{ctx.channel}:{ctx.chat_id}")
@@ -51,22 +55,17 @@ class SpawnTool(Tool, ContextAware):
     @property
     def description(self) -> str:
         return (
-            "Spawn a subagent to handle a task in the background. "
-            "Use this for complex or time-consuming tasks that can run independently. "
-            "The subagent will complete the task and report back when done. "
-            "For deliverables or existing projects, inspect the workspace first "
-            "and use a dedicated subdirectory when helpful."
+            "Spawn a subagent to handle a complex task in the background. "
+            "The subagent reports its result back to the originating session."
         )
 
     async def execute(self, task: str, label: str | None = None, **kwargs: Any) -> str:
-        """Spawn a subagent to execute the given task."""
         running = self._manager.get_running_count()
         limit = self._manager.max_concurrent_subagents
         if running >= limit:
             return (
-                f"Cannot spawn subagent: concurrency limit reached "
-                f"({running}/{limit} running). Wait for a running subagent "
-                f"to complete before spawning a new one."
+                "Cannot spawn subagent: concurrency limit reached "
+                f"({running}/{limit} running)."
             )
         return await self._manager.spawn(
             task=task,

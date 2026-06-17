@@ -3,6 +3,7 @@
 .worktree/
 .assets
 .docs
+docs/
 .env
 .web
 .orion
@@ -10,13 +11,7 @@
 # Claude / AI assistant artifacts
 docs/superpowers/
 docs/plans/
-
-# webui (monorepo frontend)
-webui/node_modules/
-webui/dist/
-webui/coverage/
-webui/.vite/
-*.tsbuildinfo
+.gemini/
 
 # Python bytecode & caches
 *.pyc
@@ -105,3 +100,7 @@ HEARTBEAT.md
 USER.md
 memory/
 sessions/
+
+# Temporary test workspaces
+test_workspace2/
+

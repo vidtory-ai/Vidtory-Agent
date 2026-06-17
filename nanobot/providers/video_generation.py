@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Callable, Awaitable
 import httpx
+from loguru import logger
 
 class VideoGenerationError(RuntimeError):
     """Raised when the video generation provider cannot return video."""
 
 class GeneratedVideoResponse:
     """Video returned by the provider."""
-    def __init__(self, video_bytes: bytes, raw: dict[str, Any]):
+    def __init__(self, video_bytes: bytes, raw: dict[str, Any], video_url: str = ""):
         self.video_bytes = video_bytes
+        self.video_url = video_url  # CDN URL if available (preferred for delivery)
         self.raw = raw
 
 class VidtoryVideoGenerationClient:
@@ -31,7 +33,7 @@ class VidtoryVideoGenerationClient:
         api_base: str | None = None,
         extra_headers: dict[str, str] | None = None,
         extra_body: dict[str, Any] | None = None,
-        timeout: float = 300.0,
+        timeout: float = 900.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.api_key = api_key
@@ -50,6 +52,7 @@ class VidtoryVideoGenerationClient:
         aspect_ratio: str | None = None,
         duration: int | None = None,
         mode: str | None = None,
+        progress_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> GeneratedVideoResponse:
         if not self.api_key:
             raise VideoGenerationError(self.missing_key_message)
@@ -70,13 +73,25 @@ class VidtoryVideoGenerationClient:
         }
 
         # Reference images
+        # Vidtory API accepts both HTTP(S) URLs and base64 data URLs in refImageUrl.
+        # Pass remote URLs through directly; only read local files as base64.
         from nanobot.providers.image_generation import image_path_to_data_url
         refs = list(reference_images or [])
         if refs:
-            body["refImageUrl"] = image_path_to_data_url(refs[0])
+            first_ref = refs[0]
+            if first_ref.startswith(("http://", "https://")):
+                body["refImageUrl"] = first_ref   # CDN URL → pass directly
+            else:
+                body["refImageUrl"] = image_path_to_data_url(first_ref)  # local file → base64
             body["mode"] = mode or "i2v"  # Default to image-to-video if reference image is present
             if len(refs) > 1:
-                body["startImages"] = [image_path_to_data_url(r) for r in refs[1:]]
+                extras = []
+                for r in refs[1:]:
+                    if r.startswith(("http://", "https://")):
+                        extras.append(r)
+                    else:
+                        extras.append(image_path_to_data_url(r))
+                body["startImages"] = extras
 
         body.update(self.extra_body)
 
@@ -109,9 +124,21 @@ class VidtoryVideoGenerationClient:
             # Polling loop
             poll_url = f"{self.api_base}/generative-core/jobs/{job_id}/status"
             start_time = time.monotonic()
+            sent_patience_message = False
             while True:
-                if time.monotonic() - start_time > self.timeout:
+                elapsed = time.monotonic() - start_time
+                if elapsed > self.timeout:
                     raise VideoGenerationError("Vidtory video generation timed out while polling status")
+
+                if elapsed >= 180.0 and not sent_patience_message:
+                    sent_patience_message = True
+                    if progress_callback:
+                        try:
+                            await progress_callback(
+                                "⏳ Hệ thống vẫn đang nỗ lực tạo video cho bạn, quá trình này có thể mất thêm một chút thời gian. Xin hãy kiên nhẫn đợi thêm giây lát nhé..."
+                            )
+                        except Exception as p_exc:
+                            logger.debug("Failed to send patience progress update: {}", p_exc)
 
                 await asyncio.sleep(4.0)  # Video takes longer, poll every 4s
                 poll_resp = await client.get(poll_url, headers=headers)
@@ -132,12 +159,22 @@ class VidtoryVideoGenerationClient:
                     result_url = result.get("url")
                     if not result_url:
                         raise VideoGenerationError("Vidtory job completed but did not return a result URL")
-                    
-                    # Download the video bytes
-                    video_resp = await client.get(result_url)
-                    video_resp.raise_for_status()
+
+                    media_response = await client.get(result_url)
+                    try:
+                        media_response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        detail = media_response.text[:500]
+                        raise VideoGenerationError(
+                            f"Vidtory video download failed: {detail}"
+                        ) from exc
+                    if not media_response.content:
+                        raise VideoGenerationError(
+                            "Vidtory video download returned an empty file"
+                        )
                     return GeneratedVideoResponse(
-                        video_bytes=video_resp.content,
+                        video_bytes=media_response.content,
+                        video_url=result_url,
                         raw=status_payload,
                     )
                 elif status == "FAILED":

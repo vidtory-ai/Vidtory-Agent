@@ -9,7 +9,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import httpx
 from loguru import logger
@@ -49,11 +49,22 @@ class ImageGenerationError(RuntimeError):
 
 @dataclass(frozen=True)
 class GeneratedImageResponse:
-    """Images and optional text returned by the provider."""
+    """Images and optional text returned by the provider.
+
+    ``images`` holds base64 data URLs (``data:image/...;base64,...``).
+    ``image_urls`` holds remote HTTP(S) URLs that can be sent directly
+    without downloading, e.g. from Vidtory's CDN.
+    """
 
     images: list[str]
     content: str
     raw: dict[str, Any]
+    image_urls: list[str] | None = None
+
+    def __post_init__(self) -> None:
+        # dataclass frozen=True; bypass via object.__setattr__
+        if self.image_urls is None:
+            object.__setattr__(self, "image_urls", [])
 
 
 def _read_image_b64(path: str | Path) -> tuple[str, str]:
@@ -215,12 +226,20 @@ class ImageGenerationProvider(ABC):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse: ...
 
-    def _require_images(self, images: list[str], data: dict[str, Any]) -> None:
-        if images:
+    def _require_images(
+        self,
+        images: list[str],
+        data: dict[str, Any],
+        *,
+        image_urls: list[str] | None = None,
+    ) -> None:
+        """Raise if neither base64 images nor remote image_urls were returned."""
+        if images or (image_urls):
             return
         provider_error = data.get("error") if isinstance(data, dict) else None
         label = self.provider_name
@@ -261,6 +280,7 @@ class OpenRouterImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -353,6 +373,7 @@ class AIHubMixImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -528,6 +549,7 @@ class OllamaImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -607,6 +629,7 @@ class GeminiImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -828,6 +851,7 @@ class MiniMaxImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -961,6 +985,7 @@ class OpenAIImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -1067,6 +1092,7 @@ class CodexImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -1358,6 +1384,7 @@ class StepFunImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -1482,6 +1509,7 @@ class ZhipuImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
     ) -> GeneratedImageResponse:
@@ -1595,6 +1623,7 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
     missing_key_message = (
         "Vidtory API key is not configured. Set providers.vidtory.apiKey."
     )
+    default_timeout = 600.0
 
     def _default_base_url(self) -> str:
         return "https://bapi.vidtory.net"
@@ -1605,12 +1634,156 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
         prompt: str,
         model: str,
         reference_images: list[str] | None = None,
+        style_image_url: str | None = None,
         aspect_ratio: str | None = None,
         image_size: str | None = None,
+        logo_url: str | None = None,
+        progress_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> GeneratedImageResponse:
-        import time
         if not self.api_key:
             raise ImageGenerationError(self.missing_key_message)
+
+        refs = list(reference_images or [])
+
+        # ── Logo handling ─────────────────────────────────────────────────
+        # If a logo URL is provided, ensure it is a stable CDN URL before use.
+        # Local paths and data URLs are pre-uploaded to the Vidtory Media CDN
+        # with preserveFormat=true so that PNG transparency is preserved.
+        # The resolved logo is appended as the final startImages asset.
+        resolved_logo_url = await self._resolve_logo_url(logo_url) if logo_url else None
+
+        # When a logo is present, keep every image in one ordered startImages
+        # collection. The generation backend may not combine refImageUrl and
+        # startImages, so splitting a single content reference from the logo can
+        # silently drop the logo before Gemini receives the request.
+        if resolved_logo_url and refs:
+            logger.info(
+                "Vidtory: {} content reference(s) plus logo — sending one startImages collection",
+                len(refs),
+            )
+            return await self._generate_single(
+                prompt=prompt,
+                model=model,
+                ref_image=None,
+                extra_images=refs,
+                style_image_url=style_image_url,
+                logo_url=resolved_logo_url,
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+                progress_callback=progress_callback,
+            )
+
+        # When multiple reference images are provided, send ALL of them equally
+        # via startImages so Vidtory forwards every image into Gemini's
+        # contents[0].parts as separate inlineData entries — no primary/secondary
+        # distinction at the Gemini level.
+        if len(refs) > 1:
+            logger.info(
+                "Vidtory: {} reference images — sending all via startImages (equal weight)",
+                len(refs),
+            )
+            return await self._generate_single(
+                prompt=prompt,
+                model=model,
+                ref_image=None,
+                extra_images=refs,
+                style_image_url=style_image_url,
+                logo_url=resolved_logo_url,
+                aspect_ratio=aspect_ratio,
+                image_size=image_size,
+                progress_callback=progress_callback,
+            )
+
+        # Single image (or no image) path
+        ref = refs[0] if refs else None
+        return await self._generate_single(
+            prompt=prompt,
+            model=model,
+            ref_image=ref,
+            extra_images=[],
+            style_image_url=style_image_url,
+            logo_url=resolved_logo_url,
+            aspect_ratio=aspect_ratio,
+            image_size=image_size,
+            progress_callback=progress_callback,
+        )
+
+    def _image_to_ref_value(self, image_ref: str) -> str:
+        """Convert an image path or URL to a value suitable for Vidtory refImageUrl."""
+        if image_ref.startswith(("http://", "https://", "data:")):
+            return image_ref
+        return image_path_to_data_url(image_ref)
+
+    async def _resolve_logo_url(self, logo_source: str) -> str | None:
+        """Ensure a logo is available as a stable Vidtory CDN URL.
+
+        - Already-uploaded Vidtory CDN URLs are returned as-is (no re-upload).
+        - Local paths, ``data:`` URLs, and non-Vidtory remote URLs are uploaded
+          via POST /media/upload (Vidtory SDK) with ``preserveFormat=true`` so
+          that PNG alpha channel (transparent background) is preserved.
+
+        Returns the CDN URL on success, or None on failure (with a warning
+        logged so generation can continue without the logo overlay).
+        """
+        logo_source = (logo_source or "").strip()
+        if not logo_source:
+            return None
+
+        # Already a Vidtory CDN URL — use directly without re-uploading.
+        # Known Vidtory CDN domains: bapi.vidtory.net, b2b.vidtory.net,
+        # cdn.vidtory.net, assets.vidtory.net, etc.
+        if logo_source.startswith("https://") and "vidtory" in logo_source.lower():
+            logger.debug("Logo is already a Vidtory CDN URL — using directly: {}", logo_source)
+            return logo_source
+
+        # All other sources (local file, data URL, external HTTP URL) →
+        # upload to Vidtory Media CDN via POST /media/upload.
+        # The upload utility handles: data URLs, local paths, remote URLs,
+        # mime-type detection, preserveFormat=true, and retry on transient errors.
+        try:
+            from nanobot.utils.logo_upload import upload_logo_to_cdn
+
+            cdn_url = await upload_logo_to_cdn(
+                logo_source,
+                api_key=self.api_key or "",
+                base_url=self.api_base,
+            )
+            logger.info("Logo resolved to CDN URL: {}", cdn_url)
+            return cdn_url
+        except Exception as exc:
+            logger.warning(
+                "Logo pre-upload failed — generation will proceed without logo overlay: {}",
+                exc,
+            )
+            return None
+
+
+    async def _generate_single(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        ref_image: str | None,
+        extra_images: list[str],
+        style_image_url: str | None,
+        logo_url: str | None = None,
+        aspect_ratio: str | None,
+        image_size: str | None,
+        progress_callback: Callable[[str], Awaitable[None]] | None = None,
+    ) -> GeneratedImageResponse:
+        """Submit a single Vidtory image generation job and poll until completion.
+
+        ``ref_image``        → ``refImageUrl``   (single primary content/subject reference)
+        ``extra_images``     → ``startImages``   (array of images forwarded equally into Gemini)
+        ``style_image_url``  → ``styleImageUrl`` (style-transfer reference, optional)
+        ``logo_url``         → final ``startImages`` entry (brand logo asset;
+                                                            pre-uploaded Vidtory CDN URL)
+
+        For multi-image requests, pass all images via ``extra_images`` so that
+        Vidtory forwards every one into Gemini's contents[0].parts as separate
+        ``inlineData`` entries with equal weight.
+        """
+        import time
 
         # Aspect ratio mapping
         ar_map = {
@@ -1628,16 +1801,47 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
             "modelId": model or "gemini-3.1-flash-image-preview",
             "resolution": image_size or "1K",
         }
-
-        # Reference images mapping
-        refs = list(reference_images or [])
-        if refs:
-            # Send the first one as refImageUrl
-            body["refImageUrl"] = image_path_to_data_url(refs[0])
-            if len(refs) > 1:
-                body["startImages"] = [image_path_to_data_url(r) for r in refs[1:]]
-
         body.update(self.extra_body)
+
+        # Single reference image → refImageUrl (content/subject, not logo)
+        if ref_image:
+            body["refImageUrl"] = self._image_to_ref_value(ref_image)
+
+        # Multiple reference images → startImages array
+        # Vidtory forwards every entry into Gemini contents[0].parts as inlineData,
+        # giving all images equal weight in the generation context.
+        if extra_images:
+            # Dedup images (same data URL can appear twice from LLM or media group buffering)
+            unique_images = list(dict.fromkeys(
+                self._image_to_ref_value(r) for r in extra_images
+            ))
+            body["startImages"] = unique_images
+            logger.info(
+                "Vidtory: {} unique image(s) forwarded via startImages (from {} provided)",
+                len(unique_images), len(extra_images),
+            )
+
+        # Style reference image (optional, separate semantic from content images)
+        if style_image_url:
+            body["styleImageUrl"] = self._image_to_ref_value(style_image_url)
+
+        # Brand logo — injected into startImages so Vidtory/Gemini receives it
+        # as a reference image asset alongside the prompt.
+        # NOTE: The /generative-core/image API does NOT have a dedicated logoUrl
+        # field. startImages is the correct channel for brand logo injection.
+        # The logo URL is always a Vidtory CDN URL (pre-resolved via _resolve_logo_url)
+        # so it can be passed directly without re-encoding.
+        if logo_url:
+            existing_starts = list(body.get("startImages") or [])
+            # Append logo to end of startImages (after any user reference images)
+            if logo_url not in existing_starts:
+                existing_starts.append(logo_url)
+            body["startImages"] = existing_starts
+            logger.info(
+                "Vidtory: brand logo injected into startImages ({} total image(s)): {}",
+                len(existing_starts),
+                logo_url,
+            )
 
         # Use x-api-key for merchant authentication
         headers = {
@@ -1669,9 +1873,21 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
             # Polling loop
             poll_url = f"{self.api_base}/generative-core/jobs/{job_id}/status"
             start_time = time.monotonic()
+            sent_patience_message = False
             while True:
-                if time.monotonic() - start_time > self.timeout:
+                elapsed = time.monotonic() - start_time
+                if elapsed > self.timeout:
                     raise ImageGenerationError("Vidtory image generation timed out while polling status")
+
+                if elapsed >= 180.0 and not sent_patience_message:
+                    sent_patience_message = True
+                    if progress_callback:
+                        try:
+                            await progress_callback(
+                                "⏳ Hệ thống vẫn đang nỗ lực tạo ảnh cho bạn, quá trình này có thể mất thêm một chút thời gian. Xin hãy kiên nhẫn đợi thêm giây lát nhé..."
+                            )
+                        except Exception as p_exc:
+                            logger.debug("Failed to send patience progress update: {}", p_exc)
 
                 await asyncio.sleep(2.0)
                 poll_resp = await client.get(poll_url, headers=headers)
@@ -1692,11 +1908,12 @@ class VidtoryImageGenerationClient(ImageGenerationProvider):
                     result_url = result.get("url")
                     if not result_url:
                         raise ImageGenerationError("Vidtory job completed but did not return a result URL")
-                    
-                    # Download the generated image and return it
-                    image_data_url = await _download_image_data_url(client, result_url)
+
+                    # Return the CDN URL directly — no local download needed.
+                    # Telegram Bot API and other channels accept HTTP(S) URLs directly.
                     return GeneratedImageResponse(
-                        images=[image_data_url],
+                        images=[],
+                        image_urls=[result_url],
                         content="",
                         raw=status_payload,
                     )

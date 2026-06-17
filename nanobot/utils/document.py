@@ -241,13 +241,26 @@ def extract_documents(
     """Separate images from documents in *media_paths*.
 
     Documents (PDF, DOCX, XLSX, PPTX, plain-text, …) have their text
-    extracted and appended to *text*.  Only image paths are kept in the
-    returned list so that downstream layers only need to handle vision
-    blocks.
+    extracted, security-scanned, and appended to *text*.  Only image
+    paths are kept in the returned list so that downstream layers only
+    need to handle vision blocks.
+
+    Security: Each document goes through two layers of scanning:
+    1. File-level: extension whitelist, size limit, magic-byte validation
+    2. Content-level: script injection, prompt injection, malicious URLs
+
+    Safe/warning content is wrapped with prompt-injection-resistant
+    delimiters.  Blocked content is replaced with an in-line warning.
 
     Files larger than *max_file_size* bytes are skipped with a warning
     to avoid unbounded memory / CPU usage.
     """
+    from nanobot.utils.document_sanitizer import (
+        sanitize_document,
+        sanitize_extracted_text,
+        wrap_document_content,
+    )
+
     image_paths: list[str] = []
     doc_texts: list[str] = []
 
@@ -273,11 +286,61 @@ def extract_documents(
         if mime and mime.startswith("image/"):
             image_paths.append(path_str)
         else:
+            # ── Security Layer 1: File-level checks ───────────────────
+            file_scan = sanitize_document(p)
+            if file_scan.status == "blocked":
+                logger.warning(
+                    "Document blocked by security scan: {} — {}",
+                    p.name, file_scan.threats,
+                )
+                doc_texts.append(
+                    f"[File: {p.name}] ⚠️ File bị từ chối: "
+                    + "; ".join(file_scan.threats)
+                )
+                continue
+
+            # ── Extract text ──────────────────────────────────────────
             extracted = extract_text(p)
-            if extracted and not extracted.startswith("[error:"):
-                doc_texts.append(f"[File: {p.name}]\n{extracted}")
+            if not extracted or extracted.startswith("[error:"):
+                if extracted:
+                    doc_texts.append(f"[File: {p.name}] {extracted}")
+                continue
+
+            # ── Security Layer 2: Content-level checks ────────────────
+            content_scan = sanitize_extracted_text(extracted, p.name)
+
+            if content_scan.status == "blocked":
+                logger.warning(
+                    "Document content blocked by security scan: {} — {}",
+                    p.name, content_scan.threats,
+                )
+                doc_texts.append(
+                    f"[File: {p.name}] ⚠️ Nội dung bị từ chối: "
+                    + "; ".join(content_scan.threats)
+                )
+                continue
+
+            # Use sanitized text (URLs neutralized, etc.) or original
+            final_text = content_scan.clean_text or extracted
+
+            if content_scan.status == "warning":
+                logger.info(
+                    "Document content has warnings: {} — {}",
+                    p.name, content_scan.threats,
+                )
+                # Prepend warning to wrapped content
+                warning_header = (
+                    "⚠️ CẢNH BÁO: File này chứa nội dung đáng ngờ ("
+                    + ", ".join(content_scan.threats)
+                    + "). Nội dung đã được vô hiệu hóa.\n"
+                )
+                final_text = warning_header + final_text
+
+            # Wrap with prompt-injection-resistant delimiters
+            doc_texts.append(wrap_document_content(final_text, p.name))
 
     if doc_texts:
         text = text + "\n\n" + "\n\n".join(doc_texts)
 
     return text, image_paths
+

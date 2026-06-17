@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import os
+import re
 import time
-from contextlib import AsyncExitStack, nullcontext, suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -25,7 +26,6 @@ from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
 from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.self import MyTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.cli_apps import utils as cli_app_utils
@@ -33,6 +33,10 @@ from nanobot.command import CommandContext, CommandRouter, register_builtin_comm
 from nanobot.config.schema import AgentDefaults, ModelPresetConfig
 from nanobot.providers.base import LLMProvider
 from nanobot.providers.factory import ProviderSnapshot
+from nanobot.security.request_policy import (
+    evaluate_request,
+    is_resident_designer_profile,
+)
 from nanobot.session.goal_state import (
     runner_wall_llm_timeout_s,
 )
@@ -59,6 +63,41 @@ if TYPE_CHECKING:
 
 
 UNIFIED_SESSION_KEY = "unified:default"
+
+
+_KEYCAP_CHOICE_RE = re.compile(r"(?m)^\s*([1-9])\ufe0f?\u20e3\s+\S")
+_PLAIN_CHOICE_RE = re.compile(r"(?m)^\s*([1-9])[.)]\s+\S")
+_PLAIN_CHOICE_CUES = (
+    "chọn",
+    "lựa chọn",
+    "phương án",
+    "hướng nào",
+    "trả lời",
+    "which option",
+    "choose",
+)
+
+
+def extract_numbered_choice_buttons(content: str) -> list[list[str]]:
+    """Convert a short numbered choice list into compact 1/2/3 buttons."""
+    if not content:
+        return []
+
+    matches = list(_KEYCAP_CHOICE_RE.finditer(content))
+    if not matches:
+        matches = list(_PLAIN_CHOICE_RE.finditer(content))
+        if matches:
+            prefix = content[max(0, matches[0].start() - 180):matches[0].start()].lower()
+            if not any(cue in prefix for cue in _PLAIN_CHOICE_CUES):
+                return []
+
+    numbers = [int(match.group(1)) for match in matches]
+    if not 2 <= len(numbers) <= 4 or numbers != list(range(1, len(numbers) + 1)):
+        return []
+
+    labels = [str(number) for number in numbers]
+    return [labels[:3], labels[3:]] if len(labels) > 3 else [labels]
+
 
 class TurnState(Enum):
     RESTORE = auto()
@@ -99,6 +138,7 @@ class TurnContext:
 
     user_persisted_early: bool = False
     save_skip: int = 0
+    reflexion_attempts: int = 0
 
     outbound: OutboundMessage | None = None
 
@@ -195,6 +235,10 @@ class AgentLoop:
         from nanobot.config.schema import ToolsConfig
 
         _tc = tools_config or ToolsConfig()
+        if is_resident_designer_profile(_tc.capability_profile):
+            _tc = _tc.model_copy(update={
+                "restrict_to_workspace": True,
+            })
         defaults = AgentDefaults()
         self.bus = bus
         self.channels_config = channels_config
@@ -226,23 +270,32 @@ class AgentLoop:
             else defaults.tool_hint_max_length
         )
         self.tools_config = _tc
+        self.capability_profile = _tc.capability_profile
         self.providers_config = providers_config
-        self.web_config = _tc.web
-        self.exec_config = _tc.exec
         self._image_generation_provider_configs = dict(image_generation_provider_configs or {})
-        if (
-            image_generation_provider_config is not None
-            and "openrouter" not in self._image_generation_provider_configs
-        ):
-            self._image_generation_provider_configs["openrouter"] = image_generation_provider_config
+        if image_generation_provider_config is not None:
+            # Use the configured provider name as the key; fall back to "openrouter" for
+            # backward compatibility with callers that pass a legacy single-provider config.
+            _legacy_provider_name = getattr(
+                getattr(_tc, "image_generation", None), "provider", None
+            ) or "openrouter"
+            if _legacy_provider_name not in self._image_generation_provider_configs:
+                self._image_generation_provider_configs[_legacy_provider_name] = (
+                    image_generation_provider_config
+                )
         self.cron_service = cron_service
-        self.restrict_to_workspace = restrict_to_workspace
+        self.restrict_to_workspace = _tc.restrict_to_workspace
         self._start_time = time.time()
         self._last_usage: dict[str, int] = {}
         self._pending_turn_latency_ms: dict[str, int] = {}
         self._extra_hooks: list[AgentHook] = hooks or []
 
-        self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
+        self.context = ContextBuilder(
+            workspace,
+            timezone=timezone,
+            disabled_skills=disabled_skills,
+            capability_profile=self.capability_profile,
+        )
         self.sessions = session_manager or SessionManager(workspace)
         self._webui_turns = WebuiTurnCoordinator(
             bus=self.bus,
@@ -261,18 +314,25 @@ class AgentLoop:
             model=self.model,
             tools_config=_tc,
             max_tool_result_chars=self.max_tool_result_chars,
-            restrict_to_workspace=restrict_to_workspace,
+            restrict_to_workspace=_tc.restrict_to_workspace,
             disabled_skills=disabled_skills,
             max_iterations=self.max_iterations,
             llm_wall_timeout_for_session=lambda sk: runner_wall_llm_timeout_s(self.sessions, sk),
         )
         self._unified_session = unified_session
         self._max_messages = max_messages if max_messages > 0 else 120
+        # NANOBOT_LLM_HISTORY_MESSAGES can explicitly narrow the configured
+        # replay window for deployments that need a smaller prompt.
+        _env_hist = os.environ.get("NANOBOT_LLM_HISTORY_MESSAGES", "").strip()
+        try:
+            self._llm_history_messages: int = (
+                max(2, int(_env_hist)) if _env_hist else self._max_messages
+            )
+        except (ValueError, TypeError):
+            self._llm_history_messages = self._max_messages
         self._running = False
-        self._mcp_servers = mcp_servers or {}
-        self._mcp_stacks: dict[str, AsyncExitStack] = {}
         self._mcp_connected = False
-        self._mcp_connecting = False
+        self._mcp_stacks: dict[str, Any] = {}
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._background_tasks: list[asyncio.Task] = []
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -355,7 +415,6 @@ class AgentLoop:
             provider_retry_mode=defaults.provider_retry_mode,
             tool_hint_max_length=defaults.tool_hint_max_length,
             restrict_to_workspace=config.tools.restrict_to_workspace,
-            mcp_servers=config.tools.mcp_servers,
             channels_config=config.channels,
             timezone=defaults.timezone,
             unified_session=defaults.unified_session,
@@ -470,41 +529,18 @@ class AgentLoop:
         loader = ToolLoader()
         registered = loader.load(ctx, self.tools)
 
-        # MyTool needs runtime state reference — manual registration
-        if self.tools_config.my.enable:
-            self.tools.register(
-                MyTool(runtime_state=self, modify_allowed=self.tools_config.my.allow_set)
-            )
-            registered.append("my")
-
         logger.info("Registered {} tools: {}", len(registered), registered)
 
     async def _connect_mcp(self) -> None:
-        """Connect to configured MCP servers (one-time, lazy)."""
-        if self._mcp_connected or self._mcp_connecting or not self._mcp_servers:
-            return
-        self._mcp_connecting = True
-        from nanobot.agent.tools.mcp import connect_mcp_servers
-
-        try:
-            self._mcp_stacks = await connect_mcp_servers(self._mcp_servers, self.tools)
-            if self._mcp_stacks:
-                self._mcp_connected = True
-            else:
-                logger.warning("No MCP servers connected successfully (will retry next message)")
-        except asyncio.CancelledError:
-            logger.warning("MCP connection cancelled (will retry next message)")
-            self._mcp_stacks.clear()
-        except BaseException as e:
-            logger.warning("Failed to connect MCP servers (will retry next message): {}", e)
-            self._mcp_stacks.clear()
-        finally:
-            self._mcp_connecting = False
+        """MCP servers removed — no-op stub for compatibility."""
+        pass
 
     def _set_tool_context(
         self, channel: str, chat_id: str,
         message_id: str | None = None, metadata: dict | None = None,
         session_key: str | None = None,
+        media: list[str] | None = None,
+        original_user_content: str | None = None,
     ) -> None:
         """Update context for all tools that need routing info."""
         from nanobot.agent.tools.context import ContextAware, RequestContext
@@ -516,12 +552,18 @@ class AgentLoop:
         else:
             effective_key = f"{channel}:{chat_id}"
 
+        merged_meta = dict(metadata or {})
+        if media is not None:
+            merged_meta["media"] = media
+        if original_user_content is not None:
+            merged_meta["original_user_content"] = original_user_content
+
         request_ctx = RequestContext(
             channel=channel,
             chat_id=chat_id,
             message_id=message_id,
             session_key=effective_key,
-            metadata=dict(metadata or {}),
+            metadata=merged_meta,
         )
 
         for name in self.tools.tool_names:
@@ -587,8 +629,19 @@ class AgentLoop:
         session: Session,
         history: list[dict[str, Any]],
         pending_summary: str | None,
+        intent: str = "general",
     ) -> list[dict[str, Any]]:
         """Build the initial message list for the LLM turn."""
+        cli_lines = cli_app_utils.runtime_lines(msg, self.context.workspace)
+        customer_lines = self._build_customer_context_lines(msg)
+        all_runtime_lines = cli_lines + customer_lines
+        if msg.metadata.get("_security_partial"):
+            all_runtime_lines.append(
+                "The original request included blocked operational wording that was removed. "
+                "Respond naturally to the remaining creative brief, and if useful, briefly "
+                "decline any missing operational part without mentioning internal policy."
+            )
+
         return self.context.build_messages(
             history=history,
             current_message=image_generation_prompt(msg.content, msg.metadata),
@@ -597,8 +650,146 @@ class AgentLoop:
             chat_id=self._runtime_chat_id(msg),
             sender_id=msg.sender_id,
             session_summary=pending_summary,
-            session_metadata=session.metadata, current_runtime_lines=cli_app_utils.runtime_lines(msg, self.context.workspace),
+            session_metadata=session.metadata,
+            current_runtime_lines=all_runtime_lines,
+            intent=intent,
         )
+
+    @staticmethod
+    def _build_customer_context_lines(msg: InboundMessage) -> list[str]:
+        """Extract customer profile from message metadata and return LLM-visible context lines.
+
+        Injects two sets of context lines into every LLM turn:
+        1. **Onboarding Gate** — onboarding_status so agent knows to trigger flow
+        2. **Customer Knowledge** — per-user brand guidelines, channels, preferences
+
+        NOTE: Vidtory creative knowledge (photography styles, platform specs) is injected
+        into the system prompt via ContextBuilder.build_system_prompt() — not here.
+        Do NOT re-inject it here — that would double the token cost every turn.
+
+        Also sets the ``telegram_customer_profile`` contextvar so tools like
+        generate_image/generate_video can access brand data for prompt optimization.
+        """
+        lines: list[str] = []
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+
+        # ── Auto-create minimal profile for new users (silent, no blocking) ──
+        # New users get a minimal profile created automatically so they can
+        # start working immediately without any onboarding questionnaire.
+        onboarding_status = metadata.get("onboarding_status", "")
+        if onboarding_status == "none":
+            try:
+                from nanobot.utils.customer_profile import create_minimal_profile
+                uid = (msg.sender_id or "").split("|")[0].strip()
+                if uid:
+                    create_minimal_profile(uid)
+            except Exception:
+                pass  # Non-critical — never block the turn
+
+        # ── Customer Knowledge — per-user brand & channel preferences ─────────
+        profile = metadata.get("customer_profile")
+        if not isinstance(profile, dict):
+            if onboarding_status == "minimal":
+                lines.append(
+                    "[ONBOARDING] Profile chưa đầy đủ. Phục vụ yêu cầu hiện tại trước "
+                    "và chỉ gợi ý bổ sung thông tin khi phù hợp."
+                )
+            return lines
+
+        # Set contextvar so creative tools (generate_image, generate_video) can read brand data
+        try:
+            from nanobot.utils.context_vars import telegram_customer_profile
+            telegram_customer_profile.set(profile)
+        except Exception:
+            pass
+
+        try:
+            from nanobot.utils.customer_context import format_customer_context_lines
+            customer_lines = format_customer_context_lines(profile)
+            lines.extend(customer_lines)
+        except Exception:
+            pass
+
+        brand = profile.get("brand") if isinstance(profile.get("brand"), dict) else {}
+        preferences = (
+            profile.get("preferences") if isinstance(profile.get("preferences"), dict) else {}
+        )
+        # Authoritative logo check: read from indexed DB column (set by /setlogo and set_logo_and_refresh_identity).
+        # profile JSON brand.logoUrl can be stale; DB is always up-to-date.
+        _uid_for_logo = str(
+            profile.get("telegramUserId") or profile.get("telegram_user_id") or ""
+        ).strip().split("|")[0]
+        _has_logo = False
+        try:
+            from nanobot.utils.customer_profile import get_logo_url as _get_logo_url
+            _has_logo = bool(_get_logo_url(_uid_for_logo)) if _uid_for_logo else bool(str(brand.get("logoUrl") or "").strip())
+        except Exception:
+            _has_logo = bool(str(brand.get("logoUrl") or "").strip())
+        if (
+            not preferences.get("logoPromptSkipped")
+            and not _has_logo
+        ):
+            lines.append(
+                "[LOGO_OPTIMIZATION_NOTE] Khi đưa gợi ý hướng thiết kế hoặc vừa gửi kết quả tạo ảnh/video, "
+                "đặt đúng một dòng cuối: Bạn có thể gửi logo bất cứ lúc nào để kết quả bám nhận diện thương hiệu tốt hơn."
+            )
+        if (
+            preferences.get("logoPromptSkipped")
+            and not _has_logo
+        ):
+            lines.append(
+                "[LOGO_OPTIMIZATION_NOTE] Nếu vừa gửi kết quả tạo ảnh/video, đặt đúng một dòng cuối: "
+                "Bạn có thể gửi thêm logo bất cứ lúc nào để hệ thống bám nhận diện thương hiệu tốt hơn."
+            )
+
+        try:
+            from nanobot.utils.brand_intelligence import (
+                build_adaptive_onboarding_step,
+                build_creative_suggestions,
+                detect_brand_update_intent,
+                get_profile_gaps,
+                should_offer_onboarding,
+            )
+
+            brand_update = detect_brand_update_intent(msg.content)
+            if brand_update:
+                lines.append(
+                    "[BRAND_UPDATE_INTENT] Đây là yêu cầu cập nhật Brand Profile. "
+                    "PHẢI gọi update_customer_profile với các trường được nêu; "
+                    "KHÔNG tạo ảnh trừ khi người dùng đồng thời yêu cầu một sản phẩm cụ thể."
+                )
+
+            gaps = get_profile_gaps(profile)
+            if gaps and (
+                onboarding_status == "in_progress"
+                or should_offer_onboarding(profile, msg.content)
+            ):
+                step = build_adaptive_onboarding_step(profile)
+                lines.append(
+                    "[ADAPTIVE_ONBOARDING] "
+                    f"Thiếu: {', '.join(gaps)}. Câu hỏi tiếp theo: {step['prompt']} "
+                    f"Lựa chọn nút: {step['buttons']}. "
+                    "Chấp nhận cả bấm nút, nhập text, URL hoặc tải file. "
+                    "Không chặn yêu cầu hiện tại nếu người dùng chưa muốn bổ sung."
+                )
+
+            creative_markers = (
+                "ảnh", "hình", "poster", "banner", "story", "video", "thiết kế", "tạo"
+            )
+            if not brand_update and any(
+                marker in msg.content.lower() for marker in creative_markers
+            ):
+                industry = str((profile.get("business") or {}).get("industry") or "")
+                suggestions = build_creative_suggestions(msg.content, industry)
+                lines.append(
+                    "[CREATIVE_DIRECTIONS] Nếu cần cho người dùng chọn hướng sáng tạo, "
+                    f"ưu tiên ba nút sát yêu cầu này: {suggestions}. "
+                    "Người dùng có thể bấm nút hoặc gõ lại đúng nội dung lựa chọn."
+                )
+        except Exception:
+            pass
+
+        return lines
 
     async def _dispatch_command_inline(
         self,
@@ -671,8 +862,25 @@ class AgentLoop:
 
         Returns (final_content, tools_used, messages, stop_reason, had_injections).
         """
-        from nanobot.utils.context_vars import telegram_user_api_key, telegram_user_workspace
-        token_key = telegram_user_api_key.set(metadata.get("user_api_key", "") if metadata else "")
+        from nanobot.utils.context_vars import (
+            telegram_requires_user_vidtory_api_key,
+            telegram_user_api_key,
+            telegram_user_workspace,
+            telegram_vidtory_api_key,
+        )
+        # telegram_vidtory_api_key: Vidtory merchant key for image/video/audio tools
+        # telegram_user_api_key: intentionally left empty so LLM providers use system keys
+        requires_user_vidtory_key = bool(
+            channel == "telegram"
+            and metadata is not None
+            and "user_api_key" in metadata
+        )
+        token_requires_vidtory_key = telegram_requires_user_vidtory_api_key.set(
+            requires_user_vidtory_key
+        )
+        token_vidtory_key = telegram_vidtory_api_key.set(metadata.get("user_api_key", "") if metadata else "")
+        token_key = telegram_user_api_key.set("")  # LLM always uses system config keys
+
         token_ws = telegram_user_workspace.set(metadata.get("user_workspace", "") if metadata else "")
         try:
             self._sync_subagent_runtime_limits()
@@ -781,7 +989,10 @@ class AgentLoop:
             return result.final_content, result.tools_used, result.messages, result.stop_reason, result.had_injections
         finally:
             telegram_user_api_key.reset(token_key)
+            telegram_vidtory_api_key.reset(token_vidtory_key)
+            telegram_requires_user_vidtory_api_key.reset(token_requires_vidtory_key)
             telegram_user_workspace.reset(token_ws)
+
 
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
@@ -809,6 +1020,30 @@ class AgentLoop:
                 continue
 
             raw = msg.content.strip()
+            raw_policy = evaluate_request(self.capability_profile, raw)
+            if raw_policy.blocked:
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=raw_policy.response,
+                    metadata={
+                        **(msg.metadata or {}),
+                        "_security_blocked": True,
+                        "_security_reason": raw_policy.reason,
+                    },
+                ))
+                continue
+            if raw_policy.redacted_text and raw_policy.redacted_text.strip() and raw_policy.redacted_text.strip() != raw:
+                msg = dataclasses.replace(
+                    msg,
+                    content=raw_policy.redacted_text,
+                    metadata={
+                        **(msg.metadata or {}),
+                        "_security_partial": True,
+                        "_security_reason": raw_policy.reason or "mixed_request",
+                    },
+                )
+                raw = msg.content.strip()
             if self.commands.is_priority(raw):
                 await self._dispatch_command_inline(
                     msg, msg.session_key, raw,
@@ -860,16 +1095,16 @@ class AgentLoop:
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message: per-session serial, cross-session concurrent."""
-        session_key = self._effective_session_key(msg)
-        if session_key != msg.session_key:
-            msg = dataclasses.replace(msg, session_key_override=session_key)
-        lock = self._session_locks.setdefault(session_key, asyncio.Lock())
+        effective_key = self._effective_session_key(msg)
+        if effective_key != msg.session_key:
+            msg = dataclasses.replace(msg, session_key_override=effective_key)
+        lock = self._session_locks.setdefault(effective_key, asyncio.Lock())
         gate = self._concurrency_gate or nullcontext()
 
         # Register a pending queue so follow-up messages for this session are
         # routed here (mid-turn injection) instead of spawning a new task.
         pending = asyncio.Queue(maxsize=20)
-        self._pending_queues[session_key] = pending
+        self._pending_queues[effective_key] = pending
 
         try:
             async with lock, gate:
@@ -918,14 +1153,14 @@ class AgentLoop:
                             content="", metadata=msg.metadata or {},
                         ))
                     if msg.channel == "websocket":
-                        turn_lat = self._pending_turn_latency_ms.pop(session_key, None)
+                        turn_lat = self._pending_turn_latency_ms.pop(effective_key, None)
                         await self._webui_turns.handle_turn_end(
                             msg,
-                            session_key=session_key,
+                            session_key=effective_key,
                             latency_ms=turn_lat,
                         )
                 except asyncio.CancelledError:
-                    logger.info("Task cancelled for session {}", session_key)
+                    logger.info("Task cancelled for session {}", effective_key)
                     # Preserve partial context from the interrupted turn so
                     # the user does not lose tool results and assistant
                     # messages accumulated before /stop.  The checkpoint was
@@ -946,12 +1181,12 @@ class AgentLoop:
                     except Exception:
                         logger.debug(
                             "Could not restore checkpoint for cancelled session {}",
-                            session_key,
+                            effective_key,
                             exc_info=True,
                         )
                     raise
                 except Exception:
-                    logger.exception("Error processing message for session {}", session_key)
+                    logger.exception("Error processing message for session {}", effective_key)
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=msg.channel, chat_id=msg.chat_id,
                         content="Sorry, I encountered an error.",
@@ -960,7 +1195,9 @@ class AgentLoop:
             # Drain any messages still in the pending queue and re-publish
             # them to the bus so they are processed as fresh inbound messages
             # rather than silently lost.
-            queue = self._pending_queues.pop(session_key, None)
+            # NOTE: use effective_key (not session_key) — this is the canonical
+            # routing key used when the queue was registered above.
+            queue = self._pending_queues.pop(effective_key, None)
             if queue is not None:
                 leftover = 0
                 while True:
@@ -973,11 +1210,11 @@ class AgentLoop:
                 if leftover:
                     logger.info(
                         "Re-published {} leftover message(s) to bus for session {}",
-                        leftover, session_key,
+                        leftover, effective_key,
                     )
             await self._webui_turns.publish_run_status(msg, "idle")
-            self._pending_turn_latency_ms.pop(session_key, None)
-            self._webui_turns.discard(session_key)
+            self._pending_turn_latency_ms.pop(effective_key, None)
+            self._webui_turns.discard(effective_key)
 
     async def close_mcp(self) -> None:
         """Drain pending background archives, then close MCP connections."""
@@ -1038,9 +1275,11 @@ class AgentLoop:
         self._set_tool_context(
             channel, chat_id, msg.metadata.get("message_id"),
             msg.metadata, session_key=key,
+            media=msg.media,
+            original_user_content=msg.content,
         )
         _hist_kwargs: dict[str, Any] = {
-            "max_messages": self._max_messages,
+            "max_messages": self._llm_history_messages,
             "max_tokens": self._replay_token_budget(),
             "include_timestamps": True,
         }
@@ -1061,7 +1300,7 @@ class AgentLoop:
         final_content, _, all_msgs, stop_reason, _ = await self._run_agent_loop(
             messages, session=session, channel=channel, chat_id=chat_id,
             message_id=msg.metadata.get("message_id"),
-            metadata=msg.metadata,
+            metadata={**(msg.metadata or {}), "media": msg.media},
             session_key=key,
             pending_queue=pending_queue,
         )
@@ -1211,6 +1450,11 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
+            buttons=(
+                extract_numbered_choice_buttons(final_content)
+                if is_resident_designer_profile(self.capability_profile)
+                else []
+            ),
             metadata=meta,
         )
 
@@ -1246,6 +1490,47 @@ class AgentLoop:
 
     async def _state_command(self, ctx: TurnContext) -> str:
         raw = ctx.msg.content.strip()
+        policy = evaluate_request(self.capability_profile, raw)
+        if policy.blocked:
+            logger.warning(
+                "Request blocked by capability policy {}: {}",
+                self.capability_profile,
+                policy.reason,
+            )
+            ctx.user_persisted_early = self._persist_user_message_early(
+                ctx.msg, ctx.session
+            )
+            ctx.session.add_message(
+                "assistant",
+                policy.response,
+                security_policy=self.capability_profile,
+                security_reason=policy.reason,
+            )
+            self.sessions.save(ctx.session)
+            self._clear_pending_user_turn(ctx.session)
+            ctx.outbound = OutboundMessage(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                content=policy.response,
+                metadata={
+                    **(ctx.msg.metadata or {}),
+                    "_security_blocked": True,
+                    "_security_reason": policy.reason,
+                },
+            )
+            return "shortcut"
+        if policy.redacted_text and policy.redacted_text.strip() and policy.redacted_text.strip() != raw:
+            ctx.msg = dataclasses.replace(
+                ctx.msg,
+                content=policy.redacted_text,
+                metadata={
+                    **(ctx.msg.metadata or {}),
+                    "_security_partial": True,
+                    "_security_reason": policy.reason or "mixed_request",
+                },
+            )
+            raw = ctx.msg.content.strip()
+
         cmd_ctx = CommandContext(
             msg=ctx.msg, session=ctx.session, key=ctx.session_key, raw=raw, loop=self
         )
@@ -1280,13 +1565,17 @@ class AgentLoop:
             ctx.msg.metadata.get("message_id"),
             ctx.msg.metadata,
             session_key=ctx.session_key,
+            media=ctx.msg.media,
+            original_user_content=ctx.msg.content,
         )
         if message_tool := self.tools.get("message"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
         _hist_kwargs: dict[str, Any] = {
-            "max_messages": self._max_messages,
+            # Use a small window to keep LLM token usage low.
+            # Storage / compaction still uses self._max_messages (unchanged).
+            "max_messages": self._llm_history_messages,
             "max_tokens": self._replay_token_budget(),
             "include_timestamps": True,
         }
@@ -1297,8 +1586,22 @@ class AgentLoop:
             self.llm_runtime(),
         )
 
+        from nanobot.agent.router import IntentRouter
+        router = IntentRouter(self.provider, self.model)
+        content_for_intent = str(ctx.msg.content) if ctx.msg.content else ""
+
+        # Phase 3: Speed Optimization - Intent Caching
+        # Only classify if intent is unknown or user sends a long message that might shift context
+        cached_intent = ctx.session.metadata.get("current_intent")
+        if cached_intent and len(content_for_intent.split()) < 30:
+            intent_value = cached_intent
+        else:
+            intent_enum = await router.classify(content_for_intent)
+            intent_value = intent_enum.value
+            ctx.session.metadata["current_intent"] = intent_value
+
         ctx.initial_messages = self._build_initial_messages(
-            ctx.msg, ctx.session, ctx.history, ctx.pending_summary
+            ctx.msg, ctx.session, ctx.history, ctx.pending_summary, intent=intent_value
         )
         ctx.user_persisted_early = self._persist_user_message_early(
             ctx.msg, ctx.session
@@ -1308,6 +1611,14 @@ class AgentLoop:
             ctx.on_progress = await self._build_bus_progress_callback(ctx.msg)
         if ctx.on_retry_wait is None:
             ctx.on_retry_wait = await self._build_retry_wait_callback(ctx.msg)
+
+        if is_resident_designer_profile(self.capability_profile):
+            # Do not stream unreviewed model text or reasoning in the restricted
+            # profile. The final answer is checked before it is sent or saved.
+            ctx.on_progress = None
+            ctx.on_stream = None
+            ctx.on_stream_end = None
+            ctx.on_retry_wait = None
 
         return "ok"
 
@@ -1323,17 +1634,50 @@ class AgentLoop:
             channel=ctx.msg.channel,
             chat_id=ctx.msg.chat_id,
             message_id=ctx.msg.metadata.get("message_id"),
-            metadata=ctx.msg.metadata,
+            metadata={**(ctx.msg.metadata or {}), "media": ctx.msg.media},
             session_key=ctx.session_key,
             pending_queue=ctx.pending_queue,
         )
         final_content, tools_used, all_msgs, stop_reason, had_injections = result
+        output_policy = evaluate_request(
+            self.capability_profile,
+            final_content or "",
+        )
+        if output_policy.blocked:
+            logger.warning(
+                "Model output replaced by capability policy {}: {}",
+                self.capability_profile,
+                output_policy.reason,
+            )
+            final_content = output_policy.response
+            stop_reason = "security_policy"
+            self._replace_final_assistant_content(all_msgs, final_content)
+        elif output_policy.redacted_text and output_policy.redacted_text.strip() and output_policy.redacted_text.strip() != (final_content or "").strip():
+            logger.warning(
+                "Model output redacted by capability policy {}: {}",
+                self.capability_profile,
+                output_policy.reason or "mixed_request",
+            )
+            final_content = output_policy.redacted_text
+            self._replace_final_assistant_content(all_msgs, final_content)
         ctx.final_content = final_content
         ctx.tools_used = tools_used
         ctx.all_messages = all_msgs
         ctx.stop_reason = stop_reason
         ctx.had_injections = had_injections
         return "ok"
+
+    @staticmethod
+    def _replace_final_assistant_content(
+        messages: list[dict[str, Any]],
+        content: str,
+    ) -> None:
+        """Replace a blocked final answer so unsafe text is never persisted."""
+        for message in reversed(messages):
+            if message.get("role") == "assistant" and not message.get("tool_calls"):
+                message["content"] = content
+                return
+        messages.append({"role": "assistant", "content": content})
 
     async def _state_save(self, ctx: TurnContext) -> str:
         if ctx.final_content is None or not ctx.final_content.strip():

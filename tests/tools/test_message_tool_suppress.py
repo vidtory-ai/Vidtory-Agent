@@ -2,7 +2,7 @@
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -10,14 +10,31 @@ from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tools.message import MessageTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
+from nanobot.config.schema import ToolsConfig
 from nanobot.providers.base import LLMResponse, ToolCallRequest
+
+
+@pytest.fixture(autouse=True)
+def mock_intent_router():
+    with patch("nanobot.agent.router.IntentRouter.classify", new_callable=AsyncMock) as mock:
+        from nanobot.agent.router import Intent
+        mock.return_value = Intent.GENERAL
+        yield mock
+
 
 
 def _make_loop(tmp_path: Path) -> AgentLoop:
     bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
-    return AgentLoop(bus=bus, provider=provider, workspace=tmp_path, model="test-model")
+    provider.generation.max_tokens = 4096
+    return AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=tmp_path,
+        model="test-model",
+        tools_config=ToolsConfig(capability_profile="standard"),
+    )
 
 
 class TestMessageToolSuppressLogic:
@@ -168,12 +185,13 @@ class TestMessageToolTurnTracking:
         tool.start_turn()
         assert not tool._sent_in_turn
 
-    def test_schema_discourages_current_chat_replies(self) -> None:
+    def test_schema_allows_current_chat_buttons_but_discourages_plain_text(self) -> None:
         tool = MessageTool()
 
-        assert "Do not use this for the normal reply in the current chat" in tool.description
+        assert "current-chat reply that needs buttons or media" in tool.description
+        assert "ordinary text-only reply, answer naturally" in tool.description
         assert "generate_image creates images in the current chat" in tool.description
         assert (
-            "Do not use this for a normal reply in the current chat"
+            "current-chat reply that needs interactive buttons"
             in tool.parameters["properties"]["content"]["description"]
         )

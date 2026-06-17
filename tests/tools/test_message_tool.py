@@ -344,6 +344,68 @@ async def test_message_tool_start_turn_clears_tracked_media(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_message_tool_does_not_resend_media_already_delivered_by_generator(
+    tmp_path,
+) -> None:
+    from nanobot.agent.tools.context import RequestContext
+    from nanobot.agent.tools.message import record_generated_media_delivery
+
+    sent: list[OutboundMessage] = []
+
+    async def _send(msg: OutboundMessage) -> None:
+        sent.append(msg)
+
+    tool = MessageTool(send_callback=_send, capability_profile="resident_designer")
+    tool.set_context(RequestContext(channel="telegram", chat_id="chat-1", metadata={}))
+    tool.start_turn()
+    image = tmp_path / "generated.png"
+    image.write_bytes(b"image")
+    record_generated_media_delivery([str(image.resolve())])
+
+    result = await tool.execute(
+        content=(
+            "Đây là bản đã chỉnh.\n\n"
+            "1️⃣ Sáng hơn\n"
+            "2️⃣ Ấm hơn\n"
+            "3️⃣ Bản 16:9"
+        ),
+        media=[str(image.resolve())],
+    )
+
+    assert result.startswith("Message sent")
+    assert len(sent) == 1
+    assert sent[0].content.startswith("Đây là bản đã chỉnh.")
+    assert sent[0].media == []
+    assert sent[0].buttons == [["1", "2", "3"]]
+
+
+@pytest.mark.asyncio
+async def test_message_tool_extracts_four_numbered_buttons_in_resident_designer() -> None:
+    sent: list[OutboundMessage] = []
+
+    async def _send(msg: OutboundMessage) -> None:
+        sent.append(msg)
+
+    from nanobot.agent.tools.context import RequestContext
+
+    tool = MessageTool(send_callback=_send, capability_profile="resident_designer")
+    tool.set_context(RequestContext(channel="telegram", chat_id="chat-1", metadata={}))
+
+    result = await tool.execute(
+        content=(
+            "Ban muon ghi dong chu gi tren poster?\n"
+            "1\ufe0f\u20e3 TUYEN SINH DAI HOC 2026\n"
+            "2\ufe0f\u20e3 PTIT 2026 - MO CUA TUONG LAI SO\n"
+            "3\ufe0f\u20e3 KHAM PHA HANH TRINH CONG NGHE CUNG PTIT\n"
+            "4\ufe0f\u20e3 Khong can chu, lam anh nen truoc"
+        )
+    )
+
+    assert result.startswith("Message sent")
+    assert sent[0].buttons == [["1", "2", "3"], ["4"]]
+
+
+@pytest.mark.asyncio
 async def test_message_tool_cross_target_does_not_track_turn_media(tmp_path) -> None:
     async def _send(msg: OutboundMessage) -> None:
         pass
@@ -435,3 +497,26 @@ async def test_message_tool_cli_context_may_target_other_ws_chat(tmp_path) -> No
     assert result.startswith("Message sent")
     assert sent[0].channel == "websocket"
     assert sent[0].chat_id == target
+
+
+@pytest.mark.asyncio
+async def test_message_tool_allows_text_only_in_resident_designer_with_buttons() -> None:
+    sent: list[OutboundMessage] = []
+    async def _send(msg: OutboundMessage) -> None:
+        sent.append(msg)
+
+    tool = MessageTool(send_callback=_send, capability_profile="resident_designer")
+    from nanobot.agent.tools.context import RequestContext
+    tool.set_context(RequestContext(channel="telegram", chat_id="1", metadata={}))
+
+    # Should fail when no media and no buttons
+    res_fail = await tool.execute(content="hello")
+    assert "Error: text-only message sends are disabled" in res_fail
+
+    # Should succeed when buttons are provided
+    res_success = await tool.execute(content="hello with buttons", buttons=[["Click Me"]])
+    assert "Message sent to telegram:1" in res_success
+    assert len(sent) == 1
+    assert sent[0].content == "hello with buttons"
+    assert sent[0].buttons == [["Click Me"]]
+

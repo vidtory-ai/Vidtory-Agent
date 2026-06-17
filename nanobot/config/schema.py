@@ -12,12 +12,8 @@ from nanobot.cron.types import CronSchedule
 
 if TYPE_CHECKING:
     from nanobot.agent.tools.audio_generation import AudioGenerationToolConfig
-    from nanobot.agent.tools.cli_apps import CliAppsToolConfig
     from nanobot.agent.tools.image_generation import ImageGenerationToolConfig
-    from nanobot.agent.tools.self import MyToolConfig
-    from nanobot.agent.tools.shell import ExecToolConfig
     from nanobot.agent.tools.video_generation import VideoGenerationToolConfig
-    from nanobot.agent.tools.web import WebToolsConfig
 
 
 class Base(BaseModel):
@@ -250,17 +246,71 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
-class MCPServerConfig(Base):
-    """MCP server connection configuration (stdio or HTTP)."""
+class WebSearchConfig(Base):
+    """Compatibility config for the removed web-search tool."""
 
-    type: Literal["stdio", "sse", "streamableHttp"] | None = None  # auto-detected if omitted
-    command: str = ""  # Stdio: command to run (e.g. "npx")
-    args: list[str] = Field(default_factory=list)  # Stdio: command arguments
-    env: dict[str, str] = Field(default_factory=dict)  # Stdio: extra env vars
-    url: str = ""  # HTTP/SSE: endpoint URL
-    headers: dict[str, str] = Field(default_factory=dict)  # HTTP/SSE: custom headers
-    tool_timeout: int = 30  # seconds before a tool call is cancelled
-    enabled_tools: list[str] = Field(default_factory=lambda: ["*"])  # Only register these tools; accepts raw MCP names or wrapped mcp_<server>_<tool> names; ["*"] = all tools; [] = no tools
+    provider: str = "duckduckgo"
+    api_key: str = ""
+    base_url: str = ""
+    max_results: int = 5
+    timeout: int = 30
+
+
+class WebFetchConfig(Base):
+    """Compatibility config for the removed web-fetch tool."""
+
+    use_jina_reader: bool = True
+
+
+class WebToolsConfig(Base):
+    """Persist legacy WebUI settings without registering web tools."""
+
+    enable: bool = False
+    proxy: str | None = None
+    user_agent: str | None = None
+    search: WebSearchConfig = Field(default_factory=WebSearchConfig)
+    fetch: WebFetchConfig = Field(default_factory=WebFetchConfig)
+
+
+class ExecToolConfig(Base):
+    """Persist legacy execution settings without registering an exec tool."""
+
+    enable: bool = True
+    timeout: int = Field(default=60, ge=0)
+    path_append: str = ""
+    sandbox: str = ""
+    allowed_env_keys: list[str] = Field(default_factory=list)
+    allow_patterns: list[str] = Field(default_factory=list)
+    deny_patterns: list[str] = Field(default_factory=list)
+
+
+class CliAppsToolConfig(Base):
+    """Compatibility settings for the removed CLI Apps runtime."""
+
+    enable: bool = False
+    install_timeout: int = Field(default=300, ge=1, le=3600)
+    run_timeout: int = Field(default=60, ge=1, le=600)
+    catalog_ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
+
+
+class MyToolConfig(Base):
+    """Compatibility settings for the removed self-inspection tool."""
+
+    enable: bool = False
+    allow_set: bool = False
+
+
+class MCPServerConfig(Base):
+    """Compatibility schema for persisted MCP server settings."""
+
+    type: Literal["stdio", "sse", "streamableHttp"] | None = None
+    command: str = ""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+    tool_timeout: int = 30
+    enabled_tools: list[str] = Field(default_factory=lambda: ["*"])
 
 
 def _lazy_default(module_path: str, class_name: str) -> Any:
@@ -278,10 +328,10 @@ class ToolsConfig(Base):
     Base from schema.py).
     """
 
-    web: WebToolsConfig = Field(default_factory=lambda: _lazy_default("nanobot.agent.tools.web", "WebToolsConfig"))
-    exec: ExecToolConfig = Field(default_factory=lambda: _lazy_default("nanobot.agent.tools.shell", "ExecToolConfig"))
-    cli_apps: CliAppsToolConfig = Field(default_factory=lambda: _lazy_default("nanobot.agent.tools.cli_apps", "CliAppsToolConfig"))
-    my: MyToolConfig = Field(default_factory=lambda: _lazy_default("nanobot.agent.tools.self", "MyToolConfig"))
+    web: WebToolsConfig = Field(default_factory=WebToolsConfig)
+    exec: ExecToolConfig = Field(default_factory=ExecToolConfig)
+    cli_apps: CliAppsToolConfig = Field(default_factory=CliAppsToolConfig)
+    my: MyToolConfig = Field(default_factory=MyToolConfig)
     image_generation: ImageGenerationToolConfig = Field(
         default_factory=lambda: _lazy_default("nanobot.agent.tools.image_generation", "ImageGenerationToolConfig"),
     )
@@ -291,9 +341,10 @@ class ToolsConfig(Base):
     audio_generation: AudioGenerationToolConfig = Field(
         default_factory=lambda: _lazy_default("nanobot.agent.tools.audio_generation", "AudioGenerationToolConfig"),
     )
+    capability_profile: Literal["standard", "resident_designer"] = "standard"
     restrict_to_workspace: bool = False  # restrict all tool access to workspace directory
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
-    ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking (e.g. ["100.64.0.0/10"] for Tailscale)
+    ssrf_whitelist: list[str] = Field(default_factory=list)  # CIDR ranges to exempt from SSRF blocking
 
 
 class Config(BaseSettings):
@@ -469,26 +520,16 @@ def _resolve_tool_config_refs() -> None:
 
     Must be called after all modules are loaded (breaks circular imports).
     Re-exports the classes into this module's namespace so existing imports
-    like ``from nanobot.config.schema import ExecToolConfig`` continue to work.
+    continue to work.
     """
     import sys
 
     from nanobot.agent.tools.audio_generation import AudioGenerationToolConfig
-    from nanobot.agent.tools.cli_apps import CliAppsToolConfig
     from nanobot.agent.tools.image_generation import ImageGenerationToolConfig
-    from nanobot.agent.tools.self import MyToolConfig
-    from nanobot.agent.tools.shell import ExecToolConfig
     from nanobot.agent.tools.video_generation import VideoGenerationToolConfig
-    from nanobot.agent.tools.web import WebFetchConfig, WebSearchConfig, WebToolsConfig
 
     # Re-export into this module's namespace
     mod = sys.modules[__name__]
-    mod.ExecToolConfig = ExecToolConfig  # type: ignore[attr-defined]
-    mod.CliAppsToolConfig = CliAppsToolConfig  # type: ignore[attr-defined]
-    mod.WebToolsConfig = WebToolsConfig  # type: ignore[attr-defined]
-    mod.WebSearchConfig = WebSearchConfig  # type: ignore[attr-defined]
-    mod.WebFetchConfig = WebFetchConfig  # type: ignore[attr-defined]
-    mod.MyToolConfig = MyToolConfig  # type: ignore[attr-defined]
     mod.ImageGenerationToolConfig = ImageGenerationToolConfig  # type: ignore[attr-defined]
     mod.VideoGenerationToolConfig = VideoGenerationToolConfig  # type: ignore[attr-defined]
     mod.AudioGenerationToolConfig = AudioGenerationToolConfig  # type: ignore[attr-defined]
