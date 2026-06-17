@@ -1537,10 +1537,11 @@ class ImageGenerationTool(Tool, ContextAware):
                 # ── Step 3: Customer channel aspect ratio ─────────────────────
                 aspect_ratio = get_default_aspect_ratio_for_channel(profile)
 
-                # ── Step 4: Brand logo URL ────────────────────────────────────
-                # Read the indexed DB column as the authoritative logo source.
-                # Profile JSON is kept in sync, but the indexed value avoids
-                # stale in-memory profile data during a logo-change turn.
+                # ── Step 4: Brand logo URL + suppression flag ─────────────────
+                # Read logo URL from indexed DB column (authoritative source).
+                # Also read logoSuppressed flag from the freshest profile snapshot.
+                # Both reads use the same uid so we avoid a second DB round-trip.
+                logo_suppressed = False
                 try:
                     uid = str(
                         profile.get("telegramUserId")
@@ -1553,9 +1554,20 @@ class ImageGenerationTool(Tool, ContextAware):
                         if logo_url:
                             logger.info("Brand logo loaded from DB (/setlogo): {}", logo_url)
                         else:
-                            logger.debug("No logo set for user {} — generating without logo overlay", uid)
+                            logger.debug(
+                                "No logo set for user {} — generating without logo overlay", uid
+                            )
+                        # Read logoSuppressed from the same fresh profile snapshot.
+                        # This flag was set by _update_logo_preference() earlier this turn
+                        # (LLM logo_preference param takes priority over keyword fallback).
+                        from nanobot.utils.customer_profile import load_profile as _lp
+                        _fresh_profile = _lp(uid)
+                        if _fresh_profile:
+                            logo_suppressed = bool(
+                                _fresh_profile.get("preferences", {}).get("logoSuppressed", False)
+                            )
                 except Exception as _logo_exc:
-                    logger.debug("Failed to read logo from DB (non-critical): {}", _logo_exc)
+                    logger.debug("Failed to read logo/flag from DB (non-critical): {}", _logo_exc)
 
                 if not logo_url:
                     profile_logo = str(
@@ -1568,32 +1580,15 @@ class ImageGenerationTool(Tool, ContextAware):
                             logo_url,
                         )
 
-                # Persistent logo suppression flag — set/unset by _update_logo_preference()
-                # earlier in execute().  Read fresh from DB using the uid already resolved
-                # above so we always see the flag written in this same turn.
-                # Also honour an inline override if the LLM embeds the instruction
-                # directly in the tool prompt (belt-and-suspenders).
-                logo_suppressed = False
-                try:
-                    if uid:
-                        from nanobot.utils.customer_profile import load_profile as _lp
-                        _fresh = _lp(uid)
-                        logo_suppressed = bool(
-                            (_fresh or {}).get("preferences", {}).get("logoSuppressed", False)
-                        )
-                except Exception:
-                    pass
-                if logo_url and (
-                    logo_suppressed
-                    or _prompt_requests_no_logo(prompt)
-                    or _prompt_requests_no_logo(original_user_content)
-                ):
+                # Logo suppression: sole authority is the persistent DB flag.
+                # The flag was already updated this turn by _update_logo_preference()
+                # (priority: LLM logo_preference param → keyword fallback).
+                # Do NOT scan prompt/user_content text here — the LLM-generated
+                # prompt may legitimately contain phrases like "không logo" as
+                # style guidance without reflecting a real user preference change.
+                if logo_url and logo_suppressed:
                     logger.info(
-                        "No-logo preference: suppressing logo "
-                        "(profile_flag={}, prompt={}, user_content={})",
-                        logo_suppressed,
-                        _prompt_requests_no_logo(prompt),
-                        _prompt_requests_no_logo(original_user_content),
+                        "Logo suppressed by persistent profile flag (logoSuppressed=True)",
                     )
                     logo_url = None
 
