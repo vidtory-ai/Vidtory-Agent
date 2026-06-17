@@ -619,3 +619,203 @@ async def test_sliding_window_reply_with_photo_bypasses_buffer(monkeypatch) -> N
     assert getattr(channel, "_text_media_buffers", {}) == {}, (
         "Sliding-window buffer must NOT be created for reply messages."
     )
+
+
+# ---------------------------------------------------------------------------
+# 4. Real-world: discrete photos (seconds apart) → text request — verify
+#    _handle_message receives ALL accumulated media
+# ---------------------------------------------------------------------------
+
+
+def _make_text_message(
+    *,
+    chat_id: int = -100,
+    sender_id: int = 42,
+    username: str = "alice",
+    message_id: int = 10,
+    text: str,
+) -> SimpleNamespace:
+    """Build a minimal text-only Telegram message (no media)."""
+    reply_text_mock = AsyncMock()
+    msg = SimpleNamespace(
+        chat=SimpleNamespace(type="private", is_forum=False),
+        chat_id=chat_id,
+        text=text,
+        caption=None,
+        entities=[],
+        caption_entities=[],
+        reply_to_message=None,
+        photo=None,
+        voice=None,
+        audio=None,
+        document=None,
+        video=None,
+        video_note=None,
+        animation=None,
+        location=None,
+        media_group_id=None,
+        message_thread_id=None,
+        message_id=message_id,
+        reply_text=reply_text_mock,
+    )
+    user = SimpleNamespace(id=sender_id, username=username, first_name="Alice")
+    return SimpleNamespace(message=msg, effective_user=user)
+
+
+def _common_patches_with_onboarding(monkeypatch, channel, download_fn):
+    """Standard patches including onboarding bypass (established user)."""
+    _common_monkeypatches(monkeypatch, channel, download_fn)
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.mixins.messages.get_onboarding_status",
+        lambda uid: "complete",
+        raising=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_discrete_photos_then_text_request_passes_all_media_to_handle_message(
+    monkeypatch,
+) -> None:
+    """
+    CRITICAL SCENARIO: user sends 3 photos one-by-one (each seconds apart,
+    so they arrive as separate messages with no media_group_id), then sends
+    a text message "ghep 2 anh lai giup toi".
+
+    Expected behaviour verified here:
+    - Each bare-photo message is accumulated in _pending_media_choices.
+    - When the text request arrives, _handle_message (override) merges
+      _pending_media_choices into `media` before calling super()._handle_message.
+    - All 3 image paths appear in the final `media` passed to the base handler.
+    - metadata["current_media"] also reflects all 3 images.
+    """
+    channel = _make_channel()
+
+    async def fake_download(msg, *, add_failure_content=False):
+        if not getattr(msg, "photo", None):
+            return [], []
+        uid = msg.photo[-1].file_unique_id
+        path = f"/fake/{uid}.jpg"
+        return [path], [f"[image: {path}]"]
+
+    _common_patches_with_onboarding(monkeypatch, channel, fake_download)
+    # Also mock _handle_onboarding_quick_reply for _handle_message
+    monkeypatch.setattr(channel, "_handle_onboarding_quick_reply", AsyncMock(return_value=False))
+
+    # Step 1: Photo1 (no text)
+    u1 = _make_photo_message(chat_id=-100, sender_id=42, username="alice",
+                              message_id=1, file_unique_id="img1")
+    u1.message.reply_text = AsyncMock()
+    await channel._on_message(u1, MagicMock())
+
+    # Step 2: Photo2 (no text, several seconds later)
+    u2 = _make_photo_message(chat_id=-100, sender_id=42, username="alice",
+                              message_id=2, file_unique_id="img2")
+    u2.message.reply_text = AsyncMock()
+    await channel._on_message(u2, MagicMock())
+
+    # Step 3: Photo3 (no text)
+    u3 = _make_photo_message(chat_id=-100, sender_id=42, username="alice",
+                              message_id=3, file_unique_id="img3")
+    u3.message.reply_text = AsyncMock()
+    await channel._on_message(u3, MagicMock())
+
+    pmc_key = "-100:42|alice"
+    assert pmc_key in channel._pending_media_choices, (
+        "After 3 photos, _pending_media_choices must contain an entry."
+    )
+    assert len(channel._pending_media_choices[pmc_key]["media"]) == 3, (
+        "All 3 photos must be accumulated in _pending_media_choices. "
+        f"Got: {channel._pending_media_choices[pmc_key]['media']}"
+    )
+
+    # Step 4: text request "ghep 2 anh lai giup toi".
+    # _handle_message (TelegramMessagesMixin override) merges pending_media_choices
+    # into `media` THEN calls super()._handle_message (the base class).
+    # We intercept the BASE class method to see the final merged media.
+    from nanobot.channels.base import BaseChannel  # adjust if different import path
+    base_calls: list[dict] = []
+
+    original_base = BaseChannel._handle_message  # type: ignore[attr-defined]
+
+    async def spy_base(self_inner, **kwargs):
+        base_calls.append({
+            "media": list(kwargs.get("media") or []),
+            "content": kwargs.get("content", ""),
+            "metadata": dict(kwargs.get("metadata") or {}),
+        })
+
+    monkeypatch.setattr(BaseChannel, "_handle_message", spy_base)
+
+    u_text = _make_text_message(chat_id=-100, sender_id=42, username="alice",
+                                 message_id=4, text="ghep 2 anh lai giup toi")
+    u_text.message.reply_text = AsyncMock()
+    await channel._on_message(u_text, MagicMock())
+
+    assert len(base_calls) == 1, (
+        f"Expected exactly 1 base _handle_message call, got {len(base_calls)}"
+    )
+    call = base_calls[0]
+
+    # All 3 images from pending_media_choices must be in media.
+    assert len(call["media"]) == 3, (
+        f"_handle_message must receive all 3 accumulated photos, got: {call['media']}"
+    )
+    assert "/fake/img1.jpg" in call["media"]
+    assert "/fake/img2.jpg" in call["media"]
+    assert "/fake/img3.jpg" in call["media"]
+
+    # metadata["current_media"] must also contain all 3 images.
+    assert len(call["metadata"].get("current_media", [])) == 3, (
+        "metadata['current_media'] must reflect all 3 photos for image "
+        f"generation tool. Got: {call['metadata'].get('current_media')}"
+    )
+
+    # The user's request content must be preserved.
+    assert "ghep" in call["content"].lower() or "ghép" in call["content"].lower(), (
+        "User's text request must appear in the content forwarded to _handle_message."
+    )
+
+
+@pytest.mark.asyncio
+async def test_discrete_photos_pending_choices_is_cleared_after_text_request(
+    monkeypatch,
+) -> None:
+    """
+    After the text request, _handle_message pops the _pending_media_choices entry.
+    Verify the entry is gone so the next photo starts a fresh context.
+    """
+    channel = _make_channel()
+
+    async def fake_download(msg, *, add_failure_content=False):
+        if not getattr(msg, "photo", None):
+            return [], []
+        uid = msg.photo[-1].file_unique_id
+        return [f"/fake/{uid}.jpg"], [f"[image: /fake/{uid}.jpg]"]
+
+    _common_patches_with_onboarding(monkeypatch, channel, fake_download)
+    monkeypatch.setattr(channel, "_handle_onboarding_quick_reply", AsyncMock(return_value=False))
+
+    # Intercept base so we don't run the full agent pipeline
+    from nanobot.channels.base import BaseChannel  # type: ignore[attr-defined]
+    monkeypatch.setattr(BaseChannel, "_handle_message", AsyncMock())
+
+    # Send 2 photos
+    for i, fuid in enumerate(["p1", "p2"], start=1):
+        u = _make_photo_message(chat_id=-100, sender_id=42, username="alice",
+                                 message_id=i, file_unique_id=fuid)
+        u.message.reply_text = AsyncMock()
+        await channel._on_message(u, MagicMock())
+
+    pmc_key = "-100:42|alice"
+    assert pmc_key in channel._pending_media_choices, "Entry must exist before text request."
+
+    # Text request consumes the pending entry.
+    u_text = _make_text_message(chat_id=-100, sender_id=42, username="alice",
+                                 message_id=3, text="ghep 2 anh nay")
+    u_text.message.reply_text = AsyncMock()
+    await channel._on_message(u_text, MagicMock())
+
+    assert pmc_key not in channel._pending_media_choices, (
+        "_pending_media_choices entry must be consumed (popped) after the text request."
+    )
+
