@@ -259,11 +259,11 @@ class TelegramMediaMixin:
 
 # Sliding-window flush delay (seconds) for text+media buffers.
 # Each new image resets this timer; the absolute cap is _TEXT_MEDIA_MAX_WAIT.
-_TEXT_MEDIA_FLUSH_DELAY: float = 1.0
-_TEXT_MEDIA_MAX_WAIT: float = 3.0
+_TEXT_MEDIA_FLUSH_DELAY: float = 0.5
+_TEXT_MEDIA_MAX_WAIT: float = 2.0
 
 # Sliding-window constants for albums (media_group_id).
-# Albums can take longer due to multiple heavy file uploads.
-_MEDIA_GROUP_FLUSH_DELAY: float = 1.5
-_MEDIA_GROUP_MAX_WAIT: float = 5.0
+# Telegram server usually delivers album items within milliseconds of each other.
+_MEDIA_GROUP_FLUSH_DELAY: float = 0.4
+_MEDIA_GROUP_MAX_WAIT: float = 2.0
 
