@@ -690,22 +690,50 @@ class TelegramMessagesMixin:
                 )
             else:
                 pending = getattr(self, "_pending_media_choices", {})
-                pending[f"{str_chat_id}:{sender_id}"] = {
-                    "media": list(media_paths),
-                    "metadata": dict(metadata),
-                    "session_key": session_key,
-                    "expires_at": time.monotonic() + 600,
-                }
-                self._pending_media_choices = pending
-                await message.reply_text(
-                    "📷 *Ảnh đã nhận!*\n\n"
-                    "Bạn muốn làm gì với ảnh này?",
-                    parse_mode="Markdown",
-                    reply_markup=self._build_keyboard([
-                        ["Đặt logo", "Chỉnh ảnh này"],
-                        ["Dùng làm tham chiếu"],
-                    ]),
-                )
+                pmc_key = f"{str_chat_id}:{sender_id}"
+                existing = pending.get(pmc_key)
+                if (
+                    existing
+                    and float(existing.get("expires_at") or 0) > time.monotonic()
+                ):
+                    # Accumulate: user sent another image — merge into existing entry
+                    # instead of overwriting, so later requests see ALL images.
+                    merged_media = list(dict.fromkeys(
+                        list(existing.get("media") or []) + list(media_paths)
+                    ))
+                    existing["media"] = merged_media
+                    existing["metadata"]["current_media"] = merged_media
+                    existing["expires_at"] = time.monotonic() + 600
+                    pending[pmc_key] = existing
+                    self._pending_media_choices = pending
+                    img_count = len(merged_media)
+                    await message.reply_text(
+                        f"📷 *{img_count} ảnh đã nhận!*\n\n"
+                        "Bạn muốn làm gì với các ảnh này?",
+                        parse_mode="Markdown",
+                        reply_markup=self._build_keyboard([
+                            ["Đặt logo", "Chỉnh ảnh này"],
+                            ["Dùng làm tham chiếu"],
+                        ]),
+                    )
+                else:
+                    # First image from this user — create a new pending entry.
+                    pending[pmc_key] = {
+                        "media": list(media_paths),
+                        "metadata": dict(metadata),
+                        "session_key": session_key,
+                        "expires_at": time.monotonic() + 600,
+                    }
+                    self._pending_media_choices = pending
+                    await message.reply_text(
+                        "📷 *Ảnh đã nhận!*\n\n"
+                        "Bạn muốn làm gì với ảnh này?",
+                        parse_mode="Markdown",
+                        reply_markup=self._build_keyboard([
+                            ["Đặt logo", "Chỉnh ảnh này"],
+                            ["Dùng làm tham chiếu"],
+                        ]),
+                    )
             return
 
 
