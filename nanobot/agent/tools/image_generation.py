@@ -938,6 +938,10 @@ class ImageGenerationTool(Tool, ContextAware):
         # authoritative for edits, even if the LLM omitted or reordered them.
         reference_images = self._merge_revision_references(prompt, reference_images)
 
+        # Persist any explicit logo preference (no-logo / want-logo) from the user
+        # message BEFORE _apply_customer_context reads the profile flag.
+        self._update_logo_preference(original_user_content)
+
         # Apply Vidtory professional standards + customer brand guidelines
         is_vidtory = (self.config.provider == "vidtory")
         optimized_prompt, customer_ar, logo_url = self._apply_customer_context(prompt, is_vidtory_provider=is_vidtory)
@@ -1166,46 +1170,49 @@ class ImageGenerationTool(Tool, ContextAware):
         prompt_lower = prompt.lower()
         return any(kw in prompt_lower for kw in self._DETAILED_PROMPT_KEYWORDS)
 
-    def _user_recently_requested_no_logo(self) -> bool:
-        """Check recent session history for an explicit no-logo preference.
+    def _update_logo_preference(self, user_message: str) -> None:
+        """Persist the user's logo preference to their profile when they explicitly state it.
 
-        Scans up to 3 user turns back in session history in reverse chronological
-        order (newest first).  Returns True only if a no-logo request is found
-        BEFORE any want-logo request — i.e. the most recent explicit preference wins.
+        Detects no-logo / want-logo intent in the raw user message and saves
+        ``preferences.logoSuppressed`` to the profile.  The flag persists
+        indefinitely until the user explicitly changes it again — there is no
+        time-window limit (unlike the previous session-scan approach).
+
+        Called early in execute() so the preference is always up-to-date before
+        _apply_customer_context() reads it.
         """
-        ctx = _image_gen_request_ctx.get()
-        if not ctx or not ctx.session_key or not self.sessions:
-            return False
+        if not user_message:
+            return
+        user_msg_lower = user_message.lower()
+        wants_no_logo = _prompt_requests_no_logo(user_message)
+        wants_logo = any(kw in user_msg_lower for kw in _WANT_LOGO_KEYWORDS)
+        if not wants_no_logo and not wants_logo:
+            return  # No explicit logo preference in this message — leave flag unchanged
         try:
-            session = self.sessions.get_or_create(ctx.session_key)
-            if not session or not session.messages:
-                return False
-            user_turns = 0
-            for msg in reversed(session.messages):
-                if msg.get("role") != "user":
-                    continue
-                user_turns += 1
-                if user_turns > 3:
-                    break
-                content = str(msg.get("content") or "")
-                content_lower = content.lower()
-                # If user most recently asked to HAVE logo, stop — preference is re-enabled
-                if any(kw in content_lower for kw in _WANT_LOGO_KEYWORDS):
-                    logger.info(
-                        "Want-logo preference found in session history (turn -{}); "
-                        "no-logo suppression cancelled",
-                        user_turns,
-                    )
-                    return False
-                if _prompt_requests_no_logo(content):
-                    logger.info(
-                        "No-logo preference found in session history (turn -{})",
-                        user_turns,
-                    )
-                    return True
+            profile = telegram_customer_profile.get()
+            if not profile:
+                return
+            uid = str(
+                profile.get("telegramUserId")
+                or profile.get("telegram_user_id")
+                or ""
+            ).strip().split("|")[0]
+            if not uid:
+                return
+            from nanobot.utils.customer_profile import load_profile, save_profile
+            fresh = load_profile(uid)
+            if not fresh:
+                return
+            prefs = fresh.setdefault("preferences", {})
+            if wants_no_logo:
+                prefs["logoSuppressed"] = True
+                logger.info("Logo preference: suppressed (user said no-logo) — persisted for uid {}", uid)
+            else:
+                prefs["logoSuppressed"] = False
+                logger.info("Logo preference: re-enabled (user said want-logo) — persisted for uid {}", uid)
+            save_profile(uid, fresh)
         except Exception as exc:
-            logger.debug("_user_recently_requested_no_logo scan failed: {}", exc)
-        return False
+            logger.debug("_update_logo_preference failed (non-fatal): {}", exc)
 
 
     def _find_last_generated_image(
@@ -1491,17 +1498,33 @@ class ImageGenerationTool(Tool, ContextAware):
                             logo_url,
                         )
 
-                # If user explicitly requested no logo — check the LLM-generated
-                # prompt, the raw user message of the current turn, and recent
-                # session history (up to 3 turns back).  This ensures the first
-                # image after a "không chèn logo" instruction respects the preference
-                # even before the LLM injects the instruction into the tool prompt.
+                # Persistent logo suppression flag — set/unset by _update_logo_preference()
+                # earlier in execute().  Read fresh from DB using the uid already resolved
+                # above so we always see the flag written in this same turn.
+                # Also honour an inline override if the LLM embeds the instruction
+                # directly in the tool prompt (belt-and-suspenders).
+                logo_suppressed = False
+                try:
+                    if uid:
+                        from nanobot.utils.customer_profile import load_profile as _lp
+                        _fresh = _lp(uid)
+                        logo_suppressed = bool(
+                            (_fresh or {}).get("preferences", {}).get("logoSuppressed", False)
+                        )
+                except Exception:
+                    pass
                 if logo_url and (
-                    _prompt_requests_no_logo(prompt)
+                    logo_suppressed
+                    or _prompt_requests_no_logo(prompt)
                     or _prompt_requests_no_logo(original_user_content)
-                    or self._user_recently_requested_no_logo()
                 ):
-                    logger.info("No-logo preference detected; skipping logo injection")
+                    logger.info(
+                        "No-logo preference: suppressing logo "
+                        "(profile_flag={}, prompt={}, user_content={})",
+                        logo_suppressed,
+                        _prompt_requests_no_logo(prompt),
+                        _prompt_requests_no_logo(original_user_content),
+                    )
                     logo_url = None
 
                 # ── Step 5: Logo preservation guard & instructions ────────────
