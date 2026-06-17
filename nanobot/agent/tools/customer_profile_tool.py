@@ -221,6 +221,15 @@ def _normalize_color(value: str) -> str:
             ),
             default=False,
         ),
+        logo_preference=StringSchema(
+            description=(
+                "LOGO PREFERENCE: Call this tool with logo_preference='enabled' whenever the user says they "
+                "want the brand logo used in future images (e.g. 'sử dụng logo cho sản phẩm sau', "
+                "'dùng logo từ giờ', 'bật logo trở lại'). Call with logo_preference='disabled' when they "
+                "say they do not want the logo. Do NOT wait for the next image generation request — "
+                "persist the preference immediately so the DB flag is correct."
+            ),
+        ),
         required=[],
     )
 )
@@ -268,6 +277,11 @@ class UpdateCustomerProfileTool(Tool):
             "A logo-only change automatically refreshes visual style and palette; "
             "explicit visual fields in the same request take precedence. "
             "After saving, the profile will automatically be applied to all future image generations."
+            "\nLOGO PREFERENCE: Call this tool with logo_preference='enabled' whenever the user says they "
+            "want the brand logo used in future images (e.g. 'sử dụng logo cho sản phẩm sau', "
+            "'dùng logo từ giờ', 'bật logo trở lại'). Call with logo_preference='disabled' when they "
+            "say they do not want the logo. Do NOT wait for the next image generation request — "
+            "persist the preference immediately so the DB flag is correct."
         )
 
     async def execute(
@@ -289,6 +303,7 @@ class UpdateCustomerProfileTool(Tool):
         logo_url: str | None = None,
         brand_guidelines: str | None = None,
         onboarding_complete: bool = False,
+        logo_preference: str | None = None,
         **kwargs: Any,
     ) -> str:
         # Get the user_id from the current context
@@ -486,6 +501,29 @@ class UpdateCustomerProfileTool(Tool):
                 if "zalo" in clean_channels and "zalo" not in fmt:
                     fmt["zalo"] = {"aspectRatio": "1:1"}
                 changed_fields.append("channels")
+
+            # ── Logo preference flag (standalone, no image generation needed) ──
+            if logo_preference is not None:
+                normalized_pref = logo_preference.strip().lower()
+                if normalized_pref in ("enabled", "disabled"):
+                    try:
+                        suppressed = normalized_pref == "disabled"
+                        current.setdefault("preferences", {})["logoSuppressed"] = suppressed
+                        changed_fields.append(f"logoSuppressed({'True' if suppressed else 'False'})")
+                        from loguru import logger
+                        logger.info(
+                            "update_customer_profile: logo_preference='{}' → logoSuppressed={} for uid {}",
+                            normalized_pref, suppressed, user_id,
+                        )
+                    except Exception as _pref_exc:
+                        from loguru import logger
+                        logger.debug("Failed to persist logo_preference in profile tool: {}", _pref_exc)
+                else:
+                    from loguru import logger
+                    logger.warning(
+                        "update_customer_profile: unexpected logo_preference value '{}' — ignoring",
+                        logo_preference,
+                    )
 
             if not changed_fields:
                 return "No fields provided to update. Please specify at least one brand field."

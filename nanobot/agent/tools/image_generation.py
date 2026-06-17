@@ -614,11 +614,16 @@ class ImageGenerationToolConfig(Base):
                 "LOGO PREFERENCE: Pass this whenever the user has expressed an explicit preference about the brand logo "
                 "in the current conversation — regardless of language or phrasing. "
                 "Use 'disabled' when the user wants NO logo (e.g. 'không logo', 'no logo', 'remove logo', "
-                "'不要logo', 'logo 없이', or any equivalent in any language). "
+                "'không chèn logo', 'ẩn logo', '不要logo', 'logo 없이', or any equivalent in any language). "
                 "Use 'enabled' when the user wants the logo included (e.g. 'sử dụng logo', 'thêm logo', "
-                "'use logo', 'add logo', '加上logo', or any equivalent in any language). "
+                "'chèn logo', 'bật logo', 'use logo', 'add logo', '加上logo', or any equivalent in any language). "
+                "CRITICAL — RE-ENABLE CASE: If the user previously said no-logo and now says they want logo again "
+                "(e.g. 'sử dụng logo cho sản phẩm sau', 'dùng logo từ giờ', 'thêm logo trở lại', 'enable logo', "
+                "'use logo from now on'), you MUST pass 'enabled' to reset the suppression. "
+                "The system stores logo preference persistently in a database — if you omit this parameter when "
+                "the user re-enables logo, the old 'disabled' flag remains and the logo will NOT appear. "
                 "IMPORTANT: Pass this parameter whenever you detect a logo preference in the CURRENT turn "
-                "OR in recent conversation context. Omit only when no logo preference has been expressed."
+                "OR in recent conversation context. Omit only when no logo preference has been expressed at all."
             ),
         ),
         logo_images=ArraySchema(

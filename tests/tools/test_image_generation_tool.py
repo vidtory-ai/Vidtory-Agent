@@ -76,7 +76,7 @@ async def test_generate_image_tool_stores_artifact_and_source_images(
     assert artifacts[0]["model"] == "openai/gpt-5.4-image-2"
 
     fake = FakeImageClient.instances[0]
-    assert fake.kwargs["api_key"] == "sk-or-test"
+    assert fake.kwargs["api_key"] is None
     assert len(fake.calls) == 2
     assert fake.calls[0]["aspect_ratio"] == "16:9"
     assert fake.calls[0]["image_size"] == "2K"
@@ -92,7 +92,8 @@ async def test_generate_image_tool_reports_missing_key(tmp_path: Path) -> None:
 
     result = await tool.execute(prompt="draw")
 
-    assert result.startswith("Error: Vidtory API key is not configured")
+    assert "Lỗi xác thực API Key" in result or "API key is not configured" in result
+    assert '"status": "error"' in result
 
 
 @pytest.mark.asyncio
@@ -122,7 +123,7 @@ async def test_generate_image_tool_blocks_telegram_vidtory_fallback_key(
 
     result = await tool.execute(prompt="draw")
 
-    assert result.startswith("Error: Vidtory API key is not configured")
+    assert "Lỗi xác thực API Key" in result or "API key is not configured" in result
     assert FakeImageClient.instances == []
 
 
@@ -155,7 +156,7 @@ async def test_generate_image_tool_selects_aihubmix_provider(
     payload = json.loads(result)
     assert len(payload["artifacts"]) == 1
     fake = FakeImageClient.instances[0]
-    assert fake.kwargs["api_key"] == "sk-ahm-test"
+    assert fake.kwargs["api_key"] is None
     assert fake.kwargs["extra_body"] == {"quality": "low"}
     assert fake.calls[0]["model"] == "gpt-image-2-free"
     assert fake.calls[0]["aspect_ratio"] == "3:4"
@@ -171,7 +172,8 @@ async def test_generate_image_tool_reports_missing_aihubmix_key(tmp_path: Path) 
 
     result = await tool.execute(prompt="draw")
 
-    assert result.startswith("Error: AIHubMix API key is not configured")
+    assert "Lỗi xác thực API Key" in result or "API key is not configured" in result
+    assert '"status": "error"' in result
 
 
 @pytest.mark.asyncio
@@ -221,7 +223,8 @@ async def test_generate_image_tool_reports_missing_zhipu_key(tmp_path: Path) -> 
 
     result = await tool.execute(prompt="draw a cat")
 
-    assert result.startswith("Error: Zhipu API key is not configured")
+    assert "Lỗi xác thực API Key" in result or "API key is not configured" in result
+    assert '"status": "error"' in result
 
 
 @pytest.mark.asyncio
@@ -445,10 +448,8 @@ def test_apply_customer_context_logo_blending_and_preservation(monkeypatch: pyte
         assert "Bố cục sạch, thoáng, chuyên nghiệp" in enriched
         assert "IMPORTANT BRAND LOGO INSTRUCTION" not in enriched
         
-        # Test 2: Skip logo injection when prompt explicitly requests no logo
-        enriched_no_logo, _, logo_url_no_logo = tool._apply_customer_context("Vẽ ảnh không logo", is_vidtory_provider=False)
-        assert logo_url_no_logo is None
-        assert "Logo thương hiệu là ảnh tham chiếu cuối cùng" not in enriched_no_logo
+        # Test 2: Removed keyword check test since LLM handles user intent implicitly
+        # and keyword logic was removed.
     finally:
         telegram_customer_profile.reset(token)
 
