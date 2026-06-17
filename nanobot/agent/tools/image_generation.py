@@ -215,16 +215,35 @@ def build_exact_text_instruction(quoted_texts: list[str], target_lang: str) -> s
 
 
 def build_logo_instruction(target_lang: str) -> str:
-    """Describe the protected logo asset without duplicating bilingual guidance."""
+    """Describe the protected logo asset and guide creative, context-aware placement.
+
+    Instead of a generic 'place in clean position' instruction, this guides the AI
+    to READ the image content first, then select a placement that integrates the
+    logo naturally into the scene — not as a corner overlay, but as part of the design.
+    """
     if target_lang == "vi":
         return (
-            "Logo thương hiệu là ảnh tham chiếu cuối cùng. Chèn đúng logo này vào vị trí sạch, "
-            "tự nhiên và chuyên nghiệp; giữ nguyên hình dáng, cấu trúc, tỷ lệ và chi tiết logo, "
+            "Logo thương hiệu là ảnh tham chiếu cuối cùng. "
+            "Phân tích bố cục và nội dung ảnh để chọn vị trí đặt logo thông minh và sáng tạo: "
+            "ưu tiên tích hợp logo vào một phần tự nhiên của cảnh như khắc vào bề mặt sản phẩm, "
+            "in trên chất liệu vải/giấy/gỗ, phản chiếu trên mặt kính hoặc nước, embossed trên "
+            "bao bì, lồng ghép vào vùng tường/nền/bầu trời có khoảng trống tự nhiên — "
+            "KHÔNG đặt ở góc cố định như watermark truyền thống. "
+            "Logo phải hòa vào thiết kế như một phần của cảnh, đủ rõ để nhận diện thương hiệu "
+            "nhưng không lấn át chủ thể chính. "
+            "Giữ nguyên hình dáng, cấu trúc, tỷ lệ và chi tiết logo; "
             "không vẽ lại, không biến dạng, không thay thế bằng chữ mô phỏng."
         )
     return (
-        "The brand logo is the final reference image. Place this exact logo in a clean, natural, "
-        "professional position. Preserve its shape, structure, proportions, and details; do not "
+        "The brand logo is the final reference image. "
+        "Analyze the image composition and content to choose a smart, creative logo placement: "
+        "prefer integrating the logo as a natural part of the scene — engraved on a product surface, "
+        "printed on fabric/paper/wood texture, reflected on glass or water, embossed on packaging, "
+        "or placed in a naturally open area such as a wall, sky, or background. "
+        "Do NOT place the logo as a fixed corner watermark overlay in the traditional sense. "
+        "The logo must blend into the design as part of the scene, visible enough for brand recognition "
+        "but not overpowering the main subject. "
+        "Preserve its exact shape, structure, proportions, and details; do not "
         "redraw, deform, or replace it with simulated lettering."
     )
 
@@ -240,23 +259,29 @@ def build_temp_logo_instruction(logo_count: int, target_lang: str) -> str:
         if logo_count == 1:
             return (
                 "Ảnh logo đính kèm là tài sản thương hiệu cần xuất hiện trong thiết kế. "
-                "Chèn logo đúng vị trí, tự nhiên và chuyên nghiệp; giữ nguyên hình dáng, "
-                "tỷ lệ và chi tiết; không vẽ lại hoặc biến dạng logo."
+                "Phân tích bố cục ảnh để chọn vị trí tích hợp logo thông minh: "
+                "ưu tiên đặt logo như một phần tự nhiên của cảnh (khắc vào bề mặt, in trên chất liệu, "
+                "lồng ghép vào vùng trống tự nhiên) thay vì đặt ở góc như watermark truyền thống; "
+                "giữ nguyên hình dáng, tỷ lệ và chi tiết; không vẽ lại hoặc biến dạng logo."
             )
         return (
             f"Có {logo_count} ảnh logo đính kèm — đây đều là tài sản thương hiệu cần xuất hiện "
-            "trong thiết kế. Bố trí các logo hài hòa, tự nhiên và chuyên nghiệp; giữ nguyên "
+            "trong thiết kế. Phân tích bố cục để bố trí các logo hài hòa, tích hợp tự nhiên "
+            "vào cảnh thay vì xếp ở các góc cố định; giữ nguyên "
             "hình dáng, tỷ lệ và chi tiết của từng logo; không vẽ lại hoặc biến dạng."
         )
     if logo_count == 1:
         return (
             "The attached logo image is a brand asset that must appear in the design. "
-            "Position it naturally and professionally; preserve its shape, proportions, "
-            "and details exactly; do not redraw or distort it."
+            "Analyze the image composition to find a creative, context-aware placement: "
+            "integrate the logo naturally into the scene (engraved on surface, printed on material, "
+            "placed in a natural open area) rather than as a fixed corner overlay; "
+            "preserve its shape, proportions, and details exactly; do not redraw or distort it."
         )
     return (
         f"There are {logo_count} attached logo images — all are brand assets that must appear "
-        "in the design. Arrange them harmoniously, naturally, and professionally; preserve "
+        "in the design. Analyze the composition to arrange them in creative, scene-integrated positions "
+        "rather than fixed corners; preserve "
         "the exact shape, proportions, and details of each logo; do not redraw or distort any."
     )
 
