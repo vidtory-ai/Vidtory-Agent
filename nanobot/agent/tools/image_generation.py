@@ -550,35 +550,6 @@ def _prompt_requests_no_logo(prompt: str) -> bool:
     ])
 
 
-def _prompt_specifies_logo_position(prompt: str) -> bool:
-    """Return True when the user explicitly states WHERE to place the logo.
-
-    When the customer specifies a position, our default creative-placement
-    guidance should be skipped so we do not contradict their request.
-    Only the logo-integrity instruction (preserve shape/details) is kept.
-    """
-    prompt_lower = prompt.lower()
-    return any(kw in prompt_lower for kw in [
-        # Vietnamese position keywords
-        "góc trên", "góc dưới", "góc trái", "góc phải",
-        "góc trên trái", "góc trên phải",
-        "góc dưới trái", "góc dưới phải",
-        "phía trên", "phía dưới", "bên trái", "bên phải",
-        "trên cùng", "dưới cùng", "giữa ảnh", "trữ giữa",
-        "chính giữa", "vị trí cụ thể", "ngay giữa",
-        # Vietnamese with logo
-        "logo góc", "logo ở góc", "logo ở trên", "logo ở dưới",
-        "logo ở giữa", "logo bên", "logo phía",
-        # English position keywords
-        "top left", "top right", "bottom left", "bottom right",
-        "top center", "bottom center", "center", "middle",
-        "upper left", "upper right", "lower left", "lower right",
-        "logo in the corner", "logo at the corner",
-        "logo on the left", "logo on the right",
-        "logo at top", "logo at bottom", "logo in center",
-        "place logo at", "put logo at", "logo position",
-    ])
-
 # Keywords indicating the user wants the logo re-enabled after a no-logo request.
 # Checked in _update_logo_preference to set preferences.logoSuppressed = False,
 # re-enabling logo injection for all subsequent image generation requests.
@@ -665,6 +636,17 @@ class ImageGenerationToolConfig(Base):
                 "\nImages here are appended to reference_images and sent as startImages to Gemini. "
                 "Gemini will treat all startImages equally, so the AI integrates all logos naturally. "
                 "If user says 'only use this logo' (not profile logo), also pass logo_preference='disabled'."
+            ),
+        ),
+        logo_position=StringSchema(
+            description=(
+                "LOGO POSITION: Pass this ONLY when the user explicitly specifies WHERE to place the brand logo. "
+                "Extract the position as a short descriptor in English, e.g. 'bottom-right', 'top-left', "
+                "'center', 'bottom-center', 'top-right', etc. "
+                "When set, the system skips its default creative-placement guidance and lets the AI "
+                "follow the user's stated position exactly. "
+                "Omit this parameter whenever the user has NOT specified a logo position — "
+                "in that case the system automatically picks a smart, scene-integrated placement."
             ),
         ),
         required=["prompt"],
@@ -987,6 +969,7 @@ class ImageGenerationTool(Tool, ContextAware):
         count: int | None = None,
         logo_preference: str | None = None,
         logo_images: list[str] | None = None,
+        logo_position: str | None = None,
         **kwargs: Any,
     ) -> str:
         if is_resident_designer_profile(self.capability_profile):
@@ -1083,7 +1066,9 @@ class ImageGenerationTool(Tool, ContextAware):
 
         # Apply Vidtory professional standards + customer brand guidelines
         is_vidtory = (self.config.provider == "vidtory")
-        optimized_prompt, customer_ar, logo_url = self._apply_customer_context(prompt, is_vidtory_provider=is_vidtory)
+        optimized_prompt, customer_ar, logo_url = self._apply_customer_context(
+            prompt, is_vidtory_provider=is_vidtory, logo_position=logo_position
+        )
         resolved_ar = aspect_ratio or customer_ar or self.config.default_aspect_ratio
 
         # Append multi-image instruction if multiple reference images are provided
@@ -1580,7 +1565,7 @@ class ImageGenerationTool(Tool, ContextAware):
             logger.info("Revision uses latest generated image: {}", last_img)
             return [last_img]
 
-    def _apply_customer_context(self, prompt: str, is_vidtory_provider: bool = False) -> tuple[str, str | None, str | None]:
+    def _apply_customer_context(self, prompt: str, is_vidtory_provider: bool = False, logo_position: str | None = None) -> tuple[str, str | None, str | None]:
         """Apply customer brand guidelines and Vidtory professional standards to the prompt.
 
         This is the central prompt enrichment pipeline:
@@ -1725,13 +1710,13 @@ class ImageGenerationTool(Tool, ContextAware):
 
                 # ── Step 5: Logo preservation guard & instructions ────────────
                 if logo_url:
-                    # When the customer explicitly specifies logo position (e.g.
-                    # 'góc dưới phải', 'top left', 'center'), respect their choice:
-                    # skip creative-placement guidance, inject only the integrity
-                    # instruction (preserve shape/details). When no position is
-                    # specified, inject the full smart-placement guidance so the
-                    # AI picks a context-aware, creative position automatically.
-                    if _prompt_specifies_logo_position(prompt):
+                    # logo_position is set by the calling LLM agent when the customer
+                    # explicitly stated WHERE to place the logo (any language, any phrasing).
+                    # In that case: skip creative-placement guidance (it would conflict),
+                    # inject only the integrity instruction so the AI follows the user's
+                    # stated position without contradiction.
+                    # When logo_position is absent: inject full smart-placement guidance.
+                    if logo_position:
                         # Customer-specified position: integrity-only instruction
                         if target_lang == "vi":
                             logo_instruction = (
@@ -1745,7 +1730,10 @@ class ImageGenerationTool(Tool, ContextAware):
                                 "Preserve its exact shape, structure, proportions, and details; "
                                 "do not redraw, deform, or replace it with simulated lettering."
                             )
-                        logger.debug("Logo placement: customer-specified position — using integrity-only instruction")
+                        logger.debug(
+                            "Logo placement: customer-specified position '{}' — using integrity-only instruction",
+                            logo_position,
+                        )
                     else:
                         # No position specified: use smart creative placement guidance
                         logo_instruction = build_logo_instruction(target_lang)
