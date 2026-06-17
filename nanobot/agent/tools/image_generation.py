@@ -550,6 +550,35 @@ def _prompt_requests_no_logo(prompt: str) -> bool:
     ])
 
 
+def _prompt_specifies_logo_position(prompt: str) -> bool:
+    """Return True when the user explicitly states WHERE to place the logo.
+
+    When the customer specifies a position, our default creative-placement
+    guidance should be skipped so we do not contradict their request.
+    Only the logo-integrity instruction (preserve shape/details) is kept.
+    """
+    prompt_lower = prompt.lower()
+    return any(kw in prompt_lower for kw in [
+        # Vietnamese position keywords
+        "góc trên", "góc dưới", "góc trái", "góc phải",
+        "góc trên trái", "góc trên phải",
+        "góc dưới trái", "góc dưới phải",
+        "phía trên", "phía dưới", "bên trái", "bên phải",
+        "trên cùng", "dưới cùng", "giữa ảnh", "trữ giữa",
+        "chính giữa", "vị trí cụ thể", "ngay giữa",
+        # Vietnamese with logo
+        "logo góc", "logo ở góc", "logo ở trên", "logo ở dưới",
+        "logo ở giữa", "logo bên", "logo phía",
+        # English position keywords
+        "top left", "top right", "bottom left", "bottom right",
+        "top center", "bottom center", "center", "middle",
+        "upper left", "upper right", "lower left", "lower right",
+        "logo in the corner", "logo at the corner",
+        "logo on the left", "logo on the right",
+        "logo at top", "logo at bottom", "logo in center",
+        "place logo at", "put logo at", "logo position",
+    ])
+
 # Keywords indicating the user wants the logo re-enabled after a no-logo request.
 # Checked in _update_logo_preference to set preferences.logoSuppressed = False,
 # re-enabling logo injection for all subsequent image generation requests.
@@ -1696,7 +1725,32 @@ class ImageGenerationTool(Tool, ContextAware):
 
                 # ── Step 5: Logo preservation guard & instructions ────────────
                 if logo_url:
-                    enriched = f"{enriched}. {build_logo_instruction(target_lang)}"
+                    # When the customer explicitly specifies logo position (e.g.
+                    # 'góc dưới phải', 'top left', 'center'), respect their choice:
+                    # skip creative-placement guidance, inject only the integrity
+                    # instruction (preserve shape/details). When no position is
+                    # specified, inject the full smart-placement guidance so the
+                    # AI picks a context-aware, creative position automatically.
+                    if _prompt_specifies_logo_position(prompt):
+                        # Customer-specified position: integrity-only instruction
+                        if target_lang == "vi":
+                            logo_instruction = (
+                                "Logo thương hiệu là ảnh tham chiếu cuối cùng. "
+                                "Giữ nguyên hình dáng, cấu trúc, tỷ lệ và chi tiết logo; "
+                                "không vẽ lại, không biến dạng, không thay thế bằng chữ mô phỏng."
+                            )
+                        else:
+                            logo_instruction = (
+                                "The brand logo is the final reference image. "
+                                "Preserve its exact shape, structure, proportions, and details; "
+                                "do not redraw, deform, or replace it with simulated lettering."
+                            )
+                        logger.debug("Logo placement: customer-specified position — using integrity-only instruction")
+                    else:
+                        # No position specified: use smart creative placement guidance
+                        logo_instruction = build_logo_instruction(target_lang)
+                        logger.debug("Logo placement: no position specified — using creative-placement instruction")
+                    enriched = f"{enriched}. {logo_instruction}"
 
                     if self._prompt_has_watermark_keywords(prompt):
                         logo_guard = (
