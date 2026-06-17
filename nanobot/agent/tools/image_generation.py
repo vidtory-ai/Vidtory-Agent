@@ -482,8 +482,8 @@ def _prompt_requests_no_logo(prompt: str) -> bool:
 
 
 # Keywords indicating the user wants the logo re-enabled after a no-logo request.
-# Checked in _user_recently_requested_no_logo to short-circuit no-logo suppression
-# when the user's most recent explicit preference is to include the logo.
+# Checked in _update_logo_preference to set preferences.logoSuppressed = False,
+# re-enabling logo injection for all subsequent image generation requests.
 _WANT_LOGO_KEYWORDS: tuple[str, ...] = (
     "chèn logo", "thêm logo", "đặt logo", "có logo", "logo lại",
     "logo trở lại", "dùng logo", "với logo", "kèm logo", "hiện logo",
