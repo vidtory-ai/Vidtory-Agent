@@ -552,6 +552,18 @@ class ImageGenerationToolConfig(Base):
             minimum=1,
             maximum=8,
         ),
+        logo_preference=StringSchema(
+            description=(
+                "LOGO PREFERENCE: Pass this whenever the user has expressed an explicit preference about the brand logo "
+                "in the current conversation — regardless of language or phrasing. "
+                "Use 'disabled' when the user wants NO logo (e.g. 'không logo', 'no logo', 'remove logo', "
+                "'不要logo', 'logo 없이', or any equivalent in any language). "
+                "Use 'enabled' when the user wants the logo included (e.g. 'sử dụng logo', 'thêm logo', "
+                "'use logo', 'add logo', '加上logo', or any equivalent in any language). "
+                "IMPORTANT: Pass this parameter whenever you detect a logo preference in the CURRENT turn "
+                "OR in recent conversation context. Omit only when no logo preference has been expressed."
+            ),
+        ),
         required=["prompt"],
     )
 )
@@ -870,6 +882,7 @@ class ImageGenerationTool(Tool, ContextAware):
         aspect_ratio: str | None = None,
         image_size: str | None = None,
         count: int | None = None,
+        logo_preference: str | None = None,
         **kwargs: Any,
     ) -> str:
         if is_resident_designer_profile(self.capability_profile):
@@ -959,9 +972,10 @@ class ImageGenerationTool(Tool, ContextAware):
         # authoritative for edits, even if the LLM omitted or reordered them.
         reference_images = self._merge_revision_references(prompt, reference_images)
 
-        # Persist any explicit logo preference (no-logo / want-logo) from the user
-        # message BEFORE _apply_customer_context reads the profile flag.
-        self._update_logo_preference(original_user_content)
+        # Persist logo preference to DB before _apply_customer_context reads the flag.
+        # Priority: LLM-supplied logo_preference parameter (semantic, language-agnostic)
+        # > keyword fallback from original_user_content (same-turn safety net).
+        self._update_logo_preference(original_user_content, llm_signal=logo_preference)
 
         # Apply Vidtory professional standards + customer brand guidelines
         is_vidtory = (self.config.provider == "vidtory")
@@ -1191,24 +1205,59 @@ class ImageGenerationTool(Tool, ContextAware):
         prompt_lower = prompt.lower()
         return any(kw in prompt_lower for kw in self._DETAILED_PROMPT_KEYWORDS)
 
-    def _update_logo_preference(self, user_message: str) -> None:
-        """Persist the user's logo preference to their profile when they explicitly state it.
+    def _update_logo_preference(
+        self,
+        user_message: str,
+        *,
+        llm_signal: str | None = None,
+    ) -> None:
+        """Persist the user's logo preference to their profile.
 
-        Detects no-logo / want-logo intent in the raw user message and saves
-        ``preferences.logoSuppressed`` to the profile.  The flag persists
-        indefinitely until the user explicitly changes it again — there is no
-        time-window limit (unlike the previous session-scan approach).
+        Intent resolution priority (highest → lowest):
+        1. ``llm_signal`` — explicit value passed by the agent LLM via the
+           ``logo_preference`` tool parameter.  The LLM understands all
+           languages, tones, and phrasings without hardcoded keywords.
+           Values: ``"enabled"`` | ``"disabled"``.
+        2. Keyword fallback — scans ``user_message`` for known no-logo /
+           want-logo phrases.  Only applies when ``llm_signal`` is None,
+           i.e. the LLM did not pass the parameter (e.g. same-turn inline
+           request like "tạo ảnh quảng cáo, không logo").
 
-        Called early in execute() so the preference is always up-to-date before
-        _apply_customer_context() reads it.
+        The flag ``preferences.logoSuppressed`` persists in the user's
+        profile until explicitly changed — there is no time-window limit.
         """
-        if not user_message:
-            return
-        user_msg_lower = user_message.lower()
-        wants_no_logo = _prompt_requests_no_logo(user_message)
-        wants_logo = any(kw in user_msg_lower for kw in _WANT_LOGO_KEYWORDS)
-        if not wants_no_logo and not wants_logo:
-            return  # No explicit logo preference in this message — leave flag unchanged
+        # ── Priority 1: LLM-supplied explicit signal ──────────────────────────
+        if llm_signal is not None:
+            normalized = llm_signal.strip().lower()
+            if normalized == "disabled":
+                wants_no_logo, wants_logo = True, False
+            elif normalized == "enabled":
+                wants_no_logo, wants_logo = False, True
+            else:
+                logger.warning(
+                    "_update_logo_preference: unexpected llm_signal value '{}' — ignoring",
+                    llm_signal,
+                )
+                return
+            logger.info(
+                "Logo preference from LLM signal: '{}' → logoSuppressed={}",
+                llm_signal, wants_no_logo,
+            )
+        # ── Priority 2: Keyword fallback (same-turn safety net) ───────────────
+        else:
+            if not user_message:
+                return
+            user_msg_lower = user_message.lower()
+            wants_no_logo = _prompt_requests_no_logo(user_message)
+            wants_logo = any(kw in user_msg_lower for kw in _WANT_LOGO_KEYWORDS)
+            if not wants_no_logo and not wants_logo:
+                return  # No logo preference detected — leave flag unchanged
+            logger.info(
+                "Logo preference from keyword fallback: no_logo={}, want_logo={}",
+                wants_no_logo, wants_logo,
+            )
+
+        # ── Persist to profile DB ─────────────────────────────────────────────
         try:
             profile = telegram_customer_profile.get()
             if not profile:
@@ -1227,10 +1276,10 @@ class ImageGenerationTool(Tool, ContextAware):
             prefs = fresh.setdefault("preferences", {})
             if wants_no_logo:
                 prefs["logoSuppressed"] = True
-                logger.info("Logo preference: suppressed (user said no-logo) — persisted for uid {}", uid)
+                logger.info("Logo preference persisted: SUPPRESSED for uid {}", uid)
             else:
                 prefs["logoSuppressed"] = False
-                logger.info("Logo preference: re-enabled (user said want-logo) — persisted for uid {}", uid)
+                logger.info("Logo preference persisted: ENABLED for uid {}", uid)
             save_profile(uid, fresh)
         except Exception as exc:
             logger.debug("_update_logo_preference failed (non-fatal): {}", exc)
