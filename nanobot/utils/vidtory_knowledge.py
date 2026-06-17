@@ -190,95 +190,82 @@ _STYLES: dict[str, tuple[str, str]] = {
         "bối cảnh môi trường tự nhiên, chi tiết siêu sắc nét, độ sâu trường ảnh nông, chất lượng National Geographic",
     ),
 
-    # ── ✨ CINEMATIC POSTER styles (new) ─────────────────────────────────────
+    # ── ✨ CINEMATIC POSTER styles ────────────────────────────────────────────
+    # NOTE: Typography/text instructions are intentionally omitted here.
+    # These styles define visual mood, lighting, and composition — the LLM uses
+    # them as quality reference.  Text/title instructions are only injected when
+    # the user explicitly requests them in their prompt.
     "cinematic_action": (
         "cinematic action movie poster, dramatic wide-angle composition, explosive environment "
         "with fire, smoke, dust particles floating, intense directional rim lighting, "
-        "bold oversized sans-serif metallic title typography with rust and scratch texture, "
         "sharp shadow cast on background, 8K ultra-resolution, Hollywood blockbuster quality",
         "poster phim hành động điện ảnh hoành tráng, bố cục góc rộng kịch tính, "
         "môi trường khói lửa, bụi bặm và hạt ánh sáng lấp lánh, viền sáng rọi mạnh, "
-        "chữ tiêu đề sans-serif dày mạnh mẽ chất liệu kim loại rỉ sét và trầy xước chân thực, "
         "bóng đổ sắc nét xuống nền, phân giải 8K, chất lượng Hollywood",
     ),
     "cinematic_fantasy": (
         "epic fantasy movie poster, mystical ancient forest or floating island setting, "
-        "ethereal hazy light with magical golden rays, ornate serif title typography "
-        "carved from ancient glowing amber stone, organic vines and roots naturally wrapping "
-        "letters in perfect 3D depth, world-class art direction, breathtakingly beautiful",
+        "ethereal hazy light with magical golden rays, organic vines and roots, "
+        "world-class art direction, breathtakingly beautiful",
         "poster phim kỳ ảo đỉnh cao, khung cảnh rừng cổ thụ huyền bí hoặc hòn đảo bay, "
-        "ánh sáng huyền ảo mờ sương với luồng sáng thần tiên vàng, "
-        "chữ serif nghệ thuật như đá cổ đại phát ánh vàng hổ phách, "
-        "dây leo và rễ cây quấn quanh chữ tự nhiên tạo chiều sâu 3D, nghệ thuật choáng ngợp",
+        "ánh sáng huyền ảo mờ sương với luồng sáng thần tiên vàng, dây leo và rễ cây nghệ thuật, "
+        "nghệ thuật choáng ngợp",
     ),
     "cinematic_horror": (
         "psychological horror movie poster, dark minimalist composition, dominant black and deep crimson tones, "
         "subject emerging from shadow with single-sided dramatic raking light casting long mysterious shadows, "
-        "asymmetric tension-building layout, handwritten-style jagged uneven title typography "
-        "made of thick viscous dripping liquid with glossy wet edges, "
+        "asymmetric tension-building layout, "
         "premium cinematic art direction, unsettling yet deeply artistic",
         "poster phim kinh dị tâm lý, nền tối tối giản tông đen và đỏ thẫm, "
         "chủ thể ẩn hiện trong bóng tối mờ ảo với ánh sáng rọi một phía, "
         "bóng đổ dài bí ẩn, bố cục bất đối xứng căng thẳng, "
-        "chữ viết tay bất đối xứng sắc nhọn chất liệu chất lỏng đặc quánh đang nhỏ giọt, "
         "điện ảnh cao cấp, rùng rợn nhưng vô cùng nghệ thuật",
     ),
 
-    # ── ✨ PREMIUM ADVERTISING styles (new) ──────────────────────────────────
+    # ── ✨ PREMIUM ADVERTISING styles ─────────────────────────────────────────
     "luxury_ad": (
         "international luxury brand advertising, ultra-minimalist neutral monochrome backdrop, "
         "polished quartz surface reflecting like a mirror beneath the hero product, "
-        "soft studio light wrapping the subject, elegant thin modern serif or sans-serif typography "
-        "with perfect letter-spacing crafted from 24k matte gold or polished chrome, "
-        "studio reflections glowing softly, supreme high-end and opulent feel",
+        "soft studio light wrapping the subject, studio reflections glowing softly, "
+        "supreme high-end and opulent feel",
         "quảng cáo thương hiệu xa xỉ đẳng cấp quốc tế, nền tối giản đơn sắc trung tính cao cấp, "
         "bề mặt đá thạch anh phẳng lặng phản chiếu như gương, ánh sáng studio mềm mại, "
-        "chữ typography thanh lịch mỏng hiện đại khoảng cách hoàn hảo, "
-        "chất liệu vàng mờ 24k hoặc chrome bóng loáng phản chiếu ánh sáng studio, "
         "cảm giác vô cùng đắt tiền và thượng lưu",
     ),
     "tech_futuristic_ad": (
         "futuristic technology advertising design, digital space background with laser energy streaks "
         "and glowing circuit networks, hero product floating mid-air, "
         "dynamic diagonal layout with motion blur in background for speed, "
-        "futuristic angular glassmorphism title typography with neon-glowing borders, "
         "sharp professional high-tech cinematic quality",
         "thiết kế quảng cáo công nghệ tương lai, nền không gian số với dải laser và mạch vi mạch phát sáng, "
         "sản phẩm lơ lửng giữa không trung, bố cục góc chéo động với motion blur hậu cảnh, "
-        "chữ tiêu đề futuristic glassmorphism xuyên thấu viền neon rực rỡ, "
         "sắc nét chuyên nghiệp hi-tech điện ảnh",
     ),
     "fashion_magazine": (
         "high-fashion luxury magazine cover advertisement, abstract artistic geometric shapes "
-        "with sharp studio shadows, large creative typographic elements with varied letterform scale "
-        "semi-transparent intersecting through objects for 3D depth illusion, "
+        "with sharp studio shadows, "
         "bold avant-garde art direction, premium curated color palette, "
         "visually commanding instant attention",
         "quảng cáo tạp chí thời trang cao cấp, các mảng hình học nghệ thuật trừu tượng, "
-        "chữ nghệ thuật lớn kích thước đan xen sáng tạo bán trong suốt lồng ghép qua vật thể tạo 3D, "
         "màu sắc nghệ thuật cao cấp, bố cục phá cách, thị giác cực mạnh thu hút ngay lập tức",
     ),
     "streetwear_ad": (
         "streetwear and urban fashion advertising, rough concrete wall background with graffiti splashes, "
-        "high contrast bold saturated gradient colors, oversized 3D bubble or glossy plastic typography "
-        "in vibrant hot-tone gradient, extremely high contrast, "
+        "high contrast bold saturated gradient colors, "
         "modern global pop-culture Gen-Z energy",
         "thiết kế quảng cáo streetwear đường phố, nền tường bê tông thô ráp với vệt graffiti, "
-        "chữ 3D nhựa bóng dẻo hoặc phao phồng gradient nóng rực rỡ, "
         "độ tương phản cực cao, hơi thở văn hóa pop hiện đại toàn cầu Gen-Z",
     ),
     "organic_eco": (
         "premium organic eco-friendly product advertising, natural sunlight filtering through lush green leaves, "
         "early morning dew droplets glistening, hero product centered in organic setting, "
-        "brand typography naturally carved from solid oak wood with visible grain texture "
-        "or formed from living wet green moss, "
         "fresh pure clean premium organic feel",
         "quảng cáo sản phẩm thuần chay sinh thái cao cấp, ánh nắng tự nhiên qua tán lá xanh mướt, "
-        "hạt sương sớm lung linh, chữ thương hiệu điêu khắc từ gỗ sồi vân gỗ rõ "
-        "hoặc tạo từ thảm rêu xanh ẩm ướt chân thực, "
+        "hạt sương sớm lung linh, sản phẩm đặt trong khung cảnh thiên nhiên, "
         "bố cục trong lành tinh khiết sạch sẽ cao cấp",
     ),
 }
+
 
 # ── Platform-specific output specifications ──────────────────────────────────
 _PLATFORM_SPECS: dict[str, dict[str, str]] = {
@@ -466,12 +453,14 @@ _CONTENT_INSIGHTS: dict[str, tuple[str, str]] = {
 # ── Universal quality suffix (appended to all prompts) ───────────────────────
 _UNIVERSAL_QUALITY_SUFFIX = (
     "editorial photography, professional camera shot, sharp focus, natural textures, "
-    "balanced exposure, clean composition, no watermark, no text overlay"
+    "balanced exposure, clean composition, no watermark, "
+    "do NOT add any text, title, headline, or typography unless explicitly requested by the user"
 )
 
 _UNIVERSAL_QUALITY_SUFFIX_VI = (
     "nhiếp ảnh thương mại chuyên nghiệp, chụp bằng máy ảnh cao cấp, nét sắc, kết cấu tự nhiên, "
-    "phơi sáng cân bằng, bố cục sạch, không có watermark, không có chữ ngẫu nhiên"
+    "phơi sáng cân bằng, bố cục sạch, không có watermark, "
+    "TUYỆT ĐỐI không tự thêm chữ viết, tiêu đề hay typography vào ảnh nếu người dùng không yêu cầu"
 )
 
 # ── Content type keyword detection ───────────────────────────────────────────

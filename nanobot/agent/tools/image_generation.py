@@ -473,11 +473,23 @@ def _ambiguous_image_request_clarification(prompt: str) -> str | None:
 
 
 def _prompt_requests_no_logo(prompt: str) -> bool:
-    """Check if the user explicitly requested to omit the logo."""
+    """Check if the user explicitly requested to omit the logo.
+
+    Covers common Vietnamese/English phrasings.  Any new variant reported in
+    production should be added here — this is the single source of truth for
+    no-logo intent detection.
+    """
     prompt_lower = prompt.lower()
     return any(kw in prompt_lower for kw in [
-        "không logo", "không cần logo", "bỏ logo", "no logo", "without logo",
-        "không có logo", "tạo không cần logo", "không chèn logo"
+        # Direct negative constructions
+        "không logo", "không cần logo", "không có logo", "không chèn logo",
+        "không sử dụng logo", "không dùng logo", "không gắn logo",
+        "không đặt logo", "không hiện logo", "không hiển thị logo",
+        # Removal / hiding
+        "bỏ logo", "xóa logo", "tắt logo", "ẩn logo", "loại bỏ logo",
+        # English
+        "no logo", "without logo", "remove logo", "hide logo",
+        "no brand logo", "without brand logo",
     ])
 
 
