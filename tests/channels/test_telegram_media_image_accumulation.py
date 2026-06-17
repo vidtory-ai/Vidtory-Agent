@@ -1,6 +1,6 @@
 """Regression tests for Telegram image accumulation behaviour.
 
-Two independent concerns are covered here:
+Three independent concerns are covered here:
 
 1.  **commit 16d95c — media-group (album) flush**
     When a Telegram album (multiple photos sent together, sharing a
@@ -15,6 +15,14 @@ Two independent concerns are covered here:
     in the same chat MUST be merged (accumulated) into the existing entry
     rather than overwriting it.  This ensures a later request like
     "ghép 2 ảnh" sees all images.
+
+3.  **Sliding-window buffer for text+media requests**
+    When the user sends Photo1+caption then Photo2/Photo3 (no caption)
+    in rapid succession, only Photo1 has text so it would normally bypass
+    the pending-choices mechanism and fire a premature single-image request.
+    The sliding-window buffer delays dispatch by 1 s (up to 3 s max) and
+    accumulates every photo arriving in that window, so the LLM sees all
+    images — up to 10 or more.
 """
 from __future__ import annotations
 
@@ -386,4 +394,228 @@ async def test_pending_media_choices_expired_entry_is_replaced(
     )
     assert "/fake/old.jpg" not in entry.get("media", []), (
         "Old expired media must not appear in the new entry."
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. Sliding-window buffer — text+media messages accumulate rapid-fire photos
+# ---------------------------------------------------------------------------
+
+
+def _common_monkeypatches(monkeypatch, channel, download_fn):
+    """Apply the standard monkeypatches needed by _on_message tests."""
+    monkeypatch.setattr(channel, "_download_message_media", download_fn)
+    monkeypatch.setattr(channel, "_add_reaction", AsyncMock())
+    monkeypatch.setattr(channel, "_start_typing", MagicMock())
+    monkeypatch.setattr(channel, "_stop_typing", MagicMock())
+    monkeypatch.setattr(channel, "_is_group_message_for_bot", AsyncMock(return_value=True))
+    monkeypatch.setattr(channel, "_handle_onboarding_quick_reply", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.mixins.messages.TelegramMessagesMixin"
+        "._is_creative_generation_request",
+        lambda self, _content: False,
+        raising=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_sliding_window_accumulates_photos_sent_after_caption(monkeypatch) -> None:
+    """
+    Sliding-window buffer — main regression test.
+
+    Scenario: user sends Photo1+caption "ghep 3 anh", then Photo2 and Photo3
+    (no caption) arrive milliseconds later (Telegram delivers them as separate
+    messages; only the first carries the caption).
+
+    Expected: _handle_message is called ONCE with all 3 images, NOT called
+    immediately with only 1 image.
+    """
+    channel = _make_channel()
+
+    async def fake_download(msg, *, add_failure_content=False):
+        if not getattr(msg, "photo", None):
+            return [], []
+        uid = msg.photo[-1].file_unique_id
+        return [f"/fake/{uid}.jpg"], [f"[image: /fake/{uid}.jpg]"]
+
+    _common_monkeypatches(monkeypatch, channel, fake_download)
+    # Mock onboarding so the user appears as an established user (not blocked by guard).
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.mixins.messages.get_onboarding_status",
+        lambda uid: "complete",
+        raising=False,
+    )
+
+    handle_calls: list[dict] = []
+
+    async def capturing_handle(**kwargs):
+        handle_calls.append({
+            "media": list(kwargs.get("media") or []),
+            "content": kwargs.get("content", ""),
+        })
+
+    channel._handle_message = capturing_handle  # type: ignore[method-assign]
+
+    # ── Photo1 + caption arrives ────────────────────────────────────────────
+    update1 = _make_photo_message(
+        chat_id=-100, sender_id=42, username="alice",
+        message_id=1, file_unique_id="uid1",
+        caption="ghep 3 anh",
+    )
+    update1.message.text = None
+    await channel._on_message(update1, MagicMock())
+
+    # Buffer must be created; _handle_message must NOT have fired yet.
+    assert len(handle_calls) == 0, (
+        "Sliding-window buffer: _handle_message must NOT fire on Photo1+caption arrival. "
+        "Got calls: " + str(handle_calls)
+    )
+    tmb_key = "-100:42|alice"
+    assert tmb_key in getattr(channel, "_text_media_buffers", {}), (
+        "Sliding-window buffer must have been created for this user+chat."
+    )
+
+    # ── Photo2 (no caption) arrives ─────────────────────────────────────────
+    update2 = _make_photo_message(
+        chat_id=-100, sender_id=42, username="alice",
+        message_id=2, file_unique_id="uid2",
+    )
+    await channel._on_message(update2, MagicMock())
+
+    assert len(handle_calls) == 0, "After Photo2, buffer must still be holding."
+    buf_after_2 = channel._text_media_buffers.get(tmb_key, {})
+    assert len(buf_after_2.get("media", [])) == 2, (
+        "Photo2 must have been merged into the text+media buffer."
+    )
+
+    # ── Photo3 (no caption) arrives ─────────────────────────────────────────
+    update3 = _make_photo_message(
+        chat_id=-100, sender_id=42, username="alice",
+        message_id=3, file_unique_id="uid3",
+    )
+    await channel._on_message(update3, MagicMock())
+
+    assert len(handle_calls) == 0, "After Photo3, buffer must still be holding."
+    buf_after_3 = channel._text_media_buffers.get(tmb_key, {})
+    assert len(buf_after_3.get("media", [])) == 3, (
+        "Photo3 must have been merged; buffer now has 3 images."
+    )
+
+    # ── Flush fires (simulate by draining pending tasks) ────────────────────
+    # Cancel any pending sliding-window tasks so we can drive the flush manually.
+    for task in list(getattr(channel, "_text_media_tasks", {}).values()):
+        task.cancel()
+    # Manually trigger flush directly to verify dispatch logic.
+    buf = channel._text_media_buffers.pop(tmb_key, None)
+    assert buf is not None
+    all_media = list(dict.fromkeys(buf["media"]))
+    meta = dict(buf["metadata"])
+    meta["current_media"] = all_media
+    await channel._handle_message(
+        sender_id=buf["sender_id"],
+        chat_id=buf["chat_id"],
+        content=buf["content"],
+        media=all_media,
+        metadata=meta,
+        session_key=buf["session_key"],
+    )
+
+    assert len(handle_calls) == 1, "Exactly one dispatch must happen."
+    assert len(handle_calls[0]["media"]) == 3, (
+        "Dispatch must include all 3 accumulated images. "
+        f"Got: {handle_calls[0]['media']}"
+    )
+    # content is the full caption (possibly with image descriptor appended by _on_message)
+    assert "ghep 3 anh" in handle_calls[0]["content"], (
+        "The caption from Photo1 must be present in the dispatch content."
+    )
+
+
+@pytest.mark.asyncio
+async def test_sliding_window_single_photo_caption_dispatches_after_window(
+    monkeypatch,
+) -> None:
+    """
+    When a single photo+caption arrives (nothing else follows), the buffer
+    must still eventually be created and ready for a manual flush with 1 image.
+    """
+    channel = _make_channel()
+
+    async def fake_download(msg, *, add_failure_content=False):
+        if not getattr(msg, "photo", None):
+            return [], []
+        uid = msg.photo[-1].file_unique_id
+        return [f"/fake/{uid}.jpg"], [f"[image: /fake/{uid}.jpg]"]
+
+    _common_monkeypatches(monkeypatch, channel, fake_download)
+    # Mock onboarding so the user appears as an established user.
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.mixins.messages.get_onboarding_status",
+        lambda uid: "complete",
+        raising=False,
+    )
+    channel._handle_message = AsyncMock()  # type: ignore[method-assign]
+
+    update = _make_photo_message(
+        chat_id=-100, sender_id=42, username="alice",
+        message_id=1, file_unique_id="single",
+        caption="chỉnh ảnh này",
+    )
+    update.message.text = None
+    await channel._on_message(update, MagicMock())
+
+    tmb_key = "-100:42|alice"
+    buf = getattr(channel, "_text_media_buffers", {}).get(tmb_key)
+    assert buf is not None, "Buffer must be created for single photo+caption."
+    assert len(buf.get("media", [])) == 1, "Buffer must hold the single image."
+    # content includes caption + image descriptor appended by _on_message
+    assert "chỉnh ảnh này" in buf.get("content", ""), (
+        "Caption must be present in the buffer content."
+    )
+    # _handle_message must NOT have been called yet (window is pending).
+    channel._handle_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sliding_window_reply_with_photo_bypasses_buffer(monkeypatch) -> None:
+    """
+    When the user replies to a message and attaches a photo + text, that is a
+    targeted action (e.g. "chỉnh ảnh này" as a reply). It must be forwarded
+    directly without buffering — the sliding window must not apply.
+    """
+    channel = _make_channel()
+
+    async def fake_download(msg, *, add_failure_content=False):
+        if not getattr(msg, "photo", None):
+            return [], []
+        uid = msg.photo[-1].file_unique_id
+        return [f"/fake/{uid}.jpg"], [f"[image: /fake/{uid}.jpg]"]
+
+    _common_monkeypatches(monkeypatch, channel, fake_download)
+
+    handle_calls: list[dict] = []
+
+    async def capturing_handle(**kwargs):
+        handle_calls.append({"media": list(kwargs.get("media") or [])})
+
+    channel._handle_message = capturing_handle  # type: ignore[method-assign]
+
+    # Build a photo message that also has a reply_to_message → is_reply=True.
+    update = _make_photo_message(
+        chat_id=-100, sender_id=42, username="alice",
+        message_id=5, file_unique_id="reply_photo",
+        caption="chỉnh ảnh này",
+    )
+    update.message.text = None
+    update.message.reply_to_message = SimpleNamespace(message_id=3)  # reply!
+
+    await channel._on_message(update, MagicMock())
+
+    # For a reply, _handle_message must have been called immediately.
+    assert len(handle_calls) == 1, (
+        "Reply+photo must bypass the sliding-window buffer and dispatch immediately."
+    )
+    # No text_media_buffer must have been created.
+    assert getattr(channel, "_text_media_buffers", {}) == {}, (
+        "Sliding-window buffer must NOT be created for reply messages."
     )

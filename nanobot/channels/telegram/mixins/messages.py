@@ -619,6 +619,30 @@ class TelegramMessagesMixin:
         has_text = bool(message.text or message.caption)
         is_reply = reply is not None
         if has_media and not has_text and not is_reply:
+            # If a text+media buffer is pending for this user (photo+caption arrived
+            # just before, waiting to collect siblings), merge this image into it
+            # and reset the sliding-window timer so the flush waits for us too.
+            _tmb = getattr(self, "_text_media_buffers", {})
+            _tmb_key = f"{str_chat_id}:{sender_id}"
+            if _tmb_key in _tmb:
+                _tmb[_tmb_key]["media"] = list(dict.fromkeys(
+                    _tmb[_tmb_key]["media"] + list(media_paths)
+                ))
+                _tmb[_tmb_key]["metadata"]["current_media"] = _tmb[_tmb_key]["media"]
+                self._text_media_buffers = _tmb
+                # Reset the sliding window: cancel existing task, start fresh 1s timer.
+                _tmb_tasks = getattr(self, "_text_media_tasks", {})
+                _old_task = _tmb_tasks.get(_tmb_key)
+                _max_flush_at = _tmb[_tmb_key].get("_max_flush_at", 0.0)
+                if _old_task and not _old_task.done() and time.monotonic() < _max_flush_at:
+                    _old_task.cancel()
+                    _tmb_tasks[_tmb_key] = asyncio.create_task(
+                        self._flush_text_media_buffer(_tmb_key)
+                    )
+                    self._text_media_tasks = _tmb_tasks
+                await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
+                return
+
             # Add reaction immediately — this path returns early and never reaches
             # the normal _add_reaction call later in the flow.
             await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
@@ -839,7 +863,54 @@ class TelegramMessagesMixin:
         self._start_typing(str_chat_id)
         await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
 
-        # Forward to the message bus
+        # When media is attached (and this is not a reply), hold the request in a
+        # sliding-window buffer so that additional photos arriving in rapid succession
+        # (Telegram delivers them as separate messages, only the first has a caption)
+        # are accumulated before dispatch.  The window is 1 s, resetting on each new
+        # image, with a hard cap of 3 s from the first image.  Handles up to 10+
+        # images transparently.  Text-only and reply messages are forwarded immediately.
+        if has_media and not is_reply:
+            from nanobot.channels.telegram.mixins.media import _TEXT_MEDIA_MAX_WAIT
+            _tmb = getattr(self, "_text_media_buffers", {})
+            _tmb_key = f"{str_chat_id}:{sender_id}"
+            if _tmb_key in _tmb:
+                # Another text+media message arrived while buffer is pending:
+                # take the latest text and merge media, then reset timer.
+                _tmb[_tmb_key]["content"] = content
+                _tmb[_tmb_key]["media"] = list(dict.fromkeys(
+                    _tmb[_tmb_key]["media"] + list(media_paths)
+                ))
+                _tmb[_tmb_key]["metadata"]["current_media"] = _tmb[_tmb_key]["media"]
+                self._text_media_buffers = _tmb
+                _tmb_tasks = getattr(self, "_text_media_tasks", {})
+                _old_task = _tmb_tasks.get(_tmb_key)
+                _max_flush_at = _tmb[_tmb_key].get("_max_flush_at", 0.0)
+                if _old_task and not _old_task.done() and time.monotonic() < _max_flush_at:
+                    _old_task.cancel()
+                    _tmb_tasks[_tmb_key] = asyncio.create_task(
+                        self._flush_text_media_buffer(_tmb_key)
+                    )
+                    self._text_media_tasks = _tmb_tasks
+            else:
+                # First text+media message — create the buffer entry.
+                _tmb[_tmb_key] = {
+                    "sender_id": sender_id,
+                    "chat_id": str_chat_id,
+                    "content": content,
+                    "media": list(media_paths),
+                    "metadata": dict(metadata),
+                    "session_key": session_key,
+                    "_max_flush_at": time.monotonic() + _TEXT_MEDIA_MAX_WAIT,
+                }
+                self._text_media_buffers = _tmb
+                _tmb_tasks = getattr(self, "_text_media_tasks", {})
+                _tmb_tasks[_tmb_key] = asyncio.create_task(
+                    self._flush_text_media_buffer(_tmb_key)
+                )
+                self._text_media_tasks = _tmb_tasks
+            return  # _flush_text_media_buffer will call _handle_message
+
+        # Text-only or reply-with-media: forward directly without buffering.
         await self._handle_message(
             sender_id=sender_id,
             chat_id=str_chat_id,

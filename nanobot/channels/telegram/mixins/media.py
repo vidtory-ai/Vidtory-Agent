@@ -165,3 +165,77 @@ class TelegramMediaMixin:
             )
         finally:
             self._media_group_tasks.pop(key, None)
+
+    async def _flush_text_media_buffer(self, key: str) -> None:
+        """Sliding-window flush for text+media requests.
+
+        When a user sends multiple photos in rapid succession where only the
+        first carries a caption/text, Telegram delivers them as separate
+        messages very close in time.  Without buffering, the text+photo
+        message would be processed immediately with only 1 image, while the
+        remaining photos arrive milliseconds later.
+
+        This method implements a sliding window:
+        - Waits up to _TEXT_MEDIA_FLUSH_DELAY seconds for additional images.
+        - Each new arriving image resets the timer (cancels the current task
+          and schedules a fresh one), so the flush is always "N images have
+          arrived and no new one came for 1 second".
+        - An absolute cap (_TEXT_MEDIA_MAX_WAIT) prevents indefinite waiting
+          when images trickle in slowly: at most 3 s from the first image.
+        - Up to 10 images (or more) are handled transparently — there is no
+          hard limit in this layer.
+
+        The task clean-up guard in the finally block ensures that a cancelled
+        task (which fires finally before the replacement task) never removes
+        the key that belongs to the new task.
+        """
+        import asyncio as _asyncio
+        try:
+            tmb = getattr(self, "_text_media_buffers", {})
+            buf = tmb.get(key)
+            if not buf:
+                return
+            # Calculate actual sleep: respect the absolute cap.
+            max_wait_at: float = buf.get("_max_flush_at", 0.0)
+            delay = min(
+                _TEXT_MEDIA_FLUSH_DELAY,
+                max(0.0, max_wait_at - __import__("time").monotonic()),
+            )
+            await _asyncio.sleep(delay)
+
+            # Pop and dispatch.
+            tmb = getattr(self, "_text_media_buffers", {})
+            buf = tmb.pop(key, None)
+            if not buf:
+                return
+            self._text_media_buffers = tmb
+            all_media = list(dict.fromkeys(buf["media"]))
+            metadata = dict(buf["metadata"])
+            metadata["current_media"] = all_media
+            await self._handle_message(
+                sender_id=buf["sender_id"],
+                chat_id=buf["chat_id"],
+                content=buf["content"],
+                media=all_media,
+                metadata=metadata,
+                session_key=buf["session_key"],
+            )
+        except _asyncio.CancelledError:
+            # Task was cancelled because a new image arrived and the window
+            # was extended.  A replacement task already holds the key — do
+            # NOT remove it from _text_media_tasks.
+            raise
+        finally:
+            # Only clean up the key when the currently registered task is
+            # THIS task (i.e. not a replacement that was just created).
+            tmb_tasks = getattr(self, "_text_media_tasks", {})
+            if tmb_tasks.get(key) is __import__("asyncio").current_task():
+                tmb_tasks.pop(key, None)
+                self._text_media_tasks = tmb_tasks
+
+
+# Sliding-window flush delay (seconds) for text+media buffers.
+# Each new image resets this timer; the absolute cap is _TEXT_MEDIA_MAX_WAIT.
+_TEXT_MEDIA_FLUSH_DELAY: float = 1.0
+_TEXT_MEDIA_MAX_WAIT: float = 3.0
+
