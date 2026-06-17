@@ -215,17 +215,74 @@ def build_exact_text_instruction(quoted_texts: list[str], target_lang: str) -> s
 
 
 def build_logo_instruction(target_lang: str) -> str:
-    """Describe the protected logo asset without duplicating bilingual guidance."""
+    """Describe the protected logo asset and guide creative, context-aware placement.
+
+    Instead of a generic 'place in clean position' instruction, this guides the AI
+    to READ the image content first, then select a placement that integrates the
+    logo naturally into the scene — not as a corner overlay, but as part of the design.
+    """
     if target_lang == "vi":
         return (
-            "Logo thương hiệu là ảnh tham chiếu cuối cùng. Chèn đúng logo này vào vị trí sạch, "
-            "tự nhiên và chuyên nghiệp; giữ nguyên hình dáng, cấu trúc, tỷ lệ và chi tiết logo, "
+            "Logo thương hiệu là ảnh tham chiếu cuối cùng. "
+            "Phân tích bố cục và nội dung ảnh để chọn vị trí đặt logo thông minh và sáng tạo: "
+            "ưu tiên tích hợp logo vào một phần tự nhiên của cảnh như khắc vào bề mặt sản phẩm, "
+            "in trên chất liệu vải/giấy/gỗ, phản chiếu trên mặt kính hoặc nước, embossed trên "
+            "bao bì, lồng ghép vào vùng tường/nền/bầu trời có khoảng trống tự nhiên — "
+            "KHÔNG đặt ở góc cố định như watermark truyền thống. "
+            "Logo phải hòa vào thiết kế như một phần của cảnh, đủ rõ để nhận diện thương hiệu "
+            "nhưng không lấn át chủ thể chính. "
+            "Giữ nguyên hình dáng, cấu trúc, tỷ lệ và chi tiết logo; "
             "không vẽ lại, không biến dạng, không thay thế bằng chữ mô phỏng."
         )
     return (
-        "The brand logo is the final reference image. Place this exact logo in a clean, natural, "
-        "professional position. Preserve its shape, structure, proportions, and details; do not "
+        "The brand logo is the final reference image. "
+        "Analyze the image composition and content to choose a smart, creative logo placement: "
+        "prefer integrating the logo as a natural part of the scene — engraved on a product surface, "
+        "printed on fabric/paper/wood texture, reflected on glass or water, embossed on packaging, "
+        "or placed in a naturally open area such as a wall, sky, or background. "
+        "Do NOT place the logo as a fixed corner watermark overlay in the traditional sense. "
+        "The logo must blend into the design as part of the scene, visible enough for brand recognition "
+        "but not overpowering the main subject. "
+        "Preserve its exact shape, structure, proportions, and details; do not "
         "redraw, deform, or replace it with simulated lettering."
+    )
+
+
+def build_temp_logo_instruction(logo_count: int, target_lang: str) -> str:
+    """Instruction injected when the user provides temporary logo image(s) for this request.
+
+    Tells Gemini AI that the appended images are brand logo assets that must
+    appear in the final design — not just style/composition references.
+    Works for 1 or multiple logos, and for combined profile + temp logos.
+    """
+    if target_lang == "vi":
+        if logo_count == 1:
+            return (
+                "Ảnh logo đính kèm là tài sản thương hiệu cần xuất hiện trong thiết kế. "
+                "Phân tích bố cục ảnh để chọn vị trí tích hợp logo thông minh: "
+                "ưu tiên đặt logo như một phần tự nhiên của cảnh (khắc vào bề mặt, in trên chất liệu, "
+                "lồng ghép vào vùng trống tự nhiên) thay vì đặt ở góc như watermark truyền thống; "
+                "giữ nguyên hình dáng, tỷ lệ và chi tiết; không vẽ lại hoặc biến dạng logo."
+            )
+        return (
+            f"Có {logo_count} ảnh logo đính kèm — đây đều là tài sản thương hiệu cần xuất hiện "
+            "trong thiết kế. Phân tích bố cục để bố trí các logo hài hòa, tích hợp tự nhiên "
+            "vào cảnh thay vì xếp ở các góc cố định; giữ nguyên "
+            "hình dáng, tỷ lệ và chi tiết của từng logo; không vẽ lại hoặc biến dạng."
+        )
+    if logo_count == 1:
+        return (
+            "The attached logo image is a brand asset that must appear in the design. "
+            "Analyze the image composition to find a creative, context-aware placement: "
+            "integrate the logo naturally into the scene (engraved on surface, printed on material, "
+            "placed in a natural open area) rather than as a fixed corner overlay; "
+            "preserve its shape, proportions, and details exactly; do not redraw or distort it."
+        )
+    return (
+        f"There are {logo_count} attached logo images — all are brand assets that must appear "
+        "in the design. Analyze the composition to arrange them in creative, scene-integrated positions "
+        "rather than fixed corners; preserve "
+        "the exact shape, proportions, and details of each logo; do not redraw or distort any."
     )
 
 
@@ -311,11 +368,33 @@ def _is_numbered_followup_choice(content: str) -> bool:
     )
 
 
+# Supported output aspect ratios that customers commonly request as variants.
+_EXPORT_VARIANT_RATIOS = frozenset(["4:3", "3:4", "9:16", "16:9", "1:1", "3:2", "2:3"])
+
+
+def _is_export_variant_prompt(content: str) -> bool:
+    """Return True when the user is asking for an aspect-ratio variant of the
+    just-generated image (e.g. 'xuất bản 4:3', 'tỉ lệ 9:16 nhé', '4:3 đi').
+
+    Distinct from _is_numbered_followup_choice — these are natural-language
+    ratio requests, not tapped numbered buttons.  Both cases must resolve to
+    the last GENERATED image, not the original uploaded source images.
+    """
+    content_lower = (content or "").lower()
+    # Fast path: check for any ratio token (e.g. '4:3', '9:16') in the text
+    if not any(ratio in content_lower for ratio in _EXPORT_VARIANT_RATIOS):
+        return False
+    # Guard: a bare ratio token is enough to qualify — the context already
+    # established this is a follow-up turn (called only from _merge_revision_references
+    # which has already gated on _is_revision_prompt or similar).
+    return True
+
+
 def _is_revision_prompt(prompt: str) -> bool:
     """Check if the user's prompt is a revision or edit request."""
     prompt_lower = prompt.lower()
     revision_keywords = [
-        "sửa", "sửa lại", "chỉnh lại", "thay đổi", "thêm", "ghép", "lồng",
+        "sửa", "sửa lại", "chỉnh lại", "thay đổi", "ghép", "lồng",
         "từ ảnh", "ảnh trên", "ảnh trước", "ảnh vừa tạo", "tinh chỉnh", "tối ưu",
         "edit", "modify", "change", "add", "revision", "fix", "update", "replace",
         "chèn logo", "thêm logo", "bỏ logo", "xóa logo", "đặt logo",
@@ -451,12 +530,43 @@ def _ambiguous_image_request_clarification(prompt: str) -> str | None:
 
 
 def _prompt_requests_no_logo(prompt: str) -> bool:
-    """Check if the user explicitly requested to omit the logo."""
+    """Check if the user explicitly requested to omit the logo.
+
+    Covers common Vietnamese/English phrasings.  Any new variant reported in
+    production should be added here — this is the single source of truth for
+    no-logo intent detection.
+    """
     prompt_lower = prompt.lower()
     return any(kw in prompt_lower for kw in [
-        "không logo", "không cần logo", "bỏ logo", "no logo", "without logo",
-        "không có logo", "tạo không cần logo", "không chèn logo"
+        # Direct negative constructions
+        "không logo", "không cần logo", "không có logo", "không chèn logo",
+        "không sử dụng logo", "không dùng logo", "không gắn logo",
+        "không đặt logo", "không hiện logo", "không hiển thị logo",
+        # Removal / hiding
+        "bỏ logo", "xóa logo", "tắt logo", "ẩn logo", "loại bỏ logo",
+        # English
+        "no logo", "without logo", "remove logo", "hide logo",
+        "no brand logo", "without brand logo",
     ])
+
+
+# Keywords indicating the user wants the logo re-enabled after a no-logo request.
+# Checked in _update_logo_preference to set preferences.logoSuppressed = False,
+# re-enabling logo injection for all subsequent image generation requests.
+# NOTE: Vietnamese tones matter — "dùng" (huyền) ≠ "dụng" (nặng).
+# Keep both forms to avoid false negatives.
+_WANT_LOGO_KEYWORDS: tuple[str, ...] = (
+    # Explicit use/insert
+    "chèn logo", "thêm logo", "đặt logo", "gắn logo",
+    "dùng logo", "sử dụng logo",           # dùng (huyền) vs dụng (nặng) — both needed
+    "cho logo", "bật logo", "muốn logo", "cần logo",
+    # State / presence
+    "có logo", "kèm logo", "với logo", "hiện logo",
+    "logo lại", "logo trở lại",
+    # English
+    "add logo", "with logo", "include logo", "show logo",
+    "use logo", "logo back", "enable logo",
+)
 
 
 class ImageGenerationToolConfig(Base):
@@ -498,6 +608,51 @@ class ImageGenerationToolConfig(Base):
             description="Number of images to generate in this turn.",
             minimum=1,
             maximum=8,
+        ),
+        logo_preference=StringSchema(
+            description=(
+                "LOGO PREFERENCE: Pass this whenever the user has expressed an explicit preference about the brand logo "
+                "in the current conversation — regardless of language or phrasing. "
+                "Use 'disabled' when the user wants NO logo (e.g. 'không logo', 'no logo', 'remove logo', "
+                "'không chèn logo', 'ẩn logo', '不要logo', 'logo 없이', or any equivalent in any language). "
+                "Use 'enabled' when the user wants the logo included (e.g. 'sử dụng logo', 'thêm logo', "
+                "'chèn logo', 'bật logo', 'use logo', 'add logo', '加上logo', or any equivalent in any language). "
+                "CRITICAL — RE-ENABLE CASE: If the user previously said no-logo and now says they want logo again "
+                "(e.g. 'sử dụng logo cho sản phẩm sau', 'dùng logo từ giờ', 'thêm logo trở lại', 'enable logo', "
+                "'use logo from now on'), you MUST pass 'enabled' to reset the suppression. "
+                "The system stores logo preference persistently in a database — if you omit this parameter when "
+                "the user re-enables logo, the old 'disabled' flag remains and the logo will NOT appear. "
+                "IMPORTANT: Pass this parameter whenever you detect a logo preference in the CURRENT turn "
+                "OR in recent conversation context. Omit only when no logo preference has been expressed at all."
+            ),
+        ),
+        logo_images=ArraySchema(
+            StringSchema("Local path of an uploaded logo image to use for this request only."),
+            description=(
+                "TEMPORARY LOGO OVERRIDE: List of uploaded image paths to use as brand logo(s) "
+                "for THIS generation only. Do NOT persist to profile, do NOT change logoSuppressed. "
+                "\n\nPass this when the user explicitly refers to an uploaded image as a logo:\n"
+                "- Single temp logo: 'dùng logo này', 'chèn logo này vào', 'use this logo', '用这个logo'\n"
+                "- Multiple logos: 'dùng cả hai logo', 'kết hợp logo của tôi và logo này', 'use both logos'\n"
+                "- Combined with profile logo: 'logo của tôi và logo này' (also keep logo_preference unset)\n"
+                "\nDo NOT pass this when:\n"
+                "- User uploads an image as a composition/style/subject reference (not logo)\n"
+                "- User did not mention anything about logo\n"
+                "\nImages here are appended to reference_images and sent as startImages to Gemini. "
+                "Gemini will treat all startImages equally, so the AI integrates all logos naturally. "
+                "If user says 'only use this logo' (not profile logo), also pass logo_preference='disabled'."
+            ),
+        ),
+        logo_position=StringSchema(
+            description=(
+                "LOGO POSITION: Pass this ONLY when the user explicitly specifies WHERE to place the brand logo. "
+                "Extract the position as a short descriptor in English, e.g. 'bottom-right', 'top-left', "
+                "'center', 'bottom-center', 'top-right', etc. "
+                "When set, the system skips its default creative-placement guidance and lets the AI "
+                "follow the user's stated position exactly. "
+                "Omit this parameter whenever the user has NOT specified a logo position — "
+                "in that case the system automatically picks a smart, scene-integrated placement."
+            ),
         ),
         required=["prompt"],
     )
@@ -817,6 +972,9 @@ class ImageGenerationTool(Tool, ContextAware):
         aspect_ratio: str | None = None,
         image_size: str | None = None,
         count: int | None = None,
+        logo_preference: str | None = None,
+        logo_images: list[str] | None = None,
+        logo_position: str | None = None,
         **kwargs: Any,
     ) -> str:
         if is_resident_designer_profile(self.capability_profile):
@@ -906,9 +1064,16 @@ class ImageGenerationTool(Tool, ContextAware):
         # authoritative for edits, even if the LLM omitted or reordered them.
         reference_images = self._merge_revision_references(prompt, reference_images)
 
+        # Persist logo preference to DB before _apply_customer_context reads the flag.
+        # Priority: LLM-supplied logo_preference parameter (semantic, language-agnostic)
+        # > keyword fallback from original_user_content (same-turn safety net).
+        self._update_logo_preference(original_user_content, llm_signal=logo_preference)
+
         # Apply Vidtory professional standards + customer brand guidelines
         is_vidtory = (self.config.provider == "vidtory")
-        optimized_prompt, customer_ar, logo_url = self._apply_customer_context(prompt, is_vidtory_provider=is_vidtory)
+        optimized_prompt, customer_ar, logo_url = self._apply_customer_context(
+            prompt, is_vidtory_provider=is_vidtory, logo_position=logo_position
+        )
         resolved_ar = aspect_ratio or customer_ar or self.config.default_aspect_ratio
 
         # Append multi-image instruction if multiple reference images are provided
@@ -919,6 +1084,33 @@ class ImageGenerationTool(Tool, ContextAware):
             )
             multi_image_instruction = build_multi_image_instruction(target_lang)
             optimized_prompt = f"{optimized_prompt}. {multi_image_instruction}"
+
+        # ── Temporary logo image(s) override ────────────────────────────────
+        # When the user uploads logo image(s) and explicitly asks to use them
+        # for THIS generation (not as a reference), the LLM passes them via
+        # logo_images.  These are appended to reference_images so Vidtory
+        # includes them in startImages — Gemini then integrates all logos
+        # naturally alongside any profile logo that is still active.
+        #
+        # Profile logo (logo_url) and logoSuppressed flag are NOT modified.
+        # The LLM independently passes logo_preference='disabled' if it detects
+        # the user wants ONLY the temp logo (not the profile logo too).
+        if logo_images:
+            valid_logo_images = [p for p in logo_images if p and str(p).strip()]
+            if valid_logo_images:
+                target_lang_for_logo = get_target_text_language(
+                    prompt,
+                    customer_language_preference(),
+                )
+                reference_images = list(reference_images or []) + valid_logo_images
+                temp_logo_hint = build_temp_logo_instruction(
+                    len(valid_logo_images), target_lang_for_logo
+                )
+                optimized_prompt = f"{optimized_prompt}. {temp_logo_hint}"
+                logger.info(
+                    "Temporary logo override: {} logo image(s) appended to startImages",
+                    len(valid_logo_images),
+                )
 
         # Log logo status for traceability
         if logo_url:
@@ -1084,7 +1276,29 @@ class ImageGenerationTool(Tool, ContextAware):
                 result["design_note"] = design_note
             return json.dumps(result, ensure_ascii=False)
         except (ArtifactError, ImageGenerationError, OSError) as exc:
-            return f"Error: {exc}"
+            err_msg = str(exc)
+            if "401" in err_msg or "403" in err_msg or "is not configured" in err_msg:
+                return json.dumps({
+                    "status": "error",
+                    "error_type": "authentication",
+                    "message": "Lỗi xác thực API Key",
+                    "next_step": (
+                        "Khéo léo thông báo với khách hàng rằng: 'Hệ thống cần xác thực API Key để tạo ảnh "
+                        "và lưu trữ trên không gian riêng tư của bạn. Bạn vui lòng cung cấp API Key bằng lệnh "
+                        "/apikey YOUR_KEY nhé.' TUYỆT ĐỐI KHÔNG nói đây là lỗi hệ thống."
+                    )
+                }, ensure_ascii=False)
+                
+            return json.dumps({
+                "status": "error",
+                "error_type": "system",
+                "message": err_msg,
+                "next_step": (
+                    f"Đã xảy ra vấn đề: {err_msg}. Hãy thông báo khéo léo với khách hàng rằng: "
+                    "'Hệ thống đang gặp chút vấn đề cần giải quyết, bạn chờ một chút để mình tìm rõ nguyên nhân nhé!' "
+                    "TUYỆT ĐỐI KHÔNG dùng từ 'lỗi hệ thống' làm khách lo lắng."
+                )
+            }, ensure_ascii=False)
 
     # Technical keywords that indicate the user's prompt is already professionally written.
     # When found, skip auto-enhancement to avoid injecting irrelevant content-type styles.
@@ -1112,6 +1326,86 @@ class ImageGenerationTool(Tool, ContextAware):
         prompt_lower = prompt.lower()
         return any(kw in prompt_lower for kw in self._DETAILED_PROMPT_KEYWORDS)
 
+    def _update_logo_preference(
+        self,
+        user_message: str,
+        *,
+        llm_signal: str | None = None,
+    ) -> None:
+        """Persist the user's logo preference to their profile.
+
+        Intent resolution priority (highest → lowest):
+        1. ``llm_signal`` — explicit value passed by the agent LLM via the
+           ``logo_preference`` tool parameter.  The LLM understands all
+           languages, tones, and phrasings without hardcoded keywords.
+           Values: ``"enabled"`` | ``"disabled"``.
+        2. Keyword fallback — scans ``user_message`` for known no-logo /
+           want-logo phrases.  Only applies when ``llm_signal`` is None,
+           i.e. the LLM did not pass the parameter (e.g. same-turn inline
+           request like "tạo ảnh quảng cáo, không logo").
+
+        The flag ``preferences.logoSuppressed`` persists in the user's
+        profile until explicitly changed — there is no time-window limit.
+        """
+        # ── Priority 1: LLM-supplied explicit signal ──────────────────────────
+        if llm_signal is not None:
+            normalized = llm_signal.strip().lower()
+            if normalized == "disabled":
+                wants_no_logo, wants_logo = True, False
+            elif normalized == "enabled":
+                wants_no_logo, wants_logo = False, True
+            else:
+                logger.warning(
+                    "_update_logo_preference: unexpected llm_signal value '{}' — ignoring",
+                    llm_signal,
+                )
+                return
+            logger.info(
+                "Logo preference from LLM signal: '{}' → logoSuppressed={}",
+                llm_signal, wants_no_logo,
+            )
+        # ── Priority 2: Keyword fallback (same-turn safety net) ───────────────
+        else:
+            if not user_message:
+                return
+            user_msg_lower = user_message.lower()
+            wants_no_logo = _prompt_requests_no_logo(user_message)
+            wants_logo = any(kw in user_msg_lower for kw in _WANT_LOGO_KEYWORDS)
+            if not wants_no_logo and not wants_logo:
+                return  # No logo preference detected — leave flag unchanged
+            logger.info(
+                "Logo preference from keyword fallback: no_logo={}, want_logo={}",
+                wants_no_logo, wants_logo,
+            )
+
+        # ── Persist to profile DB ─────────────────────────────────────────────
+        try:
+            profile = telegram_customer_profile.get()
+            if not profile:
+                return
+            uid = str(
+                profile.get("telegramUserId")
+                or profile.get("telegram_user_id")
+                or ""
+            ).strip().split("|")[0]
+            if not uid:
+                return
+            from nanobot.utils.customer_profile import load_profile, save_profile
+            fresh = load_profile(uid)
+            if not fresh:
+                return
+            prefs = fresh.setdefault("preferences", {})
+            if wants_no_logo:
+                prefs["logoSuppressed"] = True
+                logger.info("Logo preference persisted: SUPPRESSED for uid {}", uid)
+            else:
+                prefs["logoSuppressed"] = False
+                logger.info("Logo preference persisted: ENABLED for uid {}", uid)
+            save_profile(uid, fresh)
+        except Exception as exc:
+            logger.debug("_update_logo_preference failed (non-fatal): {}", exc)
+
+
     def _find_last_generated_image(
         self,
         *,
@@ -1123,13 +1417,15 @@ class ImageGenerationTool(Tool, ContextAware):
             return None
         
         # Check 1: Did the user upload/reply with a media file in the current request?
-        media = ctx.metadata.get("media")
-        if isinstance(media, list) and media:
-            # Filter for files that exist
-            valid_media = [m for m in media if m and (m.startswith(("http://", "https://")) or Path(m).is_file())]
-            if valid_media:
-                logger.info("Found reference image from current request media: {}", valid_media[0])
-                return valid_media[0]
+        # Skip this shortcut when called for a numbered follow-up choice (recent_turn_only=True)
+        # because we want the last GENERATED image, not the user's uploaded source images.
+        if not recent_turn_only:
+            media = ctx.metadata.get("media")
+            if isinstance(media, list) and media:
+                valid_media = [m for m in media if m and (m.startswith(("http://", "https://")) or Path(m).is_file())]
+                if valid_media:
+                    logger.info("Found reference image from current request media: {}", valid_media[0])
+                    return valid_media[0]
 
         if not ctx.session_key or not self.sessions:
             logger.debug("Cannot find last generated image from history: session_key or sessions not available")
@@ -1215,10 +1511,12 @@ class ImageGenerationTool(Tool, ContextAware):
             else ""
         )
         numbered_choice = _is_numbered_followup_choice(original_user_content)
+        export_variant = _is_export_variant_prompt(original_user_content)
         if not (
             _is_revision_prompt(prompt)
             or _is_revision_prompt(original_user_content)
             or numbered_choice
+            or export_variant
         ):
             return reference_images
 
@@ -1233,18 +1531,24 @@ class ImageGenerationTool(Tool, ContextAware):
             )
 
         merged = list(dict.fromkeys(request_media + list(reference_images or [])))
-        if request_media:
-            return merged
 
-        if numbered_choice:
+        # Numbered follow-up (user tapped 1/2/3) OR export-variant request
+        # (e.g. 'xuất bản 4:3', 'tỉ lệ 9:16'): always use the last GENERATED
+        # image, never the original uploaded source images that may still be
+        # present in context.metadata['media'] from the initial upload turn.
+        if numbered_choice or export_variant:
             last_img = self._find_last_generated_image(recent_turn_only=True)
             if last_img:
                 logger.info(
-                    "Numbered follow-up choice uses image from previous turn: {}",
+                    "{} follow-up uses image from previous turn: {}",
+                    "Numbered" if numbered_choice else "Export-variant",
                     last_img,
                 )
                 return [last_img]
             return merged or None
+
+        if request_media:
+            return merged
 
         if (
             _references_latest_image(prompt)
@@ -1266,7 +1570,7 @@ class ImageGenerationTool(Tool, ContextAware):
             logger.info("Revision uses latest generated image: {}", last_img)
             return [last_img]
 
-    def _apply_customer_context(self, prompt: str, is_vidtory_provider: bool = False) -> tuple[str, str | None, str | None]:
+    def _apply_customer_context(self, prompt: str, is_vidtory_provider: bool = False, logo_position: str | None = None) -> tuple[str, str | None, str | None]:
         """Apply customer brand guidelines and Vidtory professional standards to the prompt.
 
         This is the central prompt enrichment pipeline:
@@ -1354,10 +1658,11 @@ class ImageGenerationTool(Tool, ContextAware):
                 # ── Step 3: Customer channel aspect ratio ─────────────────────
                 aspect_ratio = get_default_aspect_ratio_for_channel(profile)
 
-                # ── Step 4: Brand logo URL ────────────────────────────────────
-                # Read the indexed DB column as the authoritative logo source.
-                # Profile JSON is kept in sync, but the indexed value avoids
-                # stale in-memory profile data during a logo-change turn.
+                # ── Step 4: Brand logo URL + suppression flag ─────────────────
+                # Read logo URL from indexed DB column (authoritative source).
+                # Also read logoSuppressed flag from the freshest profile snapshot.
+                # Both reads use the same uid so we avoid a second DB round-trip.
+                logo_suppressed = False
                 try:
                     uid = str(
                         profile.get("telegramUserId")
@@ -1370,9 +1675,20 @@ class ImageGenerationTool(Tool, ContextAware):
                         if logo_url:
                             logger.info("Brand logo loaded from DB (/setlogo): {}", logo_url)
                         else:
-                            logger.debug("No logo set for user {} — generating without logo overlay", uid)
+                            logger.debug(
+                                "No logo set for user {} — generating without logo overlay", uid
+                            )
+                        # Read logoSuppressed from the same fresh profile snapshot.
+                        # This flag was set by _update_logo_preference() earlier this turn
+                        # (LLM logo_preference param takes priority over keyword fallback).
+                        from nanobot.utils.customer_profile import load_profile as _lp
+                        _fresh_profile = _lp(uid)
+                        if _fresh_profile:
+                            logo_suppressed = bool(
+                                _fresh_profile.get("preferences", {}).get("logoSuppressed", False)
+                            )
                 except Exception as _logo_exc:
-                    logger.debug("Failed to read logo from DB (non-critical): {}", _logo_exc)
+                    logger.debug("Failed to read logo/flag from DB (non-critical): {}", _logo_exc)
 
                 if not logo_url:
                     profile_logo = str(
@@ -1385,14 +1701,49 @@ class ImageGenerationTool(Tool, ContextAware):
                             logo_url,
                         )
 
-                # If user explicitly requested no logo in prompt, do not use it
-                if logo_url and _prompt_requests_no_logo(prompt):
-                    logger.info("User prompt explicitly requested no logo; skipping logo injection")
+                # Logo suppression: sole authority is the persistent DB flag.
+                # The flag was already updated this turn by _update_logo_preference()
+                # (priority: LLM logo_preference param → keyword fallback).
+                # Do NOT scan prompt/user_content text here — the LLM-generated
+                # prompt may legitimately contain phrases like "không logo" as
+                # style guidance without reflecting a real user preference change.
+                if logo_url and logo_suppressed:
+                    logger.info(
+                        "Logo suppressed by persistent profile flag (logoSuppressed=True)",
+                    )
                     logo_url = None
 
                 # ── Step 5: Logo preservation guard & instructions ────────────
                 if logo_url:
-                    enriched = f"{enriched}. {build_logo_instruction(target_lang)}"
+                    # logo_position is set by the calling LLM agent when the customer
+                    # explicitly stated WHERE to place the logo (any language, any phrasing).
+                    # In that case: skip creative-placement guidance (it would conflict),
+                    # inject only the integrity instruction so the AI follows the user's
+                    # stated position without contradiction.
+                    # When logo_position is absent: inject full smart-placement guidance.
+                    if logo_position:
+                        # Customer-specified position: integrity-only instruction
+                        if target_lang == "vi":
+                            logo_instruction = (
+                                "Logo thương hiệu là ảnh tham chiếu cuối cùng. "
+                                "Giữ nguyên hình dáng, cấu trúc, tỷ lệ và chi tiết logo; "
+                                "không vẽ lại, không biến dạng, không thay thế bằng chữ mô phỏng."
+                            )
+                        else:
+                            logo_instruction = (
+                                "The brand logo is the final reference image. "
+                                "Preserve its exact shape, structure, proportions, and details; "
+                                "do not redraw, deform, or replace it with simulated lettering."
+                            )
+                        logger.debug(
+                            "Logo placement: customer-specified position '{}' — using integrity-only instruction",
+                            logo_position,
+                        )
+                    else:
+                        # No position specified: use smart creative placement guidance
+                        logo_instruction = build_logo_instruction(target_lang)
+                        logger.debug("Logo placement: no position specified — using creative-placement instruction")
+                    enriched = f"{enriched}. {logo_instruction}"
 
                     if self._prompt_has_watermark_keywords(prompt):
                         logo_guard = (

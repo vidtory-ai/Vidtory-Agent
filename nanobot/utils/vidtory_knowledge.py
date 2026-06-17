@@ -10,9 +10,9 @@ It provides two public interfaces:
    image generation prompt with world-class technical specifications selected
    by content category.
 
-The content layer lives in ``_PHOTOGRAPHY_STYLES``, ``_PROMPT_LIBRARY``, and
-``_PLATFORM_SPECS`` below. Each section is a plain dict so non-engineers can
-extend or override entries without touching logic.
+The content layer lives in ``_STYLES`` and ``_PLATFORM_SPECS`` below.
+Each section is a plain dict so non-engineers can extend or override entries
+without touching logic.
 
 Customization:
     Override at runtime by loading an external YAML/JSON config and calling
@@ -28,116 +28,244 @@ from typing import Any
 # Content Layer — editable without touching logic
 # ---------------------------------------------------------------------------
 
-# ── Photography style presets ────────────────────────────────────────────────
-_PHOTOGRAPHY_STYLES: dict[str, str] = {
-    # Product
+# ── Photography & Design style presets ───────────────────────────────────────
+# Each key has a tuple: (en_style, vi_style)
+# Both are kept inline so callers only need one dict lookup.
+_STYLES: dict[str, tuple[str, str]] = {
+    # ── Product ──────────────────────────────────────────────────────────────
     "product_hero": (
         "product hero shot, 8K commercial photography, pure white or gradient studio backdrop, "
         "three-point studio lighting (key light + fill light + rim light), specular highlights on surface, "
-        "ultra-sharp focus with shallow depth of field, color calibrated, brand-ready"
+        "ultra-sharp focus with shallow depth of field, color calibrated, brand-ready",
+        "ảnh hero sản phẩm, chất lượng thương mại 8K, nền studio trắng hoặc chuyển màu, "
+        "ánh sáng studio ba điểm (chính + phụ + viền), phản xạ trên bề mặt, "
+        "nét sắc siêu rõ với độ sâu trường ảnh nông, màu sắc chuẩn, sẵn sàng cho thương hiệu",
     ),
     "product_lifestyle": (
         "lifestyle product photography, natural environment context, soft ambient window light, "
-        "warm color palette, shallow depth of field f/2.8, editorial quality, aspirational mood"
+        "warm color palette, shallow depth of field f/2.8, editorial quality, aspirational mood",
+        "ảnh sản phẩm phong cách sống, bối cảnh môi trường tự nhiên, ánh sáng cửa sổ mềm dịu, "
+        "gam màu ấm, độ sâu trường ảnh nông f/2.8, chất lượng editorial, không khí khát vọng",
     ),
     "product_packshot": (
         "professional packshot, perfectly centered, pure white background, "
-        "shadow on base, clean shadows, retouched, 100% sharp, e-commerce ready"
+        "shadow on base, clean shadows, retouched, 100% sharp, e-commerce ready",
+        "ảnh packshot chuyên nghiệp, cân đối chính giữa, nền trắng tinh, "
+        "bóng đổ nhẹ chân đế, đã retouch, sắc nét 100%, sẵn sàng thương mại điện tử",
     ),
-    # Fashion
+    # ── Fashion ──────────────────────────────────────────────────────────────
     "fashion_editorial": (
         "high-fashion editorial photography, Vogue-quality, dramatic directional lighting, "
-        "textured backdrop, cinematic color grade, sharp couture detail, luxury aesthetic"
+        "textured backdrop, cinematic color grade, sharp couture detail, luxury aesthetic",
+        "ảnh thời trang editorial cao cấp, chất lượng Vogue, ánh sáng định hướng kịch tính, "
+        "phông nền có kết cấu, tông màu điện ảnh, chi tiết sắc nét thời trang cao cấp, thẩm mỹ sang trọng",
     ),
     "fashion_lookbook": (
         "fashion lookbook photography, clean minimal background, balanced studio lighting, "
-        "full or three-quarter body frame, professional model pose, commercial catalog quality"
+        "full or three-quarter body frame, professional model pose, commercial catalog quality",
+        "ảnh lookbook thời trang, nền tối giản sạch, ánh sáng studio cân bằng, "
+        "khung toàn thân hoặc 3/4, tư thế người mẫu chuyên nghiệp, chất lượng catalog thương mại",
     ),
     "fashion_street": (
         "street fashion photography, urban environment, golden hour backlight, "
-        "bokeh background, candid energy, high contrast editing, Gen-Z aesthetic"
+        "bokeh background, candid energy, high contrast editing, Gen-Z aesthetic",
+        "ảnh thời trang đường phố, bối cảnh đô thị, ánh sáng hoàng hôn ngược sáng, "
+        "nền bokeh, năng lượng tự nhiên, tương phản cao, thẩm mỹ trẻ trung",
     ),
-    # Food & Beverage
+    # ── Food & Beverage ───────────────────────────────────────────────────────
     "food_hero": (
         "food hero photography, overhead flat-lay or 45° angle, steam wisps visible, "
         "fresh glistening textures, complementary props, natural diffused window light, "
-        "vibrant saturated colors, professional food stylist finish"
+        "vibrant saturated colors, professional food stylist finish",
+        "ảnh hero đồ ăn, góc chụp từ trên xuống hoặc 45°, hơi nước bốc lên, "
+        "kết cấu tươi mọn lấp lánh, đạo cụ phụ hợp, ánh sáng cửa sổ khuếch tán tự nhiên, "
+        "màu sắc sống động bão hòa, hoàn thiện kiểu food stylist chuyên nghiệp",
     ),
     "food_beverage": (
         "beverage photography, condensation droplets on glass, ice cubes with clarity, "
-        "backlit translucent liquid, dark moody background, macro detail, premium lifestyle"
+        "backlit translucent liquid, dark moody background, macro detail, premium lifestyle",
+        "ảnh đồ uống, giọt nước ngưng tụ trên ly, viên đá trong suốt, "
+        "chất lỏng trong suốt được hắt sáng từ phía sau, nền tối tâm trạng, chi tiết macro, phong cách cao cấp",
     ),
     "food_restaurant": (
         "restaurant plating photography, chef's table presentation, warm candlelight tone, "
-        "bokeh ambiance, fine dining quality, editorial food magazine standard"
+        "bokeh ambiance, fine dining quality, editorial food magazine standard",
+        "ảnh bày biện món ăn nhà hàng, trình bày kiểu bếp trưởng, tông ánh nến ấm, "
+        "không khí bokeh, chất lượng fine dining, chuẩn tạp chí ẩm thực",
     ),
-    # Cosmetics & Beauty
+    # ── Cosmetics & Beauty ────────────────────────────────────────────────────
     "beauty_product": (
         "beauty product photography, marble or luxury texture surface, macro detail of texture, "
         "pastel or monochrome color scheme, soft diffused light, premium glossy finish, "
-        "Sephora/LVMH catalog standard"
+        "Sephora/LVMH catalog standard",
+        "ảnh sản phẩm làm đẹp, bề mặt đá cẩm thạch hoặc kết cấu cao cấp, chi tiết macro kết cấu, "
+        "gam màu pastel hoặc đơn sắc, ánh sáng khuếch tán mềm, bề mặt bóng cao cấp, "
+        "chuẩn catalog mỹ phẩm thượng hạng",
     ),
     "beauty_portrait": (
         "beauty portrait photography, catchlights in eyes, flawless skin retouching, "
         "butterfly lighting or Rembrandt lighting, clean neutral background, "
-        "high-end retouching, Harper's Bazaar quality"
+        "high-end retouching, Harper's Bazaar quality",
+        "ảnh chân dung làm đẹp, điểm sáng trong mắt, da hoàn hảo retouch, "
+        "ánh sáng bướm hoặc Rembrandt, nền sạch trung tính, "
+        "retouch cao cấp, chất lượng tạp chí thời trang hàng đầu",
     ),
-    # Real Estate & Architecture
+    # ── Real Estate & Architecture ────────────────────────────────────────────
     "interior_design": (
         "interior architecture photography, wide angle 16-24mm lens perspective, "
         "natural window light balanced with ambient fill, straight verticals corrected, "
-        "rich warm tones, Architectural Digest quality"
+        "rich warm tones, Architectural Digest quality",
+        "ảnh kiến trúc nội thất, góc rộng ống kính 16-24mm, "
+        "ánh sáng cửa sổ tự nhiên cân bằng với ánh sáng phụ, đường dọc thẳng chuẩn, "
+        "tông màu ấm giàu, chất lượng tạp chí kiến trúc",
     ),
     "real_estate": (
         "real estate photography, twilight exterior, HDR balanced exposure, "
-        "warm interior lights glowing, blue-hour sky, professional drone or ground angle"
+        "warm interior lights glowing, blue-hour sky, professional drone or ground angle",
+        "ảnh bất động sản, ngoại thất hoàng hôn, phơi sáng HDR cân bằng, "
+        "đèn nội thất tỏa ánh ấm, bầu trời giờ xanh, góc máy chuyên nghiệp",
     ),
-    # Lifestyle & Portrait
+    # ── Lifestyle & Portrait ──────────────────────────────────────────────────
     "portrait_professional": (
         "professional business portrait, clean neutral background, soft box even lighting, "
-        "sharp eyes with catchlights, confident expression, LinkedIn/executive quality"
+        "sharp eyes with catchlights, confident expression, LinkedIn/executive quality",
+        "chân dung chuyên nghiệp doanh nhân, nền trung tính sạch, ánh sáng softbox đều, "
+        "mắt sắc nét với điểm sáng, biểu cảm tự tin, chất lượng ảnh doanh nghiệp/LinkedIn",
     ),
     "lifestyle_authentic": (
         "lifestyle photography, authentic candid moment, golden hour natural light, "
-        "shallow depth of field, warm film-like color grade, emotionally resonant"
+        "shallow depth of field, warm film-like color grade, emotionally resonant",
+        "ảnh phong cách sống, khoảnh khắc tự nhiên chân thực, ánh sáng hoàng hôn tự nhiên, "
+        "độ sâu trường ảnh nông, tông màu ấm kiểu phim, giàu cảm xúc",
     ),
-    # Technology & SaaS
+    # ── Technology ────────────────────────────────────────────────────────────
     "tech_product": (
         "technology product photography, dark gradient background, neon accent lighting, "
-        "reflection on surface, futuristic atmosphere, Verge/TechCrunch editorial quality"
+        "reflection on surface, futuristic atmosphere, Verge/TechCrunch editorial quality",
+        "ảnh sản phẩm công nghệ, nền tối gradient, ánh sáng neon điểm nhấn, "
+        "phản chiếu trên bề mặt, không khí tương lai, chất lượng editorial công nghệ",
     ),
-    # Jewelry & Watches
+    # ── Jewelry & Watches ─────────────────────────────────────────────────────
     "jewelry": (
         "luxury jewelry photography, macro detail on gemstones, reflective dark surface or "
         "white marble, single soft key light with subtle rim, specular highlights on metal, "
-        "Cartier/Tiffany catalog standard, ultra-sharp 8K"
+        "Cartier/Tiffany catalog standard, ultra-sharp 8K",
+        "ảnh trang sức cao cấp, chi tiết macro đá quý, bề mặt tối phản chiếu hoặc "
+        "đá cẩm thạch trắng, ánh sáng chính đơn mềm với viền sáng tinh tế, phản xạ kim loại, "
+        "chuẩn catalog trang sức hàng đầu, siêu sắc nét 8K",
     ),
-    # Candle & Home Decor
+    # ── Candle & Home Decor ───────────────────────────────────────────────────
     "candle_decor": (
         "candle and home decor photography, warm candlelight glow with soft bokeh, "
-        "rustic or minimal props, cozy lifestyle mood, warm amber tones, editorial quality"
+        "rustic or minimal props, cozy lifestyle mood, warm amber tones, editorial quality",
+        "ảnh nến và trang trí nhà, ánh sáng nến ấm áp với bokeh mềm, "
+        "đạo cụ mộc mạc hoặc tối giản, không khí ấm cúng, tông màu hổ phách ấm, chất lượng editorial",
     ),
-    # Kids & Baby
+    # ── Kids & Baby ───────────────────────────────────────────────────────────
     "kids_product": (
         "children's product photography, bright cheerful colors, playful props and soft background, "
-        "natural soft window light, clean safe aesthetic, warm inviting mood"
+        "natural soft window light, clean safe aesthetic, warm inviting mood",
+        "ảnh sản phẩm trẻ em, màu sắc tươi sáng vui tươi, đạo cụ vui nhộn và nền mềm, "
+        "ánh sáng cửa sổ tự nhiên mềm, thẩm mỹ sạch an toàn, không khí ấm áp hấp dẫn",
     ),
-    # Fitness & Sport
+    # ── Fitness & Sport ───────────────────────────────────────────────────────
     "fitness": (
         "fitness product photography, clean white or gym background, dramatic side lighting, "
-        "muscular confidence aesthetic, bold saturated colors, health editorial quality"
+        "muscular confidence aesthetic, bold saturated colors, health editorial quality",
+        "ảnh sản phẩm thể hình, nền trắng sạch hoặc phòng gym, ánh sáng bên kịch tính, "
+        "thẩm mỹ cơ bắp tự tin, màu sắc đậm bão hòa, chất lượng editorial sức khỏe",
     ),
-    # Pet
+    # ── Pet ───────────────────────────────────────────────────────────────────
     "pet": (
         "pet photography, soft natural window light, adorable candid expression, "
-        "clean minimal background, warm and playful mood, sharp eye focus"
+        "clean minimal background, warm and playful mood, sharp eye focus",
+        "ảnh thú cưng, ánh sáng cửa sổ tự nhiên mềm, biểu cảm đáng yêu tự nhiên, "
+        "nền tối giản sạch, không khí ấm áp vui tươi, nét sắc vào mắt",
     ),
-    # Wildlife & Nature
+    # ── Wildlife & Nature ─────────────────────────────────────────────────────
     "wildlife_nature": (
         "professional wildlife photography, shot on telephoto lens, soft natural lighting, "
-        "natural environment context, ultra-sharp details, shallow depth of field, National Geographic quality"
+        "natural environment context, ultra-sharp details, shallow depth of field, National Geographic quality",
+        "nhiếp ảnh động vật tự nhiên chuyên nghiệp, chụp bằng ống kính tele, ánh sáng tự nhiên mềm, "
+        "bối cảnh môi trường tự nhiên, chi tiết siêu sắc nét, độ sâu trường ảnh nông, chất lượng National Geographic",
+    ),
+
+    # ── ✨ CINEMATIC POSTER styles ────────────────────────────────────────────
+    # NOTE: Typography/text instructions are intentionally omitted here.
+    # These styles define visual mood, lighting, and composition — the LLM uses
+    # them as quality reference.  Text/title instructions are only injected when
+    # the user explicitly requests them in their prompt.
+    "cinematic_action": (
+        "cinematic action movie poster, dramatic wide-angle composition, explosive environment "
+        "with fire, smoke, dust particles floating, intense directional rim lighting, "
+        "sharp shadow cast on background, 8K ultra-resolution, Hollywood blockbuster quality",
+        "poster phim hành động điện ảnh hoành tráng, bố cục góc rộng kịch tính, "
+        "môi trường khói lửa, bụi bặm và hạt ánh sáng lấp lánh, viền sáng rọi mạnh, "
+        "bóng đổ sắc nét xuống nền, phân giải 8K, chất lượng Hollywood",
+    ),
+    "cinematic_fantasy": (
+        "epic fantasy movie poster, mystical ancient forest or floating island setting, "
+        "ethereal hazy light with magical golden rays, organic vines and roots, "
+        "world-class art direction, breathtakingly beautiful",
+        "poster phim kỳ ảo đỉnh cao, khung cảnh rừng cổ thụ huyền bí hoặc hòn đảo bay, "
+        "ánh sáng huyền ảo mờ sương với luồng sáng thần tiên vàng, dây leo và rễ cây nghệ thuật, "
+        "nghệ thuật choáng ngợp",
+    ),
+    "cinematic_horror": (
+        "psychological horror movie poster, dark minimalist composition, dominant black and deep crimson tones, "
+        "subject emerging from shadow with single-sided dramatic raking light casting long mysterious shadows, "
+        "asymmetric tension-building layout, "
+        "premium cinematic art direction, unsettling yet deeply artistic",
+        "poster phim kinh dị tâm lý, nền tối tối giản tông đen và đỏ thẫm, "
+        "chủ thể ẩn hiện trong bóng tối mờ ảo với ánh sáng rọi một phía, "
+        "bóng đổ dài bí ẩn, bố cục bất đối xứng căng thẳng, "
+        "điện ảnh cao cấp, rùng rợn nhưng vô cùng nghệ thuật",
+    ),
+
+    # ── ✨ PREMIUM ADVERTISING styles ─────────────────────────────────────────
+    "luxury_ad": (
+        "international luxury brand advertising, ultra-minimalist neutral monochrome backdrop, "
+        "polished quartz surface reflecting like a mirror beneath the hero product, "
+        "soft studio light wrapping the subject, studio reflections glowing softly, "
+        "supreme high-end and opulent feel",
+        "quảng cáo thương hiệu xa xỉ đẳng cấp quốc tế, nền tối giản đơn sắc trung tính cao cấp, "
+        "bề mặt đá thạch anh phẳng lặng phản chiếu như gương, ánh sáng studio mềm mại, "
+        "cảm giác vô cùng đắt tiền và thượng lưu",
+    ),
+    "tech_futuristic_ad": (
+        "futuristic technology advertising design, digital space background with laser energy streaks "
+        "and glowing circuit networks, hero product floating mid-air, "
+        "dynamic diagonal layout with motion blur in background for speed, "
+        "sharp professional high-tech cinematic quality",
+        "thiết kế quảng cáo công nghệ tương lai, nền không gian số với dải laser và mạch vi mạch phát sáng, "
+        "sản phẩm lơ lửng giữa không trung, bố cục góc chéo động với motion blur hậu cảnh, "
+        "sắc nét chuyên nghiệp hi-tech điện ảnh",
+    ),
+    "fashion_magazine": (
+        "high-fashion luxury magazine cover advertisement, abstract artistic geometric shapes "
+        "with sharp studio shadows, "
+        "bold avant-garde art direction, premium curated color palette, "
+        "visually commanding instant attention",
+        "quảng cáo tạp chí thời trang cao cấp, các mảng hình học nghệ thuật trừu tượng, "
+        "màu sắc nghệ thuật cao cấp, bố cục phá cách, thị giác cực mạnh thu hút ngay lập tức",
+    ),
+    "streetwear_ad": (
+        "streetwear and urban fashion advertising, rough concrete wall background with graffiti splashes, "
+        "high contrast bold saturated gradient colors, "
+        "modern global pop-culture Gen-Z energy",
+        "thiết kế quảng cáo streetwear đường phố, nền tường bê tông thô ráp với vệt graffiti, "
+        "độ tương phản cực cao, hơi thở văn hóa pop hiện đại toàn cầu Gen-Z",
+    ),
+    "organic_eco": (
+        "premium organic eco-friendly product advertising, natural sunlight filtering through lush green leaves, "
+        "early morning dew droplets glistening, hero product centered in organic setting, "
+        "fresh pure clean premium organic feel",
+        "quảng cáo sản phẩm thuần chay sinh thái cao cấp, ánh nắng tự nhiên qua tán lá xanh mướt, "
+        "hạt sương sớm lung linh, sản phẩm đặt trong khung cảnh thiên nhiên, "
+        "bố cục trong lành tinh khiết sạch sẽ cao cấp",
     ),
 }
+
 
 # ── Platform-specific output specifications ──────────────────────────────────
 _PLATFORM_SPECS: dict[str, dict[str, str]] = {
@@ -188,7 +316,7 @@ _PLATFORM_SPECS: dict[str, dict[str, str]] = {
     },
 }
 
-# ── Content-type → photography style mapping ────────────────────────────────
+# ── Content-type → style key mapping ────────────────────────────────────────
 _CONTENT_TYPE_TO_STYLE: dict[str, str] = {
     "recruitment": "portrait_professional",
     "product": "product_hero",
@@ -205,174 +333,135 @@ _CONTENT_TYPE_TO_STYLE: dict[str, str] = {
     "tech": "tech_product",
     "lookbook": "fashion_lookbook",
     "packshot": "product_packshot",
-    # New categories
     "jewelry": "jewelry",
     "candle": "candle_decor",
     "kids": "kids_product",
     "fitness": "fitness",
     "pet": "pet",
     "wildlife": "wildlife_nature",
+    # Cinematic / Poster
+    "cinematic_action": "cinematic_action",
+    "cinematic_fantasy": "cinematic_fantasy",
+    "cinematic_horror": "cinematic_horror",
+    # Premium Advertising
+    "luxury_ad": "luxury_ad",
+    "tech_futuristic_ad": "tech_futuristic_ad",
+    "fashion_magazine": "fashion_magazine",
+    "streetwear_ad": "streetwear_ad",
+    "organic_eco": "organic_eco",
 }
 
-# Topic insight comes before camera/style language. It tells the model what the
-# audience must understand and feel, instead of merely stacking visual keywords.
-_CONTENT_INSIGHTS: dict[str, str] = {
-    "recruitment": "make the role feel credible and aspirational, show authentic team energy, clear information hierarchy, mobile-readable typography zones",
-    "product": "make the main benefit visually obvious at first glance, prioritize product recognition and purchase confidence",
-    "fashion": "sell identity and self-expression through silhouette, attitude, styling coherence, and editorial visual rhythm",
-    "food": "trigger appetite through freshness, texture, steam or gloss, generous portions, and an immediately recognizable hero dish",
-    "beverage": "communicate refreshment through temperature cues, condensation, liquid clarity, and a strong flavor signal",
-    "cosmetic": "build trust through cleanliness, texture evidence, ingredient or efficacy cues, and premium tactile detail",
-    "portrait": "create human trust through natural expression, confident posture, clear eye contact, and believable skin texture",
-    "interior": "help viewers imagine living in the space through scale, circulation, daylight, material warmth, and functional zones",
-    "real_estate": "increase perceived value through spaciousness, natural light, accurate geometry, lifestyle context, and trustworthy detail",
-    "tech": "make innovation understandable through one clear use case, precise materials, functional detail, and controlled futuristic accents",
-    "jewelry": "signal craftsmanship and rarity through gemstone fire, metal finish, scale clarity, and restrained luxury",
-    "kids": "communicate safety, joy, age suitability, and simple product interaction in a warm parent-trusted setting",
-    "fitness": "show attainable progress, controlled movement, product utility, and energetic but credible performance",
-    "pet": "create affection and trust through expressive eyes, natural behavior, safety, and a clean caring environment",
-    "wildlife": "preserve authentic behavior, habitat context, natural light, and respectful documentary realism",
+# ── Audience & communication insights per content type ───────────────────────
+# Format: { key: (en_insight, vi_insight) }
+_CONTENT_INSIGHTS: dict[str, tuple[str, str]] = {
+    "recruitment": (
+        "make the role feel credible and aspirational, show authentic team energy, clear information hierarchy, mobile-readable typography zones",
+        "insight ứng viên: vị trí phải đáng tin và đáng khao khát, thể hiện năng lượng đội ngũ chân thực, phân cấp thông tin rõ, vùng chữ dễ đọc trên điện thoại",
+    ),
+    "product": (
+        "make the main benefit visually obvious at first glance, prioritize product recognition and purchase confidence",
+        "insight mua hàng: lợi ích chính phải hiểu ngay từ cái nhìn đầu tiên, sản phẩm dễ nhận diện và tạo cảm giác đáng tin để ra quyết định",
+    ),
+    "fashion": (
+        "sell identity and self-expression through silhouette, attitude, styling coherence, and editorial visual rhythm",
+        "insight thời trang: bán bản sắc và khả năng thể hiện cá tính qua phom dáng, thần thái, phối đồ và nhịp hình editorial",
+    ),
+    "food": (
+        "trigger appetite through freshness, texture, steam or gloss, generous portions, and an immediately recognizable hero dish",
+        "insight ẩm thực: kích thích vị giác bằng độ tươi, kết cấu, hơi nóng hoặc độ bóng, khẩu phần hấp dẫn và món chính nhận ra ngay",
+    ),
+    "beverage": (
+        "communicate refreshment through temperature cues, condensation, liquid clarity, and a strong flavor signal",
+        "insight đồ uống: truyền cảm giác mát hoặc ấm qua nhiệt độ, giọt ngưng tụ, độ trong của chất lỏng và tín hiệu hương vị",
+    ),
+    "cosmetic": (
+        "build trust through cleanliness, texture evidence, ingredient or efficacy cues, and premium tactile detail",
+        "insight làm đẹp: xây niềm tin bằng cảm giác sạch, bằng chứng kết cấu, thành phần hoặc công dụng và chi tiết cao cấp",
+    ),
+    "portrait": (
+        "create human trust through natural expression, confident posture, clear eye contact, and believable skin texture",
+        "insight con người: tạo niềm tin qua biểu cảm tự nhiên, tư thế tự tin, ánh mắt rõ và kết cấu da chân thực",
+    ),
+    "interior": (
+        "help viewers imagine living in the space through scale, circulation, daylight, material warmth, and functional zones",
+        "insight không gian: giúp người xem hình dung mình đang sống ở đó qua tỷ lệ, lối đi, ánh sáng, vật liệu và công năng",
+    ),
+    "real_estate": (
+        "increase perceived value through spaciousness, natural light, accurate geometry, lifestyle context, and trustworthy detail",
+        "insight bất động sản: tăng giá trị cảm nhận bằng độ thoáng, ánh sáng tự nhiên, hình học chính xác và bối cảnh sống đáng tin",
+    ),
+    "tech": (
+        "make innovation understandable through one clear use case, precise materials, functional detail, and controlled futuristic accents",
+        "insight công nghệ: làm đổi mới trở nên dễ hiểu bằng một tình huống sử dụng rõ, vật liệu chính xác và chi tiết chức năng",
+    ),
+    "jewelry": (
+        "signal craftsmanship and rarity through gemstone fire, metal finish, scale clarity, and restrained luxury",
+        "insight trang sức: thể hiện tay nghề và độ hiếm qua ánh đá, hoàn thiện kim loại, tỷ lệ rõ và sự sang trọng tiết chế",
+    ),
+    "kids": (
+        "communicate safety, joy, age suitability, and simple product interaction in a warm parent-trusted setting",
+        "insight trẻ em: truyền tải an toàn, niềm vui, độ phù hợp lứa tuổi và cách sử dụng đơn giản trong bối cảnh phụ huynh tin cậy",
+    ),
+    "fitness": (
+        "show attainable progress, controlled movement, product utility, and energetic but credible performance",
+        "insight thể thao: cho thấy tiến bộ có thể đạt được, chuyển động chuẩn, công dụng rõ và năng lượng đáng tin",
+    ),
+    "pet": (
+        "create affection and trust through expressive eyes, natural behavior, safety, and a clean caring environment",
+        "insight thú cưng: tạo yêu mến và tin cậy qua ánh mắt, hành vi tự nhiên, sự an toàn và môi trường chăm sóc sạch",
+    ),
+    "wildlife": (
+        "preserve authentic behavior, habitat context, natural light, and respectful documentary realism",
+        "insight thiên nhiên: giữ hành vi chân thực, bối cảnh sinh cảnh, ánh sáng tự nhiên và tinh thần tư liệu tôn trọng",
+    ),
+    # Cinematic / Poster insights
+    "cinematic_action": (
+        "deliver adrenaline and scale — the hero must feel invincible against overwhelming odds; every element amplifies power and momentum",
+        "truyền tải adrenaline và sức mạnh — nhân vật chính phải cảm giác bất khả chiến bại; mọi yếu tố khuếch đại lực và nhịp điệu",
+    ),
+    "cinematic_fantasy": (
+        "evoke wonder and otherworldly belief — the world must feel ancient, vast, and filled with hidden magic that rewards slow looking",
+        "gợi sự kỳ diệu và thế giới khác — thế giới phải cảm giác cổ xưa, rộng lớn và chứa đựng phép màu ẩn giấu",
+    ),
+    "cinematic_horror": (
+        "build dread through what is NOT shown — shadow, implication, and asymmetry are more terrifying than explicit gore",
+        "xây dựng nỗi sợ qua những gì KHÔNG được hiện ra — bóng tối, ẩn ý và bố cục bất đối xứng đáng sợ hơn bạo lực trực tiếp",
+    ),
+    # Premium advertising insights
+    "luxury_ad": (
+        "communicate exclusivity through restraint — negative space, precise typography, and flawless materials do more than ornament",
+        "truyền tải sự độc quyền qua tiết chế — khoảng trắng, typography chính xác và vật liệu hoàn hảo nói lên đẳng cấp hơn trang trí",
+    ),
+    "tech_futuristic_ad": (
+        "make the future feel attainable today — one clear hero feature, precise materials, and controlled energy signal progress without confusion",
+        "làm tương lai trở nên có thể chạm tới ngay hôm nay — một tính năng rõ, vật liệu chính xác và năng lượng kiểm soát tín hiệu tiến bộ",
+    ),
+    "fashion_magazine": (
+        "provoke desire through unexpected visual tension — scale, transparency, and geometric interplay make viewers stop scrolling",
+        "gợi ham muốn qua sự căng thẳng thị giác bất ngờ — tỷ lệ, độ trong và hình học đan xen khiến người xem phải dừng lại",
+    ),
+    "streetwear_ad": (
+        "radiate authentic street credibility — raw texture, bold color, and unapologetic type convey culture-first identity",
+        "tỏa ra sự tín nhiệm đường phố chân thực — kết cấu thô, màu táo bạo và chữ không xin lỗi truyền tải bản sắc culture-first",
+    ),
+    "organic_eco": (
+        "earn trust through visible naturalness — real wood grain, living moss, honest daylight signal integrity and purity",
+        "xây dựng niềm tin qua sự tự nhiên hữu hình — vân gỗ thật, rêu sống, ánh sáng ban ngày chân thật truyền tải sự trong sạch",
+    ),
 }
 
-_CONTENT_INSIGHTS_VI: dict[str, str] = {
-    "recruitment": "insight ứng viên: vị trí phải đáng tin và đáng khao khát, thể hiện năng lượng đội ngũ chân thực, phân cấp thông tin rõ, vùng chữ dễ đọc trên điện thoại",
-    "product": "insight mua hàng: lợi ích chính phải hiểu ngay từ cái nhìn đầu tiên, sản phẩm dễ nhận diện và tạo cảm giác đáng tin để ra quyết định",
-    "fashion": "insight thời trang: bán bản sắc và khả năng thể hiện cá tính qua phom dáng, thần thái, phối đồ và nhịp hình editorial",
-    "food": "insight ẩm thực: kích thích vị giác bằng độ tươi, kết cấu, hơi nóng hoặc độ bóng, khẩu phần hấp dẫn và món chính nhận ra ngay",
-    "beverage": "insight đồ uống: truyền cảm giác mát hoặc ấm qua nhiệt độ, giọt ngưng tụ, độ trong của chất lỏng và tín hiệu hương vị",
-    "cosmetic": "insight làm đẹp: xây niềm tin bằng cảm giác sạch, bằng chứng kết cấu, thành phần hoặc công dụng và chi tiết cao cấp",
-    "portrait": "insight con người: tạo niềm tin qua biểu cảm tự nhiên, tư thế tự tin, ánh mắt rõ và kết cấu da chân thực",
-    "interior": "insight không gian: giúp người xem hình dung mình đang sống ở đó qua tỷ lệ, lối đi, ánh sáng, vật liệu và công năng",
-    "real_estate": "insight bất động sản: tăng giá trị cảm nhận bằng độ thoáng, ánh sáng tự nhiên, hình học chính xác và bối cảnh sống đáng tin",
-    "tech": "insight công nghệ: làm đổi mới trở nên dễ hiểu bằng một tình huống sử dụng rõ, vật liệu chính xác và chi tiết chức năng",
-    "jewelry": "insight trang sức: thể hiện tay nghề và độ hiếm qua ánh đá, hoàn thiện kim loại, tỷ lệ rõ và sự sang trọng tiết chế",
-    "kids": "insight trẻ em: truyền tải an toàn, niềm vui, độ phù hợp lứa tuổi và cách sử dụng đơn giản trong bối cảnh phụ huynh tin cậy",
-    "fitness": "insight thể thao: cho thấy tiến bộ có thể đạt được, chuyển động chuẩn, công dụng rõ và năng lượng đáng tin",
-    "pet": "insight thú cưng: tạo yêu mến và tin cậy qua ánh mắt, hành vi tự nhiên, sự an toàn và môi trường chăm sóc sạch",
-    "wildlife": "insight thiên nhiên: giữ hành vi chân thực, bối cảnh sinh cảnh, ánh sáng tự nhiên và tinh thần tư liệu tôn trọng",
-}
-
-# ── Universal quality suffixes always appended ───────────────────────────────
+# ── Universal quality suffix (appended to all prompts) ───────────────────────
 _UNIVERSAL_QUALITY_SUFFIX = (
     "editorial photography, professional camera shot, sharp focus, natural textures, "
-    "balanced exposure, clean composition, no watermark, no text overlay"
+    "balanced exposure, clean composition, no watermark, "
+    "do NOT add any text, title, headline, or typography unless explicitly requested by the user"
 )
 
 _UNIVERSAL_QUALITY_SUFFIX_VI = (
     "nhiếp ảnh thương mại chuyên nghiệp, chụp bằng máy ảnh cao cấp, nét sắc, kết cấu tự nhiên, "
-    "phơi sáng cân bằng, bố cục sạch, không có watermark, không có chữ ngẫu nhiên"
+    "phơi sáng cân bằng, bố cục sạch, không có watermark, "
+    "TUYỆT ĐỐI không tự thêm chữ viết, tiêu đề hay typography vào ảnh nếu người dùng không yêu cầu"
 )
-
-# ── Vietnamese photography style presets ─────────────────────────────────────
-_PHOTOGRAPHY_STYLES_VI: dict[str, str] = {
-    # Sản phẩm
-    "product_hero": (
-        "ảnh hero sản phẩm, chất lượng thương mại 8K, nền studio trắng hoặc chuyển màu, "
-        "ánh sáng studio ba điểm (chính + phụ + viền), phản xạ trên bề mặt, "
-        "nét sắc siêu rõ với độ sâu trường ảnh nông, màu sắc chuẩn, sẵn sàng cho thương hiệu"
-    ),
-    "product_lifestyle": (
-        "ảnh sản phẩm phong cách sống, bối cảnh môi trường tự nhiên, ánh sáng cửa sổ mềm dịu, "
-        "gam màu ấm, độ sâu trường ảnh nông f/2.8, chất lượng editorial, không khí khát vọng"
-    ),
-    "product_packshot": (
-        "ảnh packshot chuyên nghiệp, cân đối chính giữa, nền trắng tinh, "
-        "bóng đổ nhẹ chân đế, đã retouch, sắc nét 100%, sẵn sàng thương mại điện tử"
-    ),
-    # Thời trang
-    "fashion_editorial": (
-        "ảnh thời trang editorial cao cấp, chất lượng Vogue, ánh sáng định hướng kịch tính, "
-        "phông nền có kết cấu, tông màu điện ảnh, chi tiết sắc nét thời trang cao cấp, thẩm mỹ sang trọng"
-    ),
-    "fashion_lookbook": (
-        "ảnh lookbook thời trang, nền tối giản sạch, ánh sáng studio cân bằng, "
-        "khung toàn thân hoặc 3/4, tư thế người mẫu chuyên nghiệp, chất lượng catalog thương mại"
-    ),
-    "fashion_street": (
-        "ảnh thời trang đường phố, bối cảnh đô thị, ánh sáng hoàng hôn ngược sáng, "
-        "nền bokeh, năng lượng tự nhiên, tương phản cao, thẩm mỹ trẻ trung"
-    ),
-    # Đồ ăn & Đồ uống
-    "food_hero": (
-        "ảnh hero đồ ăn, góc chụp từ trên xuống hoặc 45°, hơi nước bốc lên, "
-        "kết cấu tươi mọn lấp lánh, đạo cụ phụ hợp, ánh sáng cửa sổ khuếch tán tự nhiên, "
-        "màu sắc sống động bão hòa, hoàn thiện kiểu food stylist chuyên nghiệp"
-    ),
-    "food_beverage": (
-        "ảnh đồ uống, giọt nước ngưng tụ trên ly, viên đá trong suốt, "
-        "chất lỏng trong suốt được hắt sáng từ phía sau, nền tối tâm trạng, chi tiết macro, phong cách cao cấp"
-    ),
-    "food_restaurant": (
-        "ảnh bày biện món ăn nhà hàng, trình bày kiểu bếp trưởng, tông ánh nến ấm, "
-        "không khí bokeh, chất lượng fine dining, chuẩn tạp chí ẩm thực"
-    ),
-    # Mỹ phẩm & Làm đẹp
-    "beauty_product": (
-        "ảnh sản phẩm làm đẹp, bề mặt đá cẩm thạch hoặc kết cấu cao cấp, chi tiết macro kết cấu, "
-        "gam màu pastel hoặc đơn sắc, ánh sáng khuếch tán mềm, bề mặt bóng cao cấp, "
-        "chuẩn catalog mỹ phẩm thượng hạng"
-    ),
-    "beauty_portrait": (
-        "ảnh chân dung làm đẹp, điểm sáng trong mắt, da hoàn hảo retouch, "
-        "ánh sáng bướm hoặc Rembrandt, nền sạch trung tính, "
-        "retouch cao cấp, chất lượng tạp chí thời trang hàng đầu"
-    ),
-    # Bất động sản & Kiến trúc
-    "interior_design": (
-        "ảnh kiến trúc nội thất, góc rộng ống kính 16-24mm, "
-        "ánh sáng cửa sổ tự nhiên cân bằng với ánh sáng phụ, đường dọc thẳng chuẩn, "
-        "tông màu ấm giàu, chất lượng tạp chí kiến trúc"
-    ),
-    "real_estate": (
-        "ảnh bất động sản, ngoại thất hoàng hôn, phơi sáng HDR cân bằng, "
-        "đèn nội thất tỏa ánh ấm, bầu trời giờ xanh, góc máy chuyên nghiệp"
-    ),
-    # Chân dung & Phong cách sống
-    "portrait_professional": (
-        "chân dung chuyên nghiệp doanh nhân, nền trung tính sạch, ánh sáng softbox đều, "
-        "mắt sắc nét với điểm sáng, biểu cảm tự tin, chất lượng ảnh doanh nghiệp/LinkedIn"
-    ),
-    "lifestyle_authentic": (
-        "ảnh phong cách sống, khoảnh khắc tự nhiên chân thực, ánh sáng hoàng hôn tự nhiên, "
-        "độ sâu trường ảnh nông, tông màu ấm kiểu phim, giàu cảm xúc"
-    ),
-    # Công nghệ & SaaS
-    "tech_product": (
-        "ảnh sản phẩm công nghệ, nền tối gradient, ánh sáng neon điểm nhấn, "
-        "phản chiếu trên bề mặt, không khí tương lai, chất lượng editorial công nghệ"
-    ),
-    # Trang sức & Đồng hồ
-    "jewelry": (
-        "ảnh trang sức cao cấp, chi tiết macro đá quý, bề mặt tối phản chiếu hoặc "
-        "đá cẩm thạch trắng, ánh sáng chính đơn mềm với viền sáng tinh tế, phản xạ kim loại, "
-        "chuẩn catalog trang sức hàng đầu, siêu sắc nét 8K"
-    ),
-    # Nến & Trang trí nhà
-    "candle_decor": (
-        "ảnh nến và trang trí nhà, ánh sáng nến ấm áp với bokeh mềm, "
-        "đạo cụ mộc mạc hoặc tối giản, không khí ấm cúng, tông màu hổ phách ấm, chất lượng editorial"
-    ),
-    # Trẻ em & Em bé
-    "kids_product": (
-        "ảnh sản phẩm trẻ em, màu sắc tươi sáng vui tươi, đạo cụ vui nhộn và nền mềm, "
-        "ánh sáng cửa sổ tự nhiên mềm, thẩm mỹ sạch an toàn, không khí ấm áp hấp dẫn"
-    ),
-    # Thể hình & Thể thao
-    "fitness": (
-        "ảnh sản phẩm thể hình, nền trắng sạch hoặc phòng gym, ánh sáng bên kịch tính, "
-        "thẩm mỹ cơ bắp tự tin, màu sắc đậm bão hòa, chất lượng editorial sức khỏe"
-    ),
-    # Thú cưng
-    "pet": (
-        "ảnh thú cưng, ánh sáng cửa sổ tự nhiên mềm, biểu cảm đáng yêu tự nhiên, "
-        "nền tối giản sạch, không khí ấm áp vui tươi, nét sắc vào mắt"
-    ),
-    # Động vật & Tự nhiên
-    "wildlife_nature": (
-        "nhiếp ảnh động vật tự nhiên chuyên nghiệp, chụp bằng ống kính tele, ánh sáng tự nhiên mềm, "
-        "bối cảnh môi trường tự nhiên, chi tiết siêu sắc nét, độ sâu trường ảnh nông, chất lượng National Geographic"
-    ),
-}
 
 # ── Content type keyword detection ───────────────────────────────────────────
 _CONTENT_TYPE_KEYWORDS: dict[str, list[str]] = {
@@ -447,14 +536,62 @@ _CONTENT_TYPE_KEYWORDS: dict[str, list[str]] = {
         "thú cưng", "chó", "mèo", "vật nuôi",
     ],
     "wildlife": [
-        "wildlife", "animal", "bird", "nature", "landscape", "forest", "lake", "mountain", "river", "sea", "duck",
-        "động vật", "thú", "chim", "thiên nhiên", "phong cảnh", "rừng", "hồ", "núi", "sông", "biển", "vịt",
+        "wildlife", "bird", "nature", "landscape", "forest", "lake", "mountain", "river", "sea", "duck",
+        "động vật hoang dã", "chim", "thiên nhiên", "phong cảnh", "rừng", "hồ", "núi", "sông", "biển", "vịt",
     ],
     "product": [
         "product", "item", "object", "sản phẩm", "hàng hóa", "mặt hàng",
     ],
+    # ── Cinematic / Poster keywords ────────────────────────────────────────
+    "cinematic_action": [
+        "action movie", "action poster", "cinematic action", "blockbuster",
+        "hero poster", "war poster", "explosion",
+        "phim hành động", "poster hành động", "phim hanh dong", "poster hanh dong",
+        "poster chiến tranh", "poster chien tranh",
+    ],
+    "cinematic_fantasy": [
+        "fantasy movie", "fantasy poster", "fantasy art", "epic poster", "magical poster",
+        "elf", "dragon",
+        "phim kỳ ảo", "poster kỳ ảo", "phim ky ao", "poster ky ao",
+        "phim thần thoại", "poster thần thoại", "phim than thoai", "poster than thoai",
+        "phép thuật", "rồng",
+    ],
+    "cinematic_horror": [
+        "horror movie", "horror poster", "thriller poster", "dark psychological", "ghost poster",
+        "phim kinh dị", "poster kinh dị", "phim kinh di", "poster kinh di",
+        "tâm lý kinh dị", "tam ly kinh di", "ma",
+    ],
+    # ── Premium advertising keywords ──────────────────────────────────────
+    "luxury_ad": [
+        "luxury ad", "luxury brand", "luxury perfume", "luxury watch",
+        "premium ad", "high-end ad",
+        "thương hiệu xa xỉ", "thuong hieu xa xi", "quảng cáo xa xỉ", "quang cao xa xi",
+        "quảng cáo cao cấp", "quang cao cao cap",
+        "đồng hồ cao cấp", "nước hoa cao cấp", "chai nước hoa",
+    ],
+    "tech_futuristic_ad": [
+        "tech ad", "futuristic ad", "hi-tech poster", "sci-fi ad", "neon tech", "digital ad",
+        "quảng cáo công nghệ", "quang cao cong nghe",
+        "quảng cáo tương lai", "quang cao tuong lai", "công nghệ tương lai",
+    ],
+    "fashion_magazine": [
+        "fashion magazine", "magazine cover", "avant-garde",
+        "editorial fashion ad", "high fashion ad", "vogue style ad",
+        "tạp chí thời trang", "tap chi thoi trang", "bìa tạp chí", "bia tap chi",
+    ],
+    "streetwear_ad": [
+        "streetwear", "street style ad", "urban fashion", "graffiti style",
+        "hypebeast", "sneaker culture", "skateboard", "skate brand",
+        "quảng cáo đường phố", "quang cao duong pho",
+        "thời trang đường phố", "thoi trang duong pho",
+    ],
+    "organic_eco": [
+        "organic", "eco", "natural product", "green ad", "sustainable",
+        "eco-friendly", "vegan product", "organic beauty",
+        "sản phẩm hữu cơ", "san pham huu co",
+        "quảng cáo xanh", "quang cao xanh", "thuần chay", "thuan chay",
+    ],
 }
-
 
 
 # ---------------------------------------------------------------------------
@@ -475,15 +612,15 @@ def override_library(data: dict[str, Any]) -> None:
 
         vidtory_knowledge.override_library({
             "photography_styles": {
-                "my_custom_style": "..."
+                "my_custom_style": ("en style...", "vi style...")
             }
         })
     """
     _overrides.update(data)
 
 
-def _get_styles() -> dict[str, str]:
-    return {**_PHOTOGRAPHY_STYLES, **_overrides.get("photography_styles", {})}
+def _get_styles() -> dict[str, tuple[str, str]]:
+    return {**_STYLES, **_overrides.get("photography_styles", {})}
 
 
 def _get_platform_specs() -> dict[str, dict[str, str]]:
@@ -494,27 +631,14 @@ def _get_content_keywords() -> dict[str, list[str]]:
     return {**_CONTENT_TYPE_KEYWORDS, **_overrides.get("content_type_keywords", {})}
 
 
-def _get_universal_suffix() -> str:
+def _get_universal_suffix(lang: str | None = None) -> str:
+    if lang == "vi":
+        return _overrides.get("universal_quality_suffix_vi", _UNIVERSAL_QUALITY_SUFFIX_VI)
     return _overrides.get("universal_quality_suffix", _UNIVERSAL_QUALITY_SUFFIX)
 
 
-def _get_universal_suffix_vi() -> str:
-    return _overrides.get("universal_quality_suffix_vi", _UNIVERSAL_QUALITY_SUFFIX_VI)
-
-
-def _get_styles_vi() -> dict[str, str]:
-    return {**_PHOTOGRAPHY_STYLES_VI, **_overrides.get("photography_styles_vi", {})}
-
-
-def get_content_insight(content_type: str | None, *, lang: str | None = None) -> str | None:
-    """Return the audience/communication insight for a detected topic."""
-    if not content_type:
-        return None
-    if lang == "vi":
-        insights = {**_CONTENT_INSIGHTS_VI, **_overrides.get("content_insights_vi", {})}
-    else:
-        insights = {**_CONTENT_INSIGHTS, **_overrides.get("content_insights", {})}
-    return insights.get(content_type)
+def _get_content_insights() -> dict[str, tuple[str, str]]:
+    return {**_CONTENT_INSIGHTS, **_overrides.get("content_insights", {})}
 
 
 # ---------------------------------------------------------------------------
@@ -534,8 +658,12 @@ def detect_content_type(prompt: str) -> str | None:
     return None
 
 
-def get_style_for_content(content_type: str | None) -> str | None:
+def get_style_for_content(content_type: str | None, lang: str | None = None) -> str | None:
     """Return the photography style preset string for a content type.
+
+    Args:
+        content_type: Content type key, e.g. ``'food'``.
+        lang: Language code. ``'vi'`` returns Vietnamese style string.
 
     Returns ``None`` if no mapping exists for ``content_type``.
     """
@@ -544,7 +672,21 @@ def get_style_for_content(content_type: str | None) -> str | None:
     style_key = _CONTENT_TYPE_TO_STYLE.get(content_type)
     if not style_key:
         return None
-    return _get_styles().get(style_key)
+    style_tuple = _get_styles().get(style_key)
+    if not style_tuple:
+        return None
+    # style_tuple is (en, vi); fall back to en when lang is not vi
+    return style_tuple[1] if lang == "vi" else style_tuple[0]
+
+
+def get_content_insight(content_type: str | None, *, lang: str | None = None) -> str | None:
+    """Return the audience/communication insight for a detected topic."""
+    if not content_type:
+        return None
+    insight_tuple = _get_content_insights().get(content_type)
+    if not insight_tuple:
+        return None
+    return insight_tuple[1] if lang == "vi" else insight_tuple[0]
 
 
 def build_professional_prompt_suffix(
@@ -571,12 +713,9 @@ def build_professional_prompt_suffix(
         A suffix string ready to be appended to the prompt with ``", "``.
         Empty string if no enhancement is applicable.
     """
-    if lang == "vi":
-        return _build_professional_prompt_suffix_vi(prompt, content_type, platform)
-
     detected = content_type or detect_content_type(prompt)
-    style = get_style_for_content(detected)
-    insight = get_content_insight(detected)
+    insight = get_content_insight(detected, lang=lang)
+    style = get_style_for_content(detected, lang=lang)
 
     parts: list[str] = []
 
@@ -592,43 +731,7 @@ def build_professional_prompt_suffix(
         if style_note:
             parts.append(style_note)
 
-    parts.append(_get_universal_suffix())
-
-    return ", ".join(p for p in parts if p)
-
-
-def _build_professional_prompt_suffix_vi(
-    prompt: str,
-    content_type: str | None = None,
-    platform: str | None = None,
-) -> str:
-    """Vietnamese version of build_professional_prompt_suffix."""
-    detected = content_type or detect_content_type(prompt)
-    insight = get_content_insight(detected, lang="vi")
-
-    # Get Vietnamese style if available, fallback to original English
-    style: str | None = None
-    if detected:
-        style_key = _CONTENT_TYPE_TO_STYLE.get(detected)
-        if style_key:
-            styles_vi = _get_styles_vi()
-            style = styles_vi.get(style_key) or _get_styles().get(style_key)
-
-    parts: list[str] = []
-
-    if insight:
-        parts.append(insight)
-
-    if style:
-        parts.append(style)
-
-    if platform:
-        specs = _get_platform_specs().get(platform, {})
-        style_note = specs.get("style_note")
-        if style_note:
-            parts.append(style_note)
-
-    parts.append(_get_universal_suffix_vi())
+    parts.append(_get_universal_suffix(lang=lang))
 
     return ", ".join(p for p in parts if p)
 
@@ -661,36 +764,83 @@ def get_system_knowledge_block() -> str:
 
     This block gives the agent deep expertise in creative direction, photography,
     and content production — injected once per session via the SOUL.md / system prompt.
+    Compact format: enough signal for the LLM to understand full capabilities,
+    minimal tokens wasted on redundant descriptions.
     """
-    styles_summary = "\n".join(
-        f"- **{k}**: {v[:120]}..."
-        for k, v in list(_get_styles().items())[:6]
+    styles = _get_styles()
+    platforms = list(_get_platform_specs().keys())
+
+    # Group styles by category for better LLM comprehension
+    photography_styles = [
+        "product_hero", "product_lifestyle", "product_packshot",
+        "fashion_editorial", "fashion_lookbook", "fashion_street",
+        "food_hero", "food_beverage", "food_restaurant",
+        "beauty_product", "beauty_portrait",
+        "interior_design", "real_estate",
+        "portrait_professional", "lifestyle_authentic",
+        "tech_product", "jewelry", "candle_decor",
+        "kids_product", "fitness", "pet", "wildlife_nature",
+    ]
+    cinematic_styles = [
+        "cinematic_action", "cinematic_fantasy", "cinematic_horror",
+    ]
+    ad_styles = [
+        "luxury_ad", "tech_futuristic_ad", "fashion_magazine",
+        "streetwear_ad", "organic_eco",
+    ]
+
+    photo_list = "\n".join(
+        f"  • {k}: {styles[k][0][:90]}…"
+        for k in photography_styles if k in styles
     )
-    platforms_summary = ", ".join(list(_get_platform_specs().keys()))
+    cinematic_list = "\n".join(
+        f"  • {k}: {styles[k][0][:90]}…"
+        for k in cinematic_styles if k in styles
+    )
+    ad_list = "\n".join(
+        f"  • {k}: {styles[k][0][:90]}…"
+        for k in ad_styles if k in styles
+    )
+    platforms_str = ", ".join(platforms)
 
     return f"""## Vidtory Creative Knowledge
 
-### Photography Style Library
-Available style presets for professional image generation:
-{styles_summary}
-(+ {len(_get_styles()) - 6} more styles available)
+### Style Library ({len(styles)} styles available)
 
-### Supported Platforms
-{platforms_summary}
+**Photography & Commercial** ({len(photography_styles)} styles):
+{photo_list}
+
+**Cinematic Poster** ({len(cinematic_styles)} styles — action/fantasy/horror movie posters):
+{cinematic_list}
+
+**Premium Advertising** ({len(ad_styles)} styles — luxury/tech/streetwear/eco ads):
+{ad_list}
+
+### Supported Output Platforms
+{platforms_str}
 
 ### Professional Prompt Principles
-1. **Subject** — Clearly describe the hero element (product/person/scene)
-2. **Style** — Apply appropriate photography style from the library
-3. **Lighting** — Specify light source, direction, and quality
-4. **Composition** — Describe framing, angle, focal point
+1. **Subject** — Clearly describe the hero element (product/person/scene/character)
+2. **Style** — Apply style from library above matching the content type
+3. **Lighting** — Specify light source, direction, quality (key/fill/rim/neon/candlelight)
+4. **Composition** — Framing, angle, focal point, typography placement
 5. **Mood** — Color palette, atmosphere, emotional register
-6. **Technical** — Resolution, sharpness, post-processing
+6. **Typography** — For poster/ad: font style, material (metallic/wood/liquid/glass), placement
+7. **Technical** — Resolution (8K/4K), sharpness, post-processing
 
-### Auto-Enhancement
-The `generate_image` tool automatically:
-- Detects content type from the prompt
-- Applies matching professional photography style
-- Appends universal quality suffixes
-- Selects customer's preferred aspect ratio
-- Incorporates brand guidelines from customer profile
+### Auto-Enhancement Pipeline (applied automatically by generate_image tool)
+1. Detect content type from prompt → select matching style from library
+2. Apply audience insight (what viewers must feel at first glance)
+3. Apply professional style preset (lighting, composition, texture language)
+4. Append universal quality suffix
+5. Inject customer brand guidelines (colors, logo, tone)
+6. Select optimal aspect ratio for customer's primary channel
+
+### When to Use Which Style
+- User says "poster phim / movie poster" → cinematic_action / cinematic_fantasy / cinematic_horror
+- User says "quảng cáo xa xỉ / luxury ad" → luxury_ad
+- User says "quảng cáo tương lai / futuristic / hi-tech" → tech_futuristic_ad
+- User says "đường phố / streetwear / graffiti" → streetwear_ad
+- User says "hữu cơ / organic / eco / thuần chay" → organic_eco
+- User says "tạp chí thời trang / fashion magazine" → fashion_magazine
 """

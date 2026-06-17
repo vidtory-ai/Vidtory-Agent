@@ -106,6 +106,35 @@ class TelegramMessagesMixin:
         except Exception as e:
             self.logger.warning("Failed to remember logo skip preference: {}", e)
 
+    @staticmethod
+    def _profile_needs_brand_prompt(profile: dict, generation_count: int) -> bool:
+        """Return True nếu cần hiển thị brand onboarding prompt trước khi tạo ảnh.
+
+        Logic nhắc lại thông minh:
+        - Nếu completeness >= 60% → không bao giờ nhắc (đủ dữ liệu).
+        - Lần 1 bỏ qua → nhắc lại ở generation thứ 3.
+        - Lần 2 bỏ qua → nhắc lại ở generation thứ 5.
+        - Lần 3+ bỏ qua → không nhắc nữa (user đã quyết định rõ ràng).
+        """
+        try:
+            from nanobot.utils.customer_profile import get_profile_completeness
+            completeness = get_profile_completeness(profile)
+            if completeness >= 60:
+                return False
+        except Exception:
+            pass
+
+        preferences = profile.get("preferences") or {}
+        skip_count = int(preferences.get("brandPromptSkipCount", 0))
+        if skip_count >= 3:
+            return False  # User đã bỏ qua 3 lần — không nhắc nữa
+
+        next_gen = int(preferences.get("brandPromptNextGeneration", 0))
+        if next_gen == 0:
+            # Chưa từng hỏi → hỏi ngay
+            return True
+        return generation_count >= next_gen
+
     async def _handle_onboarding_quick_reply(
         self,
         *,
@@ -118,12 +147,67 @@ class TelegramMessagesMixin:
         text = ""
         buttons: list[list[str]] | None = None
 
+        # ── Brand Prompt: Đồng ý → bắt đầu onboarding ────────────────────────
+        if value == "dong y":
+            try:
+                from nanobot.utils.brand_intelligence import build_adaptive_onboarding_step
+                from nanobot.utils.customer_profile import load_profile, save_profile
+                uid_ob = sender_id.split("|")[0].strip()
+                profile_ob = load_profile(uid_ob) or {}
+                
+                # Check guard: only trigger if they actually need onboarding
+                if not self._profile_needs_brand_prompt(profile_ob, 999999) and profile_ob.get("onboarding", {}).get("status") != "minimal":
+                    return False
+                    
+                profile_ob.setdefault("onboarding", {})["status"] = "in_progress"
+                save_profile(uid_ob, profile_ob)
+                step = build_adaptive_onboarding_step(profile_ob)
+                if self._app:
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "🎨 *Thiết lập Brand Profile*\n\n"
+                            f"{step['prompt']}\n\n"
+                            "_Bạn có thể bấm nút hoặc nhập câu trả lời theo cách tự nhiên._"
+                        ),
+                        parse_mode="Markdown",
+                        reply_markup=self._build_keyboard(step["buttons"]) if step["buttons"] else None,
+                    )
+                return True
+            except Exception as e:
+                self.logger.warning("Brand prompt agree handler error: {}", e)
+
+        # ── Brand Prompt: Bỏ qua → nhắc lại sau theo generation count ────────
+        if value == "bo qua":
+            try:
+                from nanobot.utils.customer_profile import load_profile, save_profile
+                from nanobot.db.customer_db import get_db as _brand_skip_get_db
+                uid_skip = sender_id.split("|")[0].strip()
+                profile_skip = load_profile(uid_skip) or {}
+                prefs_skip = profile_skip.setdefault("preferences", {})
+                skip_count = int(prefs_skip.get("brandPromptSkipCount", 0)) + 1
+                prefs_skip["brandPromptSkipCount"] = skip_count
+                # Schedule next reminder: skip 1 → gen 3, skip 2 → gen 5
+                REMIND_AT = {1: 3, 2: 5}
+                current_gen = _brand_skip_get_db().get_generation_count(uid_skip)
+                remind_offset = REMIND_AT.get(skip_count, 0)
+                if remind_offset:
+                    prefs_skip["brandPromptNextGeneration"] = current_gen + remind_offset
+                else:
+                    # 3rd skip — mark as never remind again
+                    prefs_skip["brandPromptNextGeneration"] = 999999
+                save_profile(uid_skip, profile_skip)
+            except Exception as e:
+                self.logger.warning("Brand prompt skip handler error: {}", e)
+            # Do NOT return True — let the original request fall through to LLM
+            return False
+
         if value == "gui logo":
-            text = (
-                "Bạn gửi ảnh logo trực tiếp vào đây nhé.\n\n"
-                "Mình sẽ đọc màu sắc chủ đạo, độ tương phản và concept thị giác từ logo, "
-                "sau đó đề xuất style reference phù hợp để bạn chọn nhanh."
-            )
+            # Set flag: next photo from this user = set as logo directly
+            pending_intent = getattr(self, "_pending_logo_intent", {})
+            pending_intent[sender_id] = time.monotonic() + 600
+            self._pending_logo_intent = pending_intent
+            text = "Bạn gửi ảnh logo vào đây, mình đặt làm logo thương hiệu luôn nhé."
         elif value in {"nhap website", "gui website", "dung website"}:
             text = (
                 "Bạn gửi link website của thương hiệu vào đây nhé.\n\n"
@@ -403,23 +487,17 @@ class TelegramMessagesMixin:
                         pass
                     if has_profile:
                         await message.reply_text(
-                            "✅ *Đã lưu Vidtory API Key thành công!*\n"
-                            "Bot đang sẵn sàng. Gõ /help để xem danh sách lệnh.\n\n"
-                            "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
+                            "✅ *API Key đã được cấu hình. Hệ thống sẵn sàng.*\n"
+                            "Gửi yêu cầu tạo ảnh hoặc video bất kỳ lúc nào.\n\n"
+                            "_(Để bảo mật, tin nhắn chứa API Key đã được xóa tự động)_",
                             parse_mode="Markdown"
                         )
                     else:
-                        buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
-                        reply_markup = self._build_keyboard(buttons)
                         await message.reply_text(
-                            "✅ *Đã lưu Vidtory API Key thành công!*\n\n"
-                            "🎯 Để bot tạo nội dung *bám sát thương hiệu* của bạn, "
-                            "mình cần biết thêm một chút về brand.\n\n"
-                            "Bạn muốn thiết lập brand profile ngay không?\n"
-                            "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_\n\n"
-                            "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
+                            "✅ *API Key đã được cấu hình. Hệ thống sẵn sàng.*\n\n"
+                            "Gửi yêu cầu tạo ảnh, video hoặc gửi logo thương hiệu để bắt đầu.\n\n"
+                            "_(Để bảo mật, tin nhắn chứa API Key đã được xóa tự động)_",
                             parse_mode="Markdown",
-                            reply_markup=reply_markup,
                         )
                     return
         else:
@@ -438,23 +516,17 @@ class TelegramMessagesMixin:
                     pass
                 if has_profile:
                     await message.reply_text(
-                        "✅ *Đã lưu Vidtory API Key thành công!*\n"
-                        "Bot đang sẵn sàng phục vụ bạn.\n\n"
-                        "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
+                        "✅ *API Key đã được cấu hình. Hệ thống sẵn sàng.*\n"
+                        "Gửi yêu cầu tạo ảnh hoặc video bất kỳ lúc nào.\n\n"
+                        "_(Để bảo mật, tin nhắn chứa API Key đã được xóa tự động)_",
                         parse_mode="Markdown"
                     )
                 else:
-                    buttons = [["Bắt đầu khai báo", "Dùng ngay"]]
-                    reply_markup = self._build_keyboard(buttons)
                     await message.reply_text(
-                        "✅ *Đã lưu Vidtory API Key thành công!*\n\n"
-                        "🎯 Để bot tạo nội dung *bám sát thương hiệu* của bạn, "
-                        "mình cần biết thêm một chút về brand.\n\n"
-                        "Bạn muốn thiết lập brand profile ngay không?\n"
-                        "_(Chỉ mất khoảng 1 phút — rất đáng làm!)_\n\n"
-                        "_(Vì lý do bảo mật, tin nhắn chứa API Key của bạn đã được xóa tự động)_",
+                        "✅ *API Key đã được cấu hình. Hệ thống sẵn sàng.*\n\n"
+                        "Gửi yêu cầu tạo ảnh, video hoặc gửi logo thương hiệu để bắt đầu.\n\n"
+                        "_(Để bảo mật, tin nhắn chứa API Key đã được xóa tự động)_",
                         parse_mode="Markdown",
-                        reply_markup=reply_markup,
                     )
                 return
 
@@ -523,6 +595,7 @@ class TelegramMessagesMixin:
 
         # Telegram media groups: buffer briefly, forward as one aggregated turn.
         if media_group_id := getattr(message, "media_group_id", None):
+            from nanobot.channels.telegram.mixins.media import _MEDIA_GROUP_MAX_WAIT
             key = f"{str_chat_id}:{media_group_id}"
             if key not in self._media_group_buffers:
                 self._media_group_buffers[key] = {
@@ -530,15 +603,24 @@ class TelegramMessagesMixin:
                     "contents": [], "media": [],
                     "metadata": metadata,
                     "session_key": session_key,
+                    "_max_flush_at": time.monotonic() + _MEDIA_GROUP_MAX_WAIT,
                 }
                 self._start_typing(str_chat_id)
                 await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
+            
             buf = self._media_group_buffers[key]
             if content and content != "[empty message]":
                 buf["contents"].append(content)
             buf["media"].extend(media_paths)
-            if key not in self._media_group_tasks:
-                self._media_group_tasks[key] = asyncio.create_task(self._flush_media_group(key))
+
+            # Reset sliding window
+            mg_tasks = getattr(self, "_media_group_tasks", {})
+            old_task = mg_tasks.get(key)
+            if old_task and not old_task.done() and time.monotonic() < buf.get("_max_flush_at", 0):
+                old_task.cancel()
+            
+            mg_tasks[key] = asyncio.create_task(self._flush_media_group(key))
+            self._media_group_tasks = mg_tasks
             return
 
         # Guard: When user sends photo/document without any text or caption,
@@ -547,14 +629,70 @@ class TelegramMessagesMixin:
         has_text = bool(message.text or message.caption)
         is_reply = reply is not None
         if has_media and not has_text and not is_reply:
-            # Always ask the user what they want to do with the uploaded image.
-            # Never auto-set logo or auto-generate from a bare image upload,
-            # even during onboarding — user must explicitly choose their intent.
+            # If a text+media buffer is pending for this user (photo+caption arrived
+            # just before, waiting to collect siblings), merge this image into it
+            # and reset the sliding-window timer so the flush waits for us too.
+            _tmb = getattr(self, "_text_media_buffers", {})
+            _tmb_key = f"{str_chat_id}:{sender_id}"
+            if _tmb_key in _tmb:
+                _tmb[_tmb_key]["media"] = list(dict.fromkeys(
+                    _tmb[_tmb_key]["media"] + list(media_paths)
+                ))
+                _tmb[_tmb_key]["metadata"]["current_media"] = _tmb[_tmb_key]["media"]
+                self._text_media_buffers = _tmb
+                # Reset the sliding window: cancel existing task, start fresh 1s timer.
+                _tmb_tasks = getattr(self, "_text_media_tasks", {})
+                _old_task = _tmb_tasks.get(_tmb_key)
+                _max_flush_at = _tmb[_tmb_key].get("_max_flush_at", 0.0)
+                if _old_task and not _old_task.done() and time.monotonic() < _max_flush_at:
+                    _old_task.cancel()
+                    _tmb_tasks[_tmb_key] = asyncio.create_task(
+                        self._flush_text_media_buffer(_tmb_key)
+                    )
+                    self._text_media_tasks = _tmb_tasks
+                # Do NOT add a reaction here — the reaction was already added
+                # when the text+media buffer was first created (for the
+                # caption-bearing photo). Adding it again for every subsequent
+                # bare photo would show duplicate eye icons to the user.
+                return
+
+            # Add reaction immediately — this path returns early and never reaches
+            # the normal _add_reaction call later in the flow.
+            await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
             doc = getattr(message, "document", None)
             is_document_file = (
                 doc is not None
                 and not (getattr(doc, "mime_type", "") or "").startswith(("image/", "video/"))
             )
+
+            # Fast-path: user is in "gui logo" intent flow → set photo as logo directly
+            pending_logo_intent = getattr(self, "_pending_logo_intent", {})
+            logo_intent_expires = pending_logo_intent.get(sender_id, 0)
+            if not is_document_file and logo_intent_expires > time.monotonic():
+                # Clear the intent
+                pending_logo_intent.pop(sender_id, None)
+                self._pending_logo_intent = pending_logo_intent
+                # Show typing indicator while processing
+                self._start_typing(str_chat_id)
+                # Trigger logo save directly — inject as choice selection
+                pending_choices = getattr(self, "_pending_media_choices", {})
+                pending_choices[f"{str_chat_id}:{sender_id}"] = {
+                    "media": list(media_paths),
+                    "metadata": dict(metadata),
+                    "session_key": session_key,
+                    "expires_at": time.monotonic() + 60,
+                }
+                self._pending_media_choices = pending_choices
+                # Re-invoke handler with "Đặt logo" as the choice
+                await self._handle_message(
+                    sender_id=sender_id,
+                    chat_id=str_chat_id,
+                    content="Đặt logo",
+                    media=list(media_paths),
+                    metadata=metadata,
+                    session_key=session_key,
+                )
+                return
 
             if is_document_file:
                 file_name = getattr(doc, "file_name", "file") or "file"
@@ -589,22 +727,50 @@ class TelegramMessagesMixin:
                 )
             else:
                 pending = getattr(self, "_pending_media_choices", {})
-                pending[f"{str_chat_id}:{sender_id}"] = {
-                    "media": list(media_paths),
-                    "metadata": dict(metadata),
-                    "session_key": session_key,
-                    "expires_at": time.monotonic() + 600,
-                }
-                self._pending_media_choices = pending
-                await message.reply_text(
-                    "📷 *Ảnh đã nhận!*\n\n"
-                    "Bạn muốn tôi làm gì với ảnh này?",
-                    parse_mode="Markdown",
-                    reply_markup=self._build_keyboard([
-                        ["Đặt làm logo thương hiệu", "Chỉnh ảnh này"],
-                        ["Dùng làm tham chiếu"],
-                    ]),
-                )
+                pmc_key = f"{str_chat_id}:{sender_id}"
+                existing = pending.get(pmc_key)
+                if (
+                    existing
+                    and float(existing.get("expires_at") or 0) > time.monotonic()
+                ):
+                    # Accumulate: user sent another image — merge into existing entry
+                    # instead of overwriting, so later requests see ALL images.
+                    merged_media = list(dict.fromkeys(
+                        list(existing.get("media") or []) + list(media_paths)
+                    ))
+                    existing["media"] = merged_media
+                    existing["metadata"]["current_media"] = merged_media
+                    existing["expires_at"] = time.monotonic() + 600
+                    pending[pmc_key] = existing
+                    self._pending_media_choices = pending
+                    img_count = len(merged_media)
+                    await message.reply_text(
+                        f"📷 *{img_count} ảnh đã nhận!*\n\n"
+                        "Bạn muốn làm gì với các ảnh này?",
+                        parse_mode="Markdown",
+                        reply_markup=self._build_keyboard([
+                            ["Đặt logo", "Chỉnh ảnh này"],
+                            ["Dùng làm tham chiếu"],
+                        ]),
+                    )
+                else:
+                    # First image from this user — create a new pending entry.
+                    pending[pmc_key] = {
+                        "media": list(media_paths),
+                        "metadata": dict(metadata),
+                        "session_key": session_key,
+                        "expires_at": time.monotonic() + 600,
+                    }
+                    self._pending_media_choices = pending
+                    await message.reply_text(
+                        "📷 *Ảnh đã nhận!*\n\n"
+                        "Bạn muốn làm gì với ảnh này?",
+                        parse_mode="Markdown",
+                        reply_markup=self._build_keyboard([
+                            ["Đặt logo", "Chỉnh ảnh này"],
+                            ["Dùng làm tham chiếu"],
+                        ]),
+                    )
             return
 
 
@@ -669,6 +835,34 @@ class TelegramMessagesMixin:
         except Exception as e:
             self.logger.warning("Error in logo pre-flight check: {}", e)
 
+        # Guard: Brand Profile empty — prompt user to provide brand info before generating
+        # Only when creative request + profile is nearly empty (completeness < 60%).
+        # Reminder schedule: skip 1 → remind at gen+3; skip 2 → remind at gen+5;
+        # skip 3+ → stop reminding. Never blocks when completeness >= 60%.
+        try:
+            from nanobot.utils.customer_profile import load_profile, profile_exists
+            from nanobot.db.customer_db import get_db as _gen_count_db
+            uid_brand = sender_id.split("|")[0].strip()
+            if (
+                creative_request
+                and onboarding_status not in ("in_progress",)
+            ):
+                profile_brand = load_profile(uid_brand) or {}
+                gen_count = _gen_count_db().get_generation_count(uid_brand)
+                if self._profile_needs_brand_prompt(profile_brand, gen_count):
+                    brand_buttons = [["Đồng ý", "Bỏ qua"]]
+                    await message.reply_text(
+                        "📋 *Thông tin thương hiệu của bạn còn khá ít!*\n\n"
+                        "Cung cấp thêm thông tin giúp AI tạo ảnh *bám sát thương hiệu* hơn rất nhiều — "
+                        "tên thương hiệu, phong cách, lĩnh vực hoạt động, v.v.\n\n"
+                        "Bạn có muốn khai báo nhanh (~1 phút) để có kết quả tốt hơn không?",
+                        parse_mode="Markdown",
+                        reply_markup=self._build_keyboard(brand_buttons),
+                    )
+                    return
+        except Exception as e:
+            self.logger.warning("Error in brand profile pre-flight check: {}", e)
+
         if (
             getattr(self.config, "require_user_api_key", False)
             and not self.keystore.get_key(sender_id)
@@ -682,7 +876,54 @@ class TelegramMessagesMixin:
         self._start_typing(str_chat_id)
         await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
 
-        # Forward to the message bus
+        # When media is attached (and this is not a reply), hold the request in a
+        # sliding-window buffer so that additional photos arriving in rapid succession
+        # (Telegram delivers them as separate messages, only the first has a caption)
+        # are accumulated before dispatch.  The window is 1 s, resetting on each new
+        # image, with a hard cap of 3 s from the first image.  Handles up to 10+
+        # images transparently.  Text-only and reply messages are forwarded immediately.
+        if has_media and not is_reply:
+            from nanobot.channels.telegram.mixins.media import _TEXT_MEDIA_MAX_WAIT
+            _tmb = getattr(self, "_text_media_buffers", {})
+            _tmb_key = f"{str_chat_id}:{sender_id}"
+            if _tmb_key in _tmb:
+                # Another text+media message arrived while buffer is pending:
+                # take the latest text and merge media, then reset timer.
+                _tmb[_tmb_key]["content"] = content
+                _tmb[_tmb_key]["media"] = list(dict.fromkeys(
+                    _tmb[_tmb_key]["media"] + list(media_paths)
+                ))
+                _tmb[_tmb_key]["metadata"]["current_media"] = _tmb[_tmb_key]["media"]
+                self._text_media_buffers = _tmb
+                _tmb_tasks = getattr(self, "_text_media_tasks", {})
+                _old_task = _tmb_tasks.get(_tmb_key)
+                _max_flush_at = _tmb[_tmb_key].get("_max_flush_at", 0.0)
+                if _old_task and not _old_task.done() and time.monotonic() < _max_flush_at:
+                    _old_task.cancel()
+                    _tmb_tasks[_tmb_key] = asyncio.create_task(
+                        self._flush_text_media_buffer(_tmb_key)
+                    )
+                    self._text_media_tasks = _tmb_tasks
+            else:
+                # First text+media message — create the buffer entry.
+                _tmb[_tmb_key] = {
+                    "sender_id": sender_id,
+                    "chat_id": str_chat_id,
+                    "content": content,
+                    "media": list(media_paths),
+                    "metadata": dict(metadata),
+                    "session_key": session_key,
+                    "_max_flush_at": time.monotonic() + _TEXT_MEDIA_MAX_WAIT,
+                }
+                self._text_media_buffers = _tmb
+                _tmb_tasks = getattr(self, "_text_media_tasks", {})
+                _tmb_tasks[_tmb_key] = asyncio.create_task(
+                    self._flush_text_media_buffer(_tmb_key)
+                )
+                self._text_media_tasks = _tmb_tasks
+            return  # _flush_text_media_buffer will call _handle_message
+
+        # Text-only or reply-with-media: forward directly without buffering.
         await self._handle_message(
             sender_id=sender_id,
             chat_id=str_chat_id,
@@ -717,6 +958,7 @@ class TelegramMessagesMixin:
         if pending and float(pending.get("expires_at") or 0) < time.monotonic():
             pending = None
         choice_prompts = {
+            "đặt logo": "Đặt ảnh đính kèm làm logo thương hiệu và tự cập nhật phong cách theo logo mới.",
             "đặt làm logo": "Đặt ảnh đính kèm làm logo thương hiệu và tự cập nhật phong cách theo logo mới.",
             "đặt làm logo thương hiệu": "Đặt ảnh đính kèm làm logo thương hiệu và tự cập nhật phong cách theo logo mới.",
             "chỉnh ảnh này": "Tôi muốn chỉnh ảnh đính kèm. Hãy hỏi một câu ngắn kèm các nút gợi ý sát với ảnh.",
@@ -734,6 +976,130 @@ class TelegramMessagesMixin:
             metadata["current_media"] = list(media)
             session_key = session_key or pending.get("session_key")
             content = choice_prompts.get(normalized_choice, content)
+
+        # --- Direct logo save: when user explicitly selects "Đặt làm logo thương hiệu" ---
+        # Bypass LLM — read file bytes from disk then call _upload_logo_bytes_to_cdn,
+        # identical to the /setlogo Case 2 & 3 flow (most reliable path).
+        plain_nc = self._plain_user_text(normalized_choice)
+        if plain_nc in ("dat logo", "dat lam logo thuong hieu", "dat lam logo") and pending is not None:
+            media_to_save = list(pending.get("media") or []) + list(media or [])
+            if media_to_save:
+                # Show typing while processing logo upload
+                self._start_typing(chat_id)
+                uid_save = sender_id.split("|")[0].strip()
+                key_save = self.keystore.get_key(sender_id)
+                # Guard: API key required to upload to Vidtory CDN
+                if not key_save:
+                    if self._app:
+                        with suppress(Exception):
+                            await self._app.bot.send_message(
+                                chat_id=chat_id,
+                                text=(
+                                    "🔐 *Để lưu logo vào hồ sơ thương hiệu, bạn cần kết nối tài khoản Vidtory.*\n\n"
+                                    "Sau khi kết nối, logo sẽ tự động xuất hiện trên mọi ảnh tạo ra.\n\n"
+                                    "*Thiết lập chỉ mất 1 phút:*\n"
+                                    "1️⃣ Vào https://app.vidtory.net/settings/api\n"
+                                    "2️⃣ Sao chép key\n"
+                                    "3️⃣ Gửi: `/apikey YOUR_KEY`\n\n"
+                                    "_Gửi lại logo ngay sau khi hoàn tất là xong._"
+                                ),
+                                parse_mode="Markdown",
+                                disable_web_page_preview=True,
+                            )
+                    self._stop_typing(chat_id)
+                    return
+                cdn_url_save = None
+                try:
+                    import mimetypes as _mimetypes
+                    logo_path = media_to_save[0]
+                    logo_bytes = Path(logo_path).read_bytes()
+                    logo_mime = _mimetypes.guess_type(logo_path)[0] or "image/jpeg"
+                    cdn_url_save = await self._upload_logo_bytes_to_cdn(
+                        logo_bytes,
+                        mime_type=logo_mime,
+                        api_key=key_save,
+                        user_id=uid_save,
+                    )
+                except Exception as _read_err:
+                    self.logger.warning("Logo save: failed to read/upload file {}: {}", media_to_save[0], _read_err)
+                if cdn_url_save:
+                    try:
+                        from nanobot.utils.customer_profile import set_logo_and_refresh_identity
+                        await set_logo_and_refresh_identity(uid_save, cdn_url_save)
+                    except Exception as _e:
+                        self.logger.warning("set_logo_and_refresh_identity failed: {}", _e)
+                    if self._app:
+                        with suppress(Exception):
+                            await self._app.bot.send_message(
+                                chat_id=chat_id,
+                                text="✅ *Logo đã được lưu thành công!*\nMọi ảnh tạo tiếp theo sẽ tự động chèn logo này.",
+                                parse_mode="Markdown",
+                            )
+                else:
+                    if self._app:
+                        with suppress(Exception):
+                            await self._app.bot.send_message(
+                                chat_id=chat_id,
+                                text=(
+                                    "⚠️ *Upload logo thất bại.*\n\n"
+                                    "Có thể do kết nối mạng hoặc API Key chưa đúng.\n"
+                                    "Vui lòng thử lại hoặc dùng lệnh `/setlogo` để kiểm tra."
+                                ),
+                                parse_mode="Markdown",
+                            )
+            self._stop_typing(chat_id)
+            return
+
+        # --- Silent logo CDN upload for brand-profile update with image ---
+        # When user selects "Cập nhật thương hiệu" and the pending media is an IMAGE
+        # (not a document), upload that image to CDN and set it as logo BEFORE
+        # sending to LLM. This ensures the profile already has logo_url populated
+        # when the LLM processes the brand update, so it will never say
+        # "file logo gốc chưa upload được lên CDN".
+        if plain_nc == "cap nhat thuong hieu" and pending is not None:
+            image_media = [
+                p for p in (pending.get("media") or []) + list(media or [])
+                if p  # non-empty path
+            ]
+            # Only auto-set logo for image files (not PDFs/documents)
+            if image_media:
+                import mimetypes
+                first_mime = mimetypes.guess_type(image_media[0])[0] or ""
+                is_image = first_mime.startswith("image/") or image_media[0].lower().endswith(
+                    (".png", ".jpg", ".jpeg", ".webp", ".gif")
+                )
+                if is_image:
+                    # Fire-and-forget: upload to CDN silently. Even if this fails,
+                    # we still proceed with the brand-profile LLM update.
+                    try:
+                        uid_logo_auto = sender_id.split("|")[0].strip()
+                        key_logo_auto = self.keystore.get_key(sender_id) or ""
+                        if key_logo_auto:
+                            cdn_url = await self._upload_image_to_vidtory_cdn(
+                                image_media[0],
+                                api_key=key_logo_auto,
+                                user_id=uid_logo_auto,
+                            )
+                            if cdn_url:
+                                from nanobot.utils.customer_profile import set_logo_and_refresh_identity
+                                await set_logo_and_refresh_identity(uid_logo_auto, cdn_url)
+                                self.logger.info(
+                                    "Auto-set logo from brand update image for {}: {}",
+                                    uid_logo_auto, cdn_url,
+                                )
+                                # Patch metadata so LLM gets up-to-date profile with logo_url
+                                try:
+                                    from nanobot.utils.customer_profile import load_profile
+                                    fresh_profile = load_profile(uid_logo_auto)
+                                    if fresh_profile:
+                                        metadata["customer_profile"] = fresh_profile
+                                except Exception:
+                                    pass
+                    except Exception as _logo_auto_exc:
+                        self.logger.debug(
+                            "Silent logo CDN upload on brand update failed (non-critical): {}",
+                            _logo_auto_exc,
+                        )
 
         # Handle logo pre-flight button responses
         _raw_content = content.strip().lower()

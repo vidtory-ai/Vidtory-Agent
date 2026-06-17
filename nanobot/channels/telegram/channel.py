@@ -598,10 +598,6 @@ class TelegramChannel(
                 message_id=message_id,
                 reaction=[ReactionTypeEmoji(emoji=emoji)],
             )
-            if getattr(self.config, "remove_react_emoji", True):
-                asyncio.create_task(
-                    self._delayed_remove_reaction(chat_id, message_id, delay=self.config.react_remove_delay)
-                )
         except Exception as e:
             self.logger.debug("reaction failed: {}", e)
 

@@ -221,6 +221,15 @@ def _normalize_color(value: str) -> str:
             ),
             default=False,
         ),
+        logo_preference=StringSchema(
+            description=(
+                "LOGO PREFERENCE: Call this tool with logo_preference='enabled' whenever the user says they "
+                "want the brand logo used in future images (e.g. 'sử dụng logo cho sản phẩm sau', "
+                "'dùng logo từ giờ', 'bật logo trở lại'). Call with logo_preference='disabled' when they "
+                "say they do not want the logo. Do NOT wait for the next image generation request — "
+                "persist the preference immediately so the DB flag is correct."
+            ),
+        ),
         required=[],
     )
 )
@@ -268,6 +277,11 @@ class UpdateCustomerProfileTool(Tool):
             "A logo-only change automatically refreshes visual style and palette; "
             "explicit visual fields in the same request take precedence. "
             "After saving, the profile will automatically be applied to all future image generations."
+            "\nLOGO PREFERENCE: Call this tool with logo_preference='enabled' whenever the user says they "
+            "want the brand logo used in future images (e.g. 'sử dụng logo cho sản phẩm sau', "
+            "'dùng logo từ giờ', 'bật logo trở lại'). Call with logo_preference='disabled' when they "
+            "say they do not want the logo. Do NOT wait for the next image generation request — "
+            "persist the preference immediately so the DB flag is correct."
         )
 
     async def execute(
@@ -289,6 +303,7 @@ class UpdateCustomerProfileTool(Tool):
         logo_url: str | None = None,
         brand_guidelines: str | None = None,
         onboarding_complete: bool = False,
+        logo_preference: str | None = None,
         **kwargs: Any,
     ) -> str:
         # Get the user_id from the current context
@@ -367,42 +382,72 @@ class UpdateCustomerProfileTool(Tool):
                 logo_url_val = logo_url.strip()
                 if logo_url_val and not logo_url_val.startswith(("http://", "https://")):
                     try:
-                        # 1. Get user API key from database
+                        # 1. Get user API key — MUST use user key only, no system fallback
                         from nanobot.db.customer_db import get_db
                         db = get_db()
-                        api_key = db.get_api_key(user_id) or ""
+                        api_key = (db.get_api_key(user_id) or "").strip()
 
-                        # 2. Get API base URL and system fallback key
+                        if not api_key:
+                            import json as _json
+                            return _json.dumps({
+                                "status": "error",
+                                "error_type": "authentication",
+                                "message": "Cần API Key để lưu logo",
+                                "next_step": (
+                                    "Thông báo lịch sự với khách hàng rằng: 'Để lưu logo thương hiệu vào "
+                                    "không gian riêng của bạn, bạn cần cung cấp API Key. "
+                                    "Bạn có thể nhập bằng lệnh /apikey YOUR_KEY nhé!' "
+                                    "TUYỆT ĐỐI KHÔNG đề cập CDN, server hay lỗi kỹ thuật."
+                                ),
+                            }, ensure_ascii=False)
+
+                        # 2. Get API base URL from config (no system key fallback)
                         api_base = "https://bapi.vidtory.net"
-                        effective_key = api_key
                         try:
                             from nanobot.config.loader import load_config
                             cfg = load_config()
                             provider_cfg = (cfg.providers or {}).get("vidtory") if cfg.providers else None
                             if provider_cfg:
                                 api_base = getattr(provider_cfg, "api_base", None) or api_base
-                                sys_key = getattr(provider_cfg, "api_key", None) or ""
-                                if sys_key:
-                                    effective_key = sys_key
                         except Exception:
                             pass
 
-                        # 3. Perform upload to Vidtory CDN
+                        # 3. Perform upload using user API key only
                         from nanobot.utils.logo_upload import upload_logo_to_cdn
                         cdn_url = await upload_logo_to_cdn(
                             logo_url_val,
-                            api_key=effective_key,
+                            api_key=api_key,
                             base_url=api_base,
                             customer_id=user_id,
                         )
                         if cdn_url:
                             logo_url_val = cdn_url
                         else:
-                            return "Error: Failed to upload logo to Vidtory CDN (endpoint returned empty URL)."
+                            import json as _json
+                            return _json.dumps({
+                                "status": "error",
+                                "error_type": "upload_failed",
+                                "message": "Lưu logo không thành công",
+                                "next_step": (
+                                    "Thông báo nhẹ nhàng với khách hàng: 'Logo của bạn chưa lưu được lần này, "
+                                    "bạn thử gửi lại logo nhé, mình sẽ xử lý ngay!' "
+                                    "TUYỆT ĐỐI KHÔNG nhắc đến CDN hay lỗi kỹ thuật."
+                                ),
+                            }, ensure_ascii=False)
                     except Exception as e:
                         from loguru import logger
-                        logger.warning("Failed to upload local logo path to CDN: {}", e)
-                        return f"Error: Failed to upload logo to Vidtory CDN: {e}"
+                        logger.warning("Failed to upload local logo path: {}", e)
+                        import json as _json
+                        return _json.dumps({
+                            "status": "error",
+                            "error_type": "upload_failed",
+                            "message": "Lưu logo không thành công",
+                            "next_step": (
+                                "Thông báo nhẹ nhàng với khách hàng: 'Logo của bạn chưa lưu được lần này, "
+                                "bạn thử gửi lại logo nhé, mình sẽ xử lý ngay!' "
+                                "TUYỆT ĐỐI KHÔNG nhắc đến CDN hay lỗi kỹ thuật."
+                            ),
+                        }, ensure_ascii=False)
 
                 # Reassign logo_url to the resolved CDN URL so downstream works correctly
                 logo_url = logo_url_val
@@ -456,6 +501,29 @@ class UpdateCustomerProfileTool(Tool):
                 if "zalo" in clean_channels and "zalo" not in fmt:
                     fmt["zalo"] = {"aspectRatio": "1:1"}
                 changed_fields.append("channels")
+
+            # ── Logo preference flag (standalone, no image generation needed) ──
+            if logo_preference is not None:
+                normalized_pref = logo_preference.strip().lower()
+                if normalized_pref in ("enabled", "disabled"):
+                    try:
+                        suppressed = normalized_pref == "disabled"
+                        current.setdefault("preferences", {})["logoSuppressed"] = suppressed
+                        changed_fields.append(f"logoSuppressed({'True' if suppressed else 'False'})")
+                        from loguru import logger
+                        logger.info(
+                            "update_customer_profile: logo_preference='{}' → logoSuppressed={} for uid {}",
+                            normalized_pref, suppressed, user_id,
+                        )
+                    except Exception as _pref_exc:
+                        from loguru import logger
+                        logger.debug("Failed to persist logo_preference in profile tool: {}", _pref_exc)
+                else:
+                    from loguru import logger
+                    logger.warning(
+                        "update_customer_profile: unexpected logo_preference value '{}' — ignoring",
+                        logo_preference,
+                    )
 
             if not changed_fields:
                 return "No fields provided to update. Please specify at least one brand field."

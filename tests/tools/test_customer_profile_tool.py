@@ -370,6 +370,9 @@ class TestUpdateCustomerProfileToolExecute:
         local_logo_path = tmp_path / "dummy_logo.png"
         local_logo_path.write_bytes(b"PNG dummy content")
 
+        # Set API key for the user so upload authorization succeeds
+        db.set_api_key("test_user_42", "dummy_key")
+
         # Mock upload_logo_to_cdn
         async def mock_upload(source, api_key, base_url, customer_id):
             assert str(source) == str(local_logo_path)
