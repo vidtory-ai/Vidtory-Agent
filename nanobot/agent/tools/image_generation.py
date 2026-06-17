@@ -1156,6 +1156,36 @@ class ImageGenerationTool(Tool, ContextAware):
         prompt_lower = prompt.lower()
         return any(kw in prompt_lower for kw in self._DETAILED_PROMPT_KEYWORDS)
 
+    def _user_recently_requested_no_logo(self) -> bool:
+        """Check recent session history for an explicit no-logo preference.
+
+        Scans up to 3 user turns back in session history.
+        Returns True if the user said "không chèn logo" (or similar) recently.
+        """
+        ctx = _image_gen_request_ctx.get()
+        if not ctx or not ctx.session_key or not self.sessions:
+            return False
+        try:
+            session = self.sessions.get_or_create(ctx.session_key)
+            if not session or not session.messages:
+                return False
+            user_turns = 0
+            for msg in reversed(session.messages):
+                if msg.get("role") == "user":
+                    user_turns += 1
+                    if user_turns > 3:
+                        break
+                    content = str(msg.get("content") or "")
+                    if _prompt_requests_no_logo(content):
+                        logger.info(
+                            "No-logo preference found in session history (turn -{})",
+                            user_turns,
+                        )
+                        return True
+        except Exception as exc:
+            logger.debug("_user_recently_requested_no_logo scan failed: {}", exc)
+        return False
+
     def _find_last_generated_image(
         self,
         *,
@@ -1439,9 +1469,17 @@ class ImageGenerationTool(Tool, ContextAware):
                             logo_url,
                         )
 
-                # If user explicitly requested no logo in prompt, do not use it
-                if logo_url and _prompt_requests_no_logo(prompt):
-                    logger.info("User prompt explicitly requested no logo; skipping logo injection")
+                # If user explicitly requested no logo — check the LLM-generated
+                # prompt, the raw user message of the current turn, and recent
+                # session history (up to 3 turns back).  This ensures the first
+                # image after a "không chèn logo" instruction respects the preference
+                # even before the LLM injects the instruction into the tool prompt.
+                if logo_url and (
+                    _prompt_requests_no_logo(prompt)
+                    or _prompt_requests_no_logo(original_user_content)
+                    or self._user_recently_requested_no_logo()
+                ):
+                    logger.info("No-logo preference detected; skipping logo injection")
                     logo_url = None
 
                 # ── Step 5: Logo preservation guard & instructions ────────────
