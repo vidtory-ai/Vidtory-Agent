@@ -337,7 +337,7 @@ def _is_revision_prompt(prompt: str) -> bool:
     """Check if the user's prompt is a revision or edit request."""
     prompt_lower = prompt.lower()
     revision_keywords = [
-        "sửa", "sửa lại", "chỉnh lại", "thay đổi", "thêm", "ghép", "lồng",
+        "sửa", "sửa lại", "chỉnh lại", "thay đổi", "ghép", "lồng",
         "từ ảnh", "ảnh trên", "ảnh trước", "ảnh vừa tạo", "tinh chỉnh", "tối ưu",
         "edit", "modify", "change", "add", "revision", "fix", "update", "replace",
         "chèn logo", "thêm logo", "bỏ logo", "xóa logo", "đặt logo",
