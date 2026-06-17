@@ -481,6 +481,16 @@ def _prompt_requests_no_logo(prompt: str) -> bool:
     ])
 
 
+# Keywords indicating the user wants the logo re-enabled after a no-logo request.
+# Checked in _user_recently_requested_no_logo to short-circuit no-logo suppression
+# when the user's most recent explicit preference is to include the logo.
+_WANT_LOGO_KEYWORDS: tuple[str, ...] = (
+    "chèn logo", "thêm logo", "đặt logo", "có logo", "logo lại",
+    "logo trở lại", "dùng logo", "với logo", "kèm logo", "hiện logo",
+    "add logo", "with logo", "include logo", "show logo", "logo back",
+)
+
+
 class ImageGenerationToolConfig(Base):
     """Image generation tool configuration."""
     enabled: bool = True
@@ -1159,8 +1169,9 @@ class ImageGenerationTool(Tool, ContextAware):
     def _user_recently_requested_no_logo(self) -> bool:
         """Check recent session history for an explicit no-logo preference.
 
-        Scans up to 3 user turns back in session history.
-        Returns True if the user said "không chèn logo" (or similar) recently.
+        Scans up to 3 user turns back in session history in reverse chronological
+        order (newest first).  Returns True only if a no-logo request is found
+        BEFORE any want-logo request — i.e. the most recent explicit preference wins.
         """
         ctx = _image_gen_request_ctx.get()
         if not ctx or not ctx.session_key or not self.sessions:
@@ -1171,20 +1182,31 @@ class ImageGenerationTool(Tool, ContextAware):
                 return False
             user_turns = 0
             for msg in reversed(session.messages):
-                if msg.get("role") == "user":
-                    user_turns += 1
-                    if user_turns > 3:
-                        break
-                    content = str(msg.get("content") or "")
-                    if _prompt_requests_no_logo(content):
-                        logger.info(
-                            "No-logo preference found in session history (turn -{})",
-                            user_turns,
-                        )
-                        return True
+                if msg.get("role") != "user":
+                    continue
+                user_turns += 1
+                if user_turns > 3:
+                    break
+                content = str(msg.get("content") or "")
+                content_lower = content.lower()
+                # If user most recently asked to HAVE logo, stop — preference is re-enabled
+                if any(kw in content_lower for kw in _WANT_LOGO_KEYWORDS):
+                    logger.info(
+                        "Want-logo preference found in session history (turn -{}); "
+                        "no-logo suppression cancelled",
+                        user_turns,
+                    )
+                    return False
+                if _prompt_requests_no_logo(content):
+                    logger.info(
+                        "No-logo preference found in session history (turn -{})",
+                        user_turns,
+                    )
+                    return True
         except Exception as exc:
             logger.debug("_user_recently_requested_no_logo scan failed: {}", exc)
         return False
+
 
     def _find_last_generated_image(
         self,
