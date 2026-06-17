@@ -144,13 +144,31 @@ class TelegramMediaMixin:
             return None
 
     async def _flush_media_group(self, key: str) -> None:
+        """Wait briefly, then forward buffered media-group as one turn.
 
-        """Wait briefly, then forward buffered media-group as one turn."""
-
+        Uses a sliding window: each new message in the album resets the timer.
+        This prevents large/slow-uploading albums from being prematurely
+        split into multiple generation requests.
+        """
+        import asyncio as _asyncio
         try:
-            await asyncio.sleep(0.6)
-            if not (buf := self._media_group_buffers.pop(key, None)):
+            mgb = getattr(self, "_media_group_buffers", {})
+            buf = mgb.get(key)
+            if not buf:
                 return
+            
+            max_wait_at: float = buf.get("_max_flush_at", 0.0)
+            delay = min(
+                _MEDIA_GROUP_FLUSH_DELAY,
+                max(0.0, max_wait_at - __import__("time").monotonic()),
+            )
+            await _asyncio.sleep(delay)
+
+            mgb = getattr(self, "_media_group_buffers", {})
+            if not (buf := mgb.pop(key, None)):
+                return
+            self._media_group_buffers = mgb
+
             content = "\n".join(buf["contents"]) or "[empty message]"
             all_media = list(dict.fromkeys(buf["media"]))
             # Patch metadata so _merge_revision_references sees ALL images from
@@ -163,8 +181,13 @@ class TelegramMediaMixin:
                 metadata=metadata,
                 session_key=buf.get("session_key"),
             )
+        except _asyncio.CancelledError:
+            raise
         finally:
-            self._media_group_tasks.pop(key, None)
+            mg_tasks = getattr(self, "_media_group_tasks", {})
+            if mg_tasks.get(key) is __import__("asyncio").current_task():
+                mg_tasks.pop(key, None)
+                self._media_group_tasks = mg_tasks
 
     async def _flush_text_media_buffer(self, key: str) -> None:
         """Sliding-window flush for text+media requests.
@@ -238,4 +261,9 @@ class TelegramMediaMixin:
 # Each new image resets this timer; the absolute cap is _TEXT_MEDIA_MAX_WAIT.
 _TEXT_MEDIA_FLUSH_DELAY: float = 1.0
 _TEXT_MEDIA_MAX_WAIT: float = 3.0
+
+# Sliding-window constants for albums (media_group_id).
+# Albums can take longer due to multiple heavy file uploads.
+_MEDIA_GROUP_FLUSH_DELAY: float = 1.5
+_MEDIA_GROUP_MAX_WAIT: float = 5.0
 

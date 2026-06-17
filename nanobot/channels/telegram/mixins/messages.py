@@ -595,6 +595,7 @@ class TelegramMessagesMixin:
 
         # Telegram media groups: buffer briefly, forward as one aggregated turn.
         if media_group_id := getattr(message, "media_group_id", None):
+            from nanobot.channels.telegram.mixins.media import _MEDIA_GROUP_MAX_WAIT
             key = f"{str_chat_id}:{media_group_id}"
             if key not in self._media_group_buffers:
                 self._media_group_buffers[key] = {
@@ -602,15 +603,24 @@ class TelegramMessagesMixin:
                     "contents": [], "media": [],
                     "metadata": metadata,
                     "session_key": session_key,
+                    "_max_flush_at": time.monotonic() + _MEDIA_GROUP_MAX_WAIT,
                 }
                 self._start_typing(str_chat_id)
                 await self._add_reaction(str_chat_id, message.message_id, self.config.react_emoji)
+            
             buf = self._media_group_buffers[key]
             if content and content != "[empty message]":
                 buf["contents"].append(content)
             buf["media"].extend(media_paths)
-            if key not in self._media_group_tasks:
-                self._media_group_tasks[key] = asyncio.create_task(self._flush_media_group(key))
+
+            # Reset sliding window
+            mg_tasks = getattr(self, "_media_group_tasks", {})
+            old_task = mg_tasks.get(key)
+            if old_task and not old_task.done() and time.monotonic() < buf.get("_max_flush_at", 0):
+                old_task.cancel()
+            
+            mg_tasks[key] = asyncio.create_task(self._flush_media_group(key))
+            self._media_group_tasks = mg_tasks
             return
 
         # Guard: When user sends photo/document without any text or caption,
