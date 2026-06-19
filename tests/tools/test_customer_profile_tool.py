@@ -393,6 +393,111 @@ class TestUpdateCustomerProfileToolExecute:
 
 
 # ===========================================================================
+# logo_preference field — UpdateCustomerProfileTool
+# ===========================================================================
+
+class TestLogoPreferenceField:
+    """Tests for the logo_preference parameter added in commit 38c9d46.
+
+    Verifies that UpdateCustomerProfileTool correctly persists the logoSuppressed
+    flag to the database for all valid and invalid input values.
+    """
+
+    @pytest.mark.asyncio
+    async def test_logo_preference_disabled_sets_suppressed_true(self, tool_with_profile):
+        """logo_preference='disabled' must persist logoSuppressed=True in DB."""
+        tool, db = tool_with_profile
+
+        result = await tool.execute(logo_preference="disabled")
+
+        # Tool must report success and name the field
+        assert "logoSuppressed" in result
+        assert "True" in result
+
+        # DB must have the flag set
+        profile = db.load_profile("test_user_42")
+        assert profile["preferences"]["logoSuppressed"] is True
+
+    @pytest.mark.asyncio
+    async def test_logo_preference_enabled_sets_suppressed_false(self, tool_with_profile):
+        """logo_preference='enabled' must persist logoSuppressed=False in DB."""
+        tool, db = tool_with_profile
+
+        # Pre-seed suppressed=True to make the transition meaningful
+        profile = db.load_profile("test_user_42")
+        profile.setdefault("preferences", {})["logoSuppressed"] = True
+        db.save_profile("test_user_42", profile)
+
+        result = await tool.execute(logo_preference="enabled")
+
+        assert "logoSuppressed" in result
+        assert "False" in result
+
+        updated = db.load_profile("test_user_42")
+        assert updated["preferences"]["logoSuppressed"] is False
+
+    @pytest.mark.asyncio
+    async def test_logo_preference_invalid_value_is_ignored(self, tool_with_profile):
+        """An unrecognised logo_preference value must not crash and must not change the DB."""
+        tool, db = tool_with_profile
+
+        # Confirm no preferences key exists before the call
+        profile_before = db.load_profile("test_user_42")
+        preferences_before = profile_before.get("preferences", {})
+
+        # Should return the "no fields" message because only the invalid
+        # logo_preference was passed and it is silently dropped.
+        result = await tool.execute(logo_preference="maybe")
+
+        assert "No fields provided" in result
+
+        # DB must be unchanged
+        profile_after = db.load_profile("test_user_42")
+        assert profile_after.get("preferences", {}) == preferences_before
+
+    @pytest.mark.asyncio
+    async def test_logo_preference_round_trip_disabled_then_enabled(self, tool_with_profile):
+        """Toggling disabled → enabled must correctly flip the flag both ways."""
+        tool, db = tool_with_profile
+
+        # Step 1: disable
+        await tool.execute(logo_preference="disabled")
+        profile = db.load_profile("test_user_42")
+        assert profile["preferences"]["logoSuppressed"] is True
+
+        # Step 2: re-enable
+        await tool.execute(logo_preference="enabled")
+        profile = db.load_profile("test_user_42")
+        assert profile["preferences"]["logoSuppressed"] is False
+
+    @pytest.mark.asyncio
+    async def test_logo_preference_case_insensitive(self, tool_with_profile):
+        """logo_preference value matching must be case-insensitive."""
+        tool, db = tool_with_profile
+
+        await tool.execute(logo_preference="DISABLED")
+        profile = db.load_profile("test_user_42")
+        assert profile["preferences"]["logoSuppressed"] is True
+
+        await tool.execute(logo_preference="Enabled")
+        profile = db.load_profile("test_user_42")
+        assert profile["preferences"]["logoSuppressed"] is False
+
+    @pytest.mark.asyncio
+    async def test_logo_preference_does_not_overwrite_other_fields(self, tool_with_profile):
+        """Setting logo_preference must not touch unrelated brand fields."""
+        tool, db = tool_with_profile
+
+        await tool.execute(logo_preference="disabled")
+
+        profile = db.load_profile("test_user_42")
+        # Brand fields from the mock_profile fixture must be untouched
+        assert profile["brand"]["style"] == "corporate"
+        assert profile["brand"]["moodKeywords"] == ["old"]
+        assert profile["business"]["name"] == "Old Name"
+
+
+# ===========================================================================
 # Color normalization edge cases
 # ===========================================================================
 
