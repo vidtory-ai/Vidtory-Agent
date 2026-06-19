@@ -277,11 +277,6 @@ class UpdateCustomerProfileTool(Tool):
             "A logo-only change automatically refreshes visual style and palette; "
             "explicit visual fields in the same request take precedence. "
             "After saving, the profile will automatically be applied to all future image generations."
-            "\nLOGO PREFERENCE: Call this tool with logo_preference='enabled' whenever the user says they "
-            "want the brand logo used in future images (e.g. 'sử dụng logo cho sản phẩm sau', "
-            "'dùng logo từ giờ', 'bật logo trở lại'). Call with logo_preference='disabled' when they "
-            "say they do not want the logo. Do NOT wait for the next image generation request — "
-            "persist the preference immediately so the DB flag is correct."
         )
 
     async def execute(
@@ -504,22 +499,20 @@ class UpdateCustomerProfileTool(Tool):
 
             # ── Logo preference flag (standalone, no image generation needed) ──
             if logo_preference is not None:
+                from loguru import logger
                 normalized_pref = logo_preference.strip().lower()
                 if normalized_pref in ("enabled", "disabled"):
                     try:
                         suppressed = normalized_pref == "disabled"
                         current.setdefault("preferences", {})["logoSuppressed"] = suppressed
                         changed_fields.append(f"logoSuppressed({'True' if suppressed else 'False'})")
-                        from loguru import logger
                         logger.info(
                             "update_customer_profile: logo_preference='{}' → logoSuppressed={} for uid {}",
                             normalized_pref, suppressed, user_id,
                         )
                     except Exception as _pref_exc:
-                        from loguru import logger
                         logger.debug("Failed to persist logo_preference in profile tool: {}", _pref_exc)
                 else:
-                    from loguru import logger
                     logger.warning(
                         "update_customer_profile: unexpected logo_preference value '{}' — ignoring",
                         logo_preference,
