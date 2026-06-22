@@ -201,11 +201,14 @@ def create_minimal_profile(
     username: str | None = None,
     business_name: str | None = None,
     industry: str | None = None,
+    platform: str = "telegram",
 ) -> dict[str, Any]:
     """Create and save a minimal profile for quick-start onboarding."""
+    normalized_user_id = user_id.split("|")[0].strip()
+    platform_value = (platform or "telegram").strip().lower()
     profile: dict[str, Any] = {
-        "telegramUserId": user_id.split("|")[0].strip(),
-        "telegramUsername": username or "",
+        "platform": platform_value,
+        "platformUserId": normalized_user_id,
         "onboarding": {
             "status": "minimal",
             "startedAt": datetime.now(timezone.utc).isoformat(),
@@ -235,6 +238,12 @@ def create_minimal_profile(
             "bestPerformingPrompts": [],
         },
     }
+    if platform_value == "zalo":
+        profile["zaloUserId"] = normalized_user_id
+        profile["zaloUsername"] = username or ""
+    else:
+        profile["telegramUserId"] = normalized_user_id
+        profile["telegramUsername"] = username or ""
     save_profile(user_id, profile)
     return profile
 

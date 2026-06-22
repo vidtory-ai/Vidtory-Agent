@@ -12,6 +12,7 @@ Features:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -26,7 +27,7 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 # Schema version — increment when adding tables/columns
 # ---------------------------------------------------------------------------
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 
 _DDL = """
 PRAGMA journal_mode=WAL;
@@ -39,17 +40,20 @@ CREATE TABLE IF NOT EXISTS schema_version (
     applied_at  TEXT    NOT NULL
 );
 
--- API keys: one row per Telegram user
+-- API keys: one row per chat-platform user
 CREATE TABLE IF NOT EXISTS api_keys (
     user_id     TEXT PRIMARY KEY,
+    platform    TEXT NOT NULL DEFAULT 'telegram',
+    platform_user_id TEXT NOT NULL DEFAULT '',
     api_key     TEXT NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
-
 -- Customer profiles: full JSON blob + indexed hot fields
 CREATE TABLE IF NOT EXISTS customer_profiles (
     user_id         TEXT PRIMARY KEY,
+    platform        TEXT NOT NULL DEFAULT 'telegram',
+    platform_user_id TEXT NOT NULL DEFAULT '',
     username        TEXT NOT NULL DEFAULT '',
     business_name   TEXT NOT NULL DEFAULT '',
     industry        TEXT NOT NULL DEFAULT '',
@@ -60,7 +64,6 @@ CREATE TABLE IF NOT EXISTS customer_profiles (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
-
 -- Feedback log: append-only audit trail
 CREATE TABLE IF NOT EXISTS feedback (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,6 +151,24 @@ CREATE INDEX IF NOT EXISTS idx_tasks_user_stage
     ON generation_tasks(user_id, lifecycle_stage);
 CREATE INDEX IF NOT EXISTS idx_tasks_user_created
     ON generation_tasks(user_id, created_at);
+"""
+
+_V6_MIGRATION = """
+-- V6: Platform-aware identities for shared Telegram/Zalo customer DB
+ALTER TABLE api_keys ADD COLUMN platform TEXT NOT NULL DEFAULT 'telegram';
+ALTER TABLE api_keys ADD COLUMN platform_user_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_api_keys_platform
+    ON api_keys(platform, platform_user_id);
+ALTER TABLE customer_profiles ADD COLUMN platform TEXT NOT NULL DEFAULT 'telegram';
+ALTER TABLE customer_profiles ADD COLUMN platform_user_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_customer_profiles_platform
+    ON customer_profiles(platform, updated_at);
+UPDATE api_keys
+   SET platform_user_id = user_id
+ WHERE platform_user_id = '';
+UPDATE customer_profiles
+   SET platform_user_id = user_id
+ WHERE platform_user_id = '';
 """
 
 
@@ -270,6 +291,18 @@ class CustomerDatabase:
                             logger.warning("V5 migration statement skipped: {}", e)
             logger.info("Applied DB migration v5: generation_tasks table")
 
+        if current_version < 6:
+            for stmt in _V6_MIGRATION.strip().split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    try:
+                        conn.execute(stmt)
+                    except sqlite3.OperationalError as e:
+                        lowered = str(e).lower()
+                        if "already exists" not in lowered and "duplicate column" not in lowered:
+                            logger.warning("V6 migration statement skipped: {}", e)
+            logger.info("Applied DB migration v6: platform-aware customer rows")
+
         if current_version < _SCHEMA_VERSION:
             conn.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
@@ -290,20 +323,32 @@ class CustomerDatabase:
             ).fetchone()
         return row["api_key"] if row else None
 
-    def set_api_key(self, user_id: str, api_key: str) -> None:
+    def set_api_key(
+        self,
+        user_id: str,
+        api_key: str,
+        *,
+        platform: str = "telegram",
+        platform_user_id: str | None = None,
+    ) -> None:
         """Upsert an API key for *user_id*."""
         uid = user_id.split("|")[0].strip()
+        platform_value = (platform or "telegram").strip().lower()
+        platform_uid = (platform_user_id or uid).split("|")[0].strip()
         now = datetime.now(timezone.utc).isoformat()
         with self._tx() as conn:
             conn.execute(
                 """
-                INSERT INTO api_keys (user_id, api_key, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO api_keys
+                    (user_id, platform, platform_user_id, api_key, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
-                    api_key = excluded.api_key,
-                    updated_at = excluded.updated_at
+                    platform         = excluded.platform,
+                    platform_user_id = excluded.platform_user_id,
+                    api_key          = excluded.api_key,
+                    updated_at       = excluded.updated_at
                 """,
-                (uid, api_key, now, now),
+                (uid, platform_value, platform_uid, api_key, now, now),
             )
         logger.debug("API key saved for user {}", uid)
 
@@ -350,12 +395,27 @@ class CustomerDatabase:
     def save_profile(self, user_id: str, profile: dict[str, Any]) -> bool:
         """Upsert a customer profile. Returns True on success."""
         uid = user_id.split("|")[0].strip()
-        # Remove sensitive data before storing
-        clean = {k: v for k, v in profile.items() if k != "apiKey"}
         now = datetime.now(timezone.utc).isoformat()
 
         # Extract indexed fields for fast querying
-        username = str(profile.get("telegramUsername") or "")
+        platform = str(
+            profile.get("platform")
+            or ("zalo" if profile.get("zaloUserId") else "telegram")
+        ).strip().lower()
+        platform_user_id = str(
+            profile.get("platformUserId")
+            or profile.get("zaloUserId")
+            or profile.get("telegramUserId")
+            or uid
+        ).split("|")[0].strip()
+        username = str(
+            profile.get("displayName")
+            or profile.get("zaloName")
+            or profile.get("username")
+            or profile.get("telegramUsername")
+            or profile.get("zaloUsername")
+            or ""
+        )
         business = profile.get("business") or {}
         business_name = str(business.get("name") or "")
         industry = str(business.get("industry") or "")
@@ -365,6 +425,15 @@ class CustomerDatabase:
         onboarding = profile.get("onboarding") or {}
         onboarding_status = str(onboarding.get("status") or "none")
         merchant_id = str(profile.get("merchantId") or "")
+
+        # Remove sensitive data before storing
+        clean = {k: v for k, v in profile.items() if k != "apiKey"}
+        clean.setdefault("platform", platform)
+        clean.setdefault("platformUserId", platform_user_id)
+        if platform == "zalo":
+            clean.setdefault("zaloUserId", platform_user_id)
+        elif platform == "telegram":
+            clean.setdefault("telegramUserId", platform_user_id)
 
         try:
             profile_json = json.dumps(clean, ensure_ascii=False)
@@ -377,10 +446,12 @@ class CustomerDatabase:
                 conn.execute(
                     """
                     INSERT INTO customer_profiles
-                        (user_id, username, business_name, industry, brand_style,
+                        (user_id, platform, platform_user_id, username, business_name, industry, brand_style,
                          logo_url, onboarding_status, merchant_id, profile_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(user_id) DO UPDATE SET
+                        platform         = excluded.platform,
+                        platform_user_id = excluded.platform_user_id,
                         username         = excluded.username,
                         business_name    = excluded.business_name,
                         industry         = excluded.industry,
@@ -391,7 +462,7 @@ class CustomerDatabase:
                         profile_json     = excluded.profile_json,
                         updated_at       = excluded.updated_at
                     """,
-                    (uid, username, business_name, industry, brand_style,
+                    (uid, platform, platform_user_id, username, business_name, industry, brand_style,
                      logo_url, onboarding_status, merchant_id, profile_json, now, now),
                 )
             logger.debug("Profile saved for user {}", uid)
@@ -458,7 +529,7 @@ class CustomerDatabase:
         with self._conn() as conn:
             rows = conn.execute(
                 """
-                SELECT user_id, username, business_name, industry,
+                SELECT user_id, platform, platform_user_id, username, business_name, industry,
                        logo_url, onboarding_status, updated_at
                 FROM customer_profiles
                 ORDER BY updated_at DESC
@@ -986,8 +1057,12 @@ def get_db() -> CustomerDatabase:
     if _db_instance is None:
         with _db_lock:
             if _db_instance is None:
-                from nanobot.config.paths import get_data_dir
-                db_path = get_data_dir() / "customers.db"
+                raw_path = os.environ.get("VIDTORY_CUSTOMER_DB_PATH", "").strip()
+                if raw_path:
+                    db_path = Path(raw_path).expanduser()
+                else:
+                    from nanobot.config.paths import get_data_dir
+                    db_path = get_data_dir() / "customers.db"
                 _db_instance = CustomerDatabase(db_path)
                 logger.info("CustomerDatabase initialized at {}", db_path)
     return _db_instance
