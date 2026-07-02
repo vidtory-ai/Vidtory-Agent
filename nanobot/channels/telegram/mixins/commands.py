@@ -6,13 +6,24 @@ from typing import TYPE_CHECKING, Any
 
 from telegram import Update
 from nanobot.command.builtin import build_help_text
-from nanobot.config.paths import get_workspace_path
+from nanobot.config.paths import get_data_dir, get_workspace_path
 from telegram.ext import ContextTypes
 
 if TYPE_CHECKING:
     from nanobot.channels.telegram.channel import TelegramChannel
 
 class TelegramCommandsMixin:
+    @staticmethod
+    def _api_key_required_text() -> str:
+        return (
+            "Brand Profile của bạn đã sẵn sàng.\n\n"
+            "Để tạo sản phẩm mới, vui lòng kết nối Vidtory API Key:\n"
+            "1. Mở https://app.vidtory.net/settings/api\n"
+            "2. Sao chép API Key\n"
+            "3. Gửi: /apikey YOUR_API_KEY\n\n"
+            "Key chỉ cần thiết khi bắt đầu tạo nội dung và được lưu riêng cho tài khoản của bạn."
+        )
+
     def _api_key_required_now(self, sender_id: str) -> bool:
         """Require a user key only after the free onboarding flow."""
         if not getattr(self.config, "require_user_api_key", False):
@@ -29,12 +40,7 @@ class TelegramCommandsMixin:
 
     async def _reply_api_key_required(self, message) -> None:
         await message.reply_text(
-            "Brand Profile của bạn đã sẵn sàng.\n\n"
-            "Để tạo sản phẩm mới, vui lòng kết nối Vidtory API Key:\n"
-            "1. Mở https://app.vidtory.net/settings/api\n"
-            "2. Sao chép API Key\n"
-            "3. Gửi: /apikey YOUR_API_KEY\n\n"
-            "Key chỉ cần thiết khi bắt đầu tạo nội dung và được lưu riêng cho tài khoản của bạn.",
+            self._api_key_required_text(),
             disable_web_page_preview=True,
         )
 
@@ -77,7 +83,10 @@ class TelegramCommandsMixin:
 
         user = update.effective_user
         sender_id = self._sender_id(user)
-        if not self.is_allowed(sender_id):
+        if not self._is_allowed_for_telegram_chat(
+            sender_id,
+            is_dm=update.message.chat.type == "private",
+        ):
             return
         await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
 
@@ -118,7 +127,10 @@ class TelegramCommandsMixin:
             return
         user = update.effective_user
         sender_id = self._sender_id(user)
-        if not self.is_allowed(sender_id):
+        if not self._is_allowed_for_telegram_chat(
+            sender_id,
+            is_dm=update.message.chat.type == "private",
+        ):
             return
         await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
 
@@ -141,7 +153,13 @@ class TelegramCommandsMixin:
         """Dedicated handler for API key and brand profile management commands."""
         if not update.effective_user:
             return
-        if not self.is_allowed(self._sender_id(update.effective_user)):
+        if not update.message:
+            return
+        sender_id = self._sender_id(update.effective_user)
+        if not self._is_allowed_for_telegram_chat(
+            sender_id,
+            is_dm=update.message.chat.type == "private",
+        ):
             return
         if update.message:
             await self._add_reaction(str(update.message.chat_id), update.message.message_id, self.config.react_emoji)
@@ -292,10 +310,15 @@ class TelegramCommandsMixin:
                 except Exception as e:
                     self.logger.warning("Failed to delete session file: {}", e)
 
-            user_workspace = get_workspace_path() / "telegram_users" / chat_id
-            if user_workspace.exists():
-                import shutil
-                shutil.rmtree(user_workspace, ignore_errors=True)
+            import shutil
+
+            user_workspaces = {
+                get_workspace_path() / "telegram_users" / chat_id,
+                get_data_dir() / "telegram_users" / chat_id,
+            }
+            for user_workspace in user_workspaces:
+                if user_workspace.exists():
+                    shutil.rmtree(user_workspace, ignore_errors=True)
 
             await message.reply_text(
                 "🗑️ *Đã xóa toàn bộ dữ liệu!*\n"
@@ -772,7 +795,10 @@ class TelegramCommandsMixin:
         message = update.message
         user = update.effective_user
         sender_id = self._sender_id(user)
-        if not self.is_allowed(sender_id):
+        if not self._is_allowed_for_telegram_chat(
+            sender_id,
+            is_dm=message.chat.type == "private",
+        ):
             return
         await self._add_reaction(str(message.chat_id), message.message_id, self.config.react_emoji)
 

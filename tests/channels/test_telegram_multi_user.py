@@ -89,6 +89,29 @@ async def test_telegram_multi_user_welcome_prompt(tmp_path, monkeypatch, isolate
 
 
 @pytest.mark.asyncio
+async def test_unlisted_private_user_gets_multi_user_welcome_prompt(
+    tmp_path, monkeypatch, isolated_customer_db
+) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    config = TelegramConfig(
+        enabled=True,
+        token="123:abc",
+        allow_from=["999"],
+        require_user_api_key=True,
+    )
+    channel = TelegramChannel(config, MessageBus())
+
+    update = _FakeUpdate("hello")
+    await channel._on_message(update, None)
+
+    assert len(update.message.replies) == 1
+    reply = update.message.replies[0][0]
+    assert "Vidtory AI Designer" in reply
+    assert "logo" in reply.lower()
+    assert "pairing code" not in reply.lower()
+
+
+@pytest.mark.asyncio
 async def test_start_begins_onboarding_before_requesting_api_key(
     tmp_path, monkeypatch, isolated_customer_db
 ) -> None:
@@ -109,6 +132,31 @@ async def test_start_begins_onboarding_before_requesting_api_key(
     from nanobot.utils.customer_profile import get_onboarding_status
 
     assert get_onboarding_status("12345") == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_start_ignores_allowlist_for_private_multi_user_onboarding(
+    tmp_path, monkeypatch, isolated_customer_db
+) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    config = TelegramConfig(
+        enabled=True,
+        token="123:abc",
+        allow_from=["999"],
+        require_user_api_key=True,
+    )
+    channel = TelegramChannel(config, MessageBus())
+
+    update = _FakeUpdate("/start")
+    await channel._on_start(update, None)
+
+    assert len(update.message.replies) == 1
+    reply, kwargs = update.message.replies[0]
+    assert "Vidtory AI Designer" in reply
+    assert "logo" in reply.lower()
+    assert "API Key" not in reply
+    assert "pairing code" not in reply.lower()
+    assert kwargs.get("reply_markup") is not None
 
 
 @pytest.mark.asyncio
@@ -308,6 +356,69 @@ async def test_onboarding_callback_works_without_api_key(
 
 
 @pytest.mark.asyncio
+async def test_onboarding_style_callback_completes_without_agent(
+    tmp_path, monkeypatch, isolated_customer_db
+) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.mixins.messages.get_workspace_path",
+        lambda: tmp_path,
+    )
+    from nanobot.utils.customer_profile import create_minimal_profile, load_profile, save_profile
+
+    profile = create_minimal_profile("12345", username="alice")
+    profile["onboarding"]["status"] = "in_progress"
+    profile.setdefault("preferences", {})["logoPromptSkipped"] = True
+    save_profile("12345", profile)
+
+    bus = MessageBus()
+    inbound_messages = []
+
+    async def fake_publish_inbound(msg):
+        inbound_messages.append(msg)
+
+    monkeypatch.setattr(bus, "publish_inbound", fake_publish_inbound)
+    channel = TelegramChannel(
+        TelegramConfig(
+            enabled=True,
+            token="123:abc",
+            require_user_api_key=True,
+            inline_keyboards=True,
+        ),
+        bus,
+    )
+    channel._start_typing = lambda _chat_id: None
+    send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    channel._app = SimpleNamespace(bot=SimpleNamespace(send_message=send_message))
+
+    query = SimpleNamespace(
+        id="cb_style",
+        data="Bold Performance",
+        answer=AsyncMock(),
+        message=SimpleNamespace(
+            chat_id=123,
+            chat=SimpleNamespace(type="private"),
+            edit_reply_markup=AsyncMock(),
+        ),
+    )
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_user=SimpleNamespace(id=12345, username="alice", first_name="Alice"),
+    )
+
+    await channel._on_callback_query(update, None)
+
+    query.answer.assert_awaited_once_with()
+    query.message.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
+    assert inbound_messages == []
+    send_message.assert_awaited_once()
+    assert "Brand Profile đã sẵn sàng" in send_message.await_args.kwargs["text"]
+    saved = load_profile("12345")
+    assert saved["onboarding"]["status"] == "completed"
+    assert saved["brand"]["style"] == "Bold Performance"
+
+
+@pytest.mark.asyncio
 async def test_callback_does_not_require_key_when_multi_user_mode_is_off(
     tmp_path, monkeypatch, isolated_customer_db
 ) -> None:
@@ -441,6 +552,97 @@ async def test_onboarding_website_button_uses_scripted_reply(tmp_path, monkeypat
     reply = update.message.replies[0][0]
     assert "https://vidtory.ai" in reply
     assert "ptit.edu.vn" not in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_onboarding_style_choice_completes_without_agent(
+    tmp_path, monkeypatch, isolated_customer_db
+) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.mixins.messages.get_workspace_path",
+        lambda: tmp_path,
+    )
+    from nanobot.utils.customer_profile import create_minimal_profile, load_profile, save_profile
+
+    profile = create_minimal_profile("12345", username="alice")
+    profile["onboarding"]["status"] = "in_progress"
+    profile.setdefault("preferences", {})["logoPromptSkipped"] = True
+    save_profile("12345", profile)
+
+    bus = MessageBus()
+    inbound_messages = []
+
+    async def fake_publish_inbound(msg):
+        inbound_messages.append(msg)
+
+    monkeypatch.setattr(bus, "publish_inbound", fake_publish_inbound)
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", require_user_api_key=True),
+        bus,
+    )
+
+    update = _FakeUpdate("Clean Premium")
+    await channel._on_message(update, None)
+
+    assert inbound_messages == []
+    assert len(update.message.replies) == 1
+    reply, kwargs = update.message.replies[0]
+    assert "Brand Profile đã sẵn sàng" in reply
+    assert "Clean Premium" in reply
+    assert kwargs.get("reply_markup") is not None
+
+    saved = load_profile("12345")
+    assert saved["onboarding"]["status"] == "completed"
+    assert saved["brand"]["style"] == "Clean Premium"
+    assert saved["brand"]["styleConfirmed"] is True
+    assert saved["brand"]["moodKeywords"]
+    assert saved["brand"]["photographyStyle"]
+
+
+@pytest.mark.asyncio
+async def test_onboarding_message_uses_writable_workspace_fallback(
+    tmp_path, monkeypatch, isolated_customer_db
+) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    blocked_workspace = tmp_path / "blocked-workspace"
+    blocked_workspace.write_text("not a directory", encoding="utf-8")
+    fallback_data_dir = tmp_path / "data-dir"
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.mixins.messages.get_workspace_path",
+        lambda: blocked_workspace,
+    )
+    monkeypatch.setattr(
+        "nanobot.channels.telegram.mixins.messages.get_data_dir",
+        lambda: fallback_data_dir,
+        raising=False,
+    )
+    from nanobot.utils.customer_profile import create_minimal_profile, save_profile
+
+    profile = create_minimal_profile("12345", username="alice")
+    profile["onboarding"]["status"] = "in_progress"
+    save_profile("12345", profile)
+
+    bus = MessageBus()
+    inbound_messages = []
+
+    async def fake_publish_inbound(msg):
+        inbound_messages.append(msg)
+
+    monkeypatch.setattr(bus, "publish_inbound", fake_publish_inbound)
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", require_user_api_key=True),
+        bus,
+    )
+
+    update = _FakeUpdate("Thương hiệu của tôi là Vidtory")
+    await channel._on_message(update, None)
+
+    assert update.message.replies == []
+    assert len(inbound_messages) == 1
+    workspace = inbound_messages[0].metadata["user_workspace"].replace("\\", "/")
+    assert workspace.endswith("/data-dir/telegram_users/123")
+    assert (fallback_data_dir / "telegram_users" / "123").is_dir()
 
 
 @pytest.mark.asyncio

@@ -1402,6 +1402,70 @@ async def test_on_message_ignores_unauthorized_user_before_side_effects() -> Non
     assert started_typing == []
     channel._add_reaction.assert_not_awaited()
     assert handled == []
+    assert channel._app.bot.sent_messages == []
+
+
+@pytest.mark.asyncio
+async def test_on_message_allows_unlisted_multi_user_private_dm(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "nanobot.utils.customer_profile.get_onboarding_status",
+        lambda _uid: "in_progress",
+    )
+    channel = TelegramChannel(
+        TelegramConfig(
+            enabled=True,
+            token="123:abc",
+            allow_from=["999"],
+            require_user_api_key=True,
+            group_policy="open",
+        ),
+        MessageBus(),
+    )
+    channel._app = _FakeApp(lambda: None)
+    started_typing: list[str] = []
+    handled: list[dict] = []
+    channel._start_typing = lambda chat_id: started_typing.append(chat_id)
+    channel._add_reaction = AsyncMock(return_value=None)
+
+    async def capture_handle(**kwargs) -> None:
+        handled.append(kwargs)
+
+    channel._handle_message = capture_handle
+
+    await channel._on_message(_make_telegram_update(text="hello", chat_type="private"), None)
+
+    assert started_typing == ["-100123"]
+    channel._add_reaction.assert_awaited_once()
+    assert handled[0]["content"] == "hello"
+    assert handled[0]["is_dm"] is True
+
+
+@pytest.mark.asyncio
+async def test_on_start_allows_unlisted_multi_user_private_user(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "nanobot.utils.customer_profile.get_onboarding_status",
+        lambda _uid: "none",
+    )
+    channel = TelegramChannel(
+        TelegramConfig(
+            enabled=True,
+            token="123:abc",
+            allow_from=["999"],
+            require_user_api_key=True,
+            group_policy="open",
+        ),
+        MessageBus(),
+    )
+    channel._add_reaction = AsyncMock(return_value=None)
+    channel._begin_onboarding = AsyncMock(return_value=None)
+
+    update = _make_telegram_update(text="/start", chat_type="private")
+    update.message.reply_text = AsyncMock()
+
+    await channel._on_start(update, None)
+
+    channel._add_reaction.assert_awaited_once()
+    channel._begin_onboarding.assert_awaited_once_with(update.message, update.effective_user)
 
 
 @pytest.mark.asyncio
@@ -1873,6 +1937,67 @@ async def test_callback_query_ignores_unauthorized_user_before_side_effects() ->
     query.answer.assert_not_awaited()
     query.message.edit_reply_markup.assert_not_awaited()
     channel._handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_callback_query_allows_unlisted_multi_user_private_user(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "nanobot.utils.customer_profile.get_onboarding_status",
+        lambda _uid: "in_progress",
+    )
+    channel = TelegramChannel(
+        TelegramConfig(
+            enabled=True,
+            token="123:abc",
+            allow_from=["999"],
+            require_user_api_key=True,
+            inline_keyboards=True,
+        ),
+        MessageBus(),
+    )
+    channel._handle_message = AsyncMock()
+    channel._start_typing = lambda _chat_id: None
+
+    query = SimpleNamespace(
+        id="cb_1",
+        data="Clean Premium",
+        answer=AsyncMock(),
+        message=SimpleNamespace(
+            chat_id=123,
+            chat=SimpleNamespace(type="private"),
+            edit_reply_markup=AsyncMock(),
+        ),
+    )
+    update = SimpleNamespace(
+        callback_query=query,
+        effective_user=SimpleNamespace(id=12345, username="alice", first_name="Alice"),
+    )
+
+    await channel._on_callback_query(update, None)
+
+    query.answer.assert_awaited_once_with()
+    query.message.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
+    channel._handle_message.assert_awaited_once()
+    assert channel._handle_message.await_args.kwargs["content"] == "Clean Premium"
+    assert channel._handle_message.await_args.kwargs["is_dm"] is True
+
+
+@pytest.mark.asyncio
+async def test_error_handler_stops_typing_for_failed_message_update() -> None:
+    import asyncio
+
+    channel = TelegramChannel(
+        TelegramConfig(enabled=True, token="123:abc", allow_from=["*"]),
+        MessageBus(),
+    )
+    channel._typing_tasks["123"] = asyncio.create_task(asyncio.sleep(60))
+
+    update = SimpleNamespace(message=SimpleNamespace(chat_id=123), callback_query=None)
+    context = SimpleNamespace(error=RuntimeError("workspace failed"))
+
+    await channel._on_error(update, context)
+
+    assert "123" not in channel._typing_tasks
 
 
 @pytest.mark.asyncio

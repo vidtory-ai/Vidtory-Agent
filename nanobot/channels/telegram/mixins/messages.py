@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import time
 import unicodedata
+from datetime import datetime, timezone
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -10,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from nanobot.config.paths import get_media_dir, get_workspace_path
+from nanobot.config.paths import get_data_dir, get_media_dir, get_workspace_path
 from nanobot.channels.telegram.format import TELEGRAM_REPLY_CONTEXT_MAX_LEN
 from nanobot.channels.telegram.utils import get_extension, is_remote_media_url
 
@@ -18,6 +20,24 @@ if TYPE_CHECKING:
     from nanobot.channels.telegram.channel import TelegramChannel
 
 class TelegramMessagesMixin:
+    _ONBOARDING_STYLE_CHOICES: dict[str, dict[str, Any]] = {
+        "clean premium": {
+            "label": "Clean Premium",
+            "mood": ["tối giản", "cao cấp", "sạch"],
+            "photography_style": "clean premium commercial photography",
+        },
+        "bold performance": {
+            "label": "Bold Performance",
+            "mood": ["nổi bật", "mạnh", "chuyển đổi"],
+            "photography_style": "bold high-contrast performance advertising photography",
+        },
+        "editorial fashion": {
+            "label": "Editorial Fashion",
+            "mood": ["cảm xúc", "thời trang", "nghệ thuật"],
+            "photography_style": "editorial fashion-inspired commercial photography",
+        },
+    }
+
     @staticmethod
     def _matches_telegram_allowlist(sender_id: str, allow_list: list[str]) -> bool:
         sender_str = str(sender_id)
@@ -106,6 +126,187 @@ class TelegramMessagesMixin:
         except Exception as e:
             self.logger.warning("Failed to remember logo skip preference: {}", e)
 
+    def _ensure_telegram_user_workspace(self, chat_id: str) -> str:
+        """Return a writable per-chat workspace, falling back when the bind mount is read-only."""
+        candidates = [
+            get_workspace_path() / "telegram_users" / chat_id,
+            get_data_dir() / "telegram_users" / chat_id,
+            Path(tempfile.gettempdir()) / "vidtoryagent" / "telegram_users" / chat_id,
+        ]
+        errors: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                if errors:
+                    self.logger.warning(
+                        "Telegram workspace primary path unavailable; using fallback {}. Previous errors: {}",
+                        candidate,
+                        "; ".join(errors),
+                    )
+                return str(candidate)
+            except OSError as exc:
+                errors.append(f"{candidate}: {exc}")
+        raise RuntimeError(
+            "Could not create a writable Telegram user workspace: " + "; ".join(errors)
+        )
+
+    @classmethod
+    def _onboarding_style_choice(cls, text: str) -> dict[str, Any] | None:
+        return cls._ONBOARDING_STYLE_CHOICES.get(cls._plain_user_text(text))
+
+    def _load_or_create_onboarding_profile(self, sender_id: str) -> tuple[str, dict[str, Any]]:
+        from nanobot.utils.customer_profile import create_minimal_profile, load_profile
+
+        uid = sender_id.split("|")[0].strip()
+        username = sender_id.split("|", 1)[1] if "|" in sender_id else ""
+        profile = load_profile(uid)
+        if profile is None:
+            profile = create_minimal_profile(uid, username=username)
+        return uid, profile
+
+    async def _send_onboarding_reply(
+        self,
+        *,
+        chat_id: str,
+        text: str,
+        buttons: list[list[str]] | None = None,
+        reply_message=None,
+        parse_mode: str | None = None,
+    ) -> bool:
+        reply_markup = self._build_keyboard(buttons) if buttons else None
+        if reply_message is not None:
+            await reply_message.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+            )
+            return True
+        if self._app:
+            await self._app.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+            )
+            return True
+        return False
+
+    async def _complete_onboarding_style_choice(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        style_choice: dict[str, Any],
+        reply_message=None,
+    ) -> bool:
+        from nanobot.utils.customer_profile import save_profile
+
+        uid, profile = self._load_or_create_onboarding_profile(sender_id)
+        onboarding = profile.setdefault("onboarding", {})
+        if onboarding.get("status") != "in_progress":
+            return False
+
+        brand = profile.setdefault("brand", {})
+        label = style_choice["label"]
+        brand["style"] = label
+        brand["styleConfirmed"] = True
+        brand["moodKeywords"] = list(style_choice["mood"])
+        brand["photographyStyle"] = style_choice["photography_style"]
+
+        onboarding["status"] = "completed"
+        onboarding["currentStep"] = "completed"
+        onboarding["completedAt"] = datetime.now(timezone.utc).isoformat()
+        save_profile(uid, profile)
+
+        text = (
+            "Brand Profile đã sẵn sàng.\n\n"
+            f"Mình đã ghi nhận style reference: {label}. "
+            "Hãy gửi brief sản phẩm đầu tiên; khi bắt đầu tạo nội dung, hệ thống sẽ hướng dẫn kết nối API key đúng lúc."
+        )
+        return await self._send_onboarding_reply(
+            chat_id=chat_id,
+            text=text,
+            buttons=[["Kết nối API Key", "Tạo ảnh ngay"]],
+            reply_message=reply_message,
+        )
+
+    async def _save_logo_from_media_path(
+        self,
+        *,
+        chat_id: str,
+        sender_id: str,
+        media_path: str,
+    ) -> bool:
+        uid_save = sender_id.split("|")[0].strip()
+        key_save = self.keystore.get_key(sender_id)
+        if not key_save:
+            if self._app:
+                with suppress(Exception):
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "🔐 *Để lưu logo vào hồ sơ thương hiệu, bạn cần kết nối tài khoản Vidtory.*\n\n"
+                            "Sau khi kết nối, logo sẽ tự động xuất hiện trên mọi ảnh tạo ra.\n\n"
+                            "*Thiết lập chỉ mất 1 phút:*\n"
+                            "1️⃣ Vào https://app.vidtory.net/settings/api\n"
+                            "2️⃣ Sao chép key\n"
+                            "3️⃣ Gửi: `/apikey YOUR_KEY`\n\n"
+                            "_Gửi lại logo ngay sau khi hoàn tất là xong._"
+                        ),
+                        parse_mode="Markdown",
+                        disable_web_page_preview=True,
+                    )
+            return False
+
+        cdn_url_save = None
+        try:
+            import mimetypes as _mimetypes
+
+            logo_bytes = Path(media_path).read_bytes()
+            logo_mime = _mimetypes.guess_type(media_path)[0] or "image/jpeg"
+            cdn_url_save = await self._upload_logo_bytes_to_cdn(
+                logo_bytes,
+                mime_type=logo_mime,
+                api_key=key_save,
+                user_id=uid_save,
+            )
+        except Exception as read_err:
+            self.logger.warning("Logo save: failed to read/upload file {}: {}", media_path, read_err)
+
+        if cdn_url_save:
+            try:
+                from nanobot.utils.customer_profile import set_logo_and_refresh_identity
+
+                await set_logo_and_refresh_identity(uid_save, cdn_url_save)
+            except Exception as exc:
+                self.logger.warning("set_logo_and_refresh_identity failed: {}", exc)
+            if self._app:
+                with suppress(Exception):
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text="✅ *Logo đã được lưu thành công!*\nMọi ảnh tạo tiếp theo sẽ tự động chèn logo này.",
+                        parse_mode="Markdown",
+                    )
+            return True
+
+        if self._app:
+            with suppress(Exception):
+                await self._app.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "⚠️ *Upload logo thất bại.*\n\n"
+                        "Có thể do kết nối mạng hoặc API Key chưa đúng.\n"
+                        "Vui lòng thử lại hoặc dùng lệnh `/setlogo` để kiểm tra."
+                    ),
+                    parse_mode="Markdown",
+                )
+        return False
+
     @staticmethod
     def _profile_needs_brand_prompt(profile: dict, generation_count: int) -> bool:
         """Return True nếu cần hiển thị brand onboarding prompt trước khi tạo ảnh.
@@ -146,6 +347,63 @@ class TelegramMessagesMixin:
         value = self._plain_user_text(content)
         text = ""
         buttons: list[list[str]] | None = None
+
+        if value in {"ket noi api key", "cau hinh api key"}:
+            api_key_text = (
+                self._api_key_required_text()
+                if hasattr(self, "_api_key_required_text")
+                else (
+                    "Brand Profile của bạn đã sẵn sàng.\n\n"
+                    "Để tạo sản phẩm mới, vui lòng kết nối Vidtory API Key:\n"
+                    "1. Mở https://app.vidtory.net/settings/api\n"
+                    "2. Sao chép API Key\n"
+                    "3. Gửi: /apikey YOUR_API_KEY"
+                )
+            )
+            return await self._send_onboarding_reply(
+                chat_id=chat_id,
+                text=api_key_text,
+                reply_message=reply_message,
+            )
+
+        style_choice = self._onboarding_style_choice(content)
+        if style_choice is not None:
+            try:
+                handled = await self._complete_onboarding_style_choice(
+                    chat_id=chat_id,
+                    sender_id=sender_id,
+                    style_choice=style_choice,
+                    reply_message=reply_message,
+                )
+                if handled:
+                    return True
+            except Exception as e:
+                self.logger.warning("Onboarding style handler error: {}", e)
+
+        if value in {"chua, nhac sau", "chua nhac sau", "nhac sau"}:
+            try:
+                from nanobot.db.customer_db import get_db
+                from nanobot.utils.customer_profile import load_profile, save_profile
+
+                uid_reminder = sender_id.split("|")[0].strip()
+                profile_reminder = load_profile(uid_reminder)
+                preferences = (
+                    profile_reminder.setdefault("preferences", {})
+                    if isinstance(profile_reminder, dict)
+                    else {}
+                )
+                if preferences.get("logoReminderAwaitingUpload"):
+                    current_generation = get_db().get_generation_count(uid_reminder)
+                    preferences["logoReminderAwaitingUpload"] = False
+                    preferences["logoReminderNextGeneration"] = current_generation + 10
+                    save_profile(uid_reminder, profile_reminder)
+                    return await self._send_onboarding_reply(
+                        chat_id=chat_id,
+                        text="Được, mình sẽ nhắc lại sau. Bạn vẫn có thể gửi logo bất cứ lúc nào bằng /setlogo.",
+                        reply_message=reply_message,
+                    )
+            except Exception as e:
+                self.logger.warning("Logo reminder reply handler error: {}", e)
 
         # ── Brand Prompt: Đồng ý → bắt đầu onboarding ────────────────────────
         if value == "dong y":
@@ -221,7 +479,18 @@ class TelegramMessagesMixin:
                 "Bạn gửi URL website đi, mình xem cho."
             )
         elif value in {"chua co logo", "khong co logo"}:
-            self._remember_logo_prompt_skipped(sender_id.split("|")[0].strip())
+            try:
+                from nanobot.utils.customer_profile import save_profile
+
+                uid_logo_skip, profile_logo_skip = self._load_or_create_onboarding_profile(sender_id)
+                profile_logo_skip.setdefault("preferences", {})["logoPromptSkipped"] = True
+                onboarding = profile_logo_skip.setdefault("onboarding", {})
+                onboarding["status"] = "in_progress"
+                onboarding["currentStep"] = "brand_style"
+                save_profile(uid_logo_skip, profile_logo_skip)
+            except Exception as e:
+                self.logger.warning("Failed to persist no-logo onboarding choice: {}", e)
+                self._remember_logo_prompt_skipped(sender_id.split("|")[0].strip())
             text = (
                 "Không sao, mình vẫn có thể thiết lập gu thiết kế trước.\n\n"
                 "Bạn chọn một style reference gần nhất nhé:\n"
@@ -234,18 +503,12 @@ class TelegramMessagesMixin:
         else:
             return False
 
-        reply_markup = self._build_keyboard(buttons) if buttons else None
-        if reply_message is not None:
-            await reply_message.reply_text(text, reply_markup=reply_markup)
-            return True
-        if self._app:
-            await self._app.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=reply_markup,
-            )
-            return True
-        return False
+        return await self._send_onboarding_reply(
+            chat_id=chat_id,
+            text=text,
+            buttons=buttons,
+            reply_message=reply_message,
+        )
 
     @staticmethod
     def _sender_id(user) -> str:
@@ -469,7 +732,11 @@ class TelegramMessagesMixin:
         user = update.effective_user
         chat_id = message.chat_id
         sender_id = self._sender_id(user)
-        if not self.is_allowed(sender_id):
+        is_dm = message.chat.type == "private"
+        if not self._is_allowed_for_telegram_chat(
+            sender_id,
+            is_dm=is_dm,
+        ):
             return
 
         if getattr(self.config, "require_user_api_key", False):
@@ -603,6 +870,7 @@ class TelegramMessagesMixin:
                     "contents": [], "media": [],
                     "metadata": metadata,
                     "session_key": session_key,
+                    "is_dm": is_dm,
                     "_max_flush_at": time.monotonic() + _MEDIA_GROUP_MAX_WAIT,
                 }
                 self._start_typing(str_chat_id)
@@ -680,6 +948,7 @@ class TelegramMessagesMixin:
                     "media": list(media_paths),
                     "metadata": dict(metadata),
                     "session_key": session_key,
+                    "is_dm": is_dm,
                     "expires_at": time.monotonic() + 60,
                 }
                 self._pending_media_choices = pending_choices
@@ -691,6 +960,7 @@ class TelegramMessagesMixin:
                     media=list(media_paths),
                     metadata=metadata,
                     session_key=session_key,
+                    is_dm=is_dm,
                 )
                 return
 
@@ -713,6 +983,7 @@ class TelegramMessagesMixin:
                     "media": list(media_paths),
                     "metadata": dict(metadata),
                     "session_key": session_key,
+                    "is_dm": is_dm,
                     "expires_at": time.monotonic() + 600,
                 }
                 self._pending_media_choices = pending
@@ -759,6 +1030,7 @@ class TelegramMessagesMixin:
                         "media": list(media_paths),
                         "metadata": dict(metadata),
                         "session_key": session_key,
+                        "is_dm": is_dm,
                         "expires_at": time.monotonic() + 600,
                     }
                     self._pending_media_choices = pending
@@ -843,9 +1115,16 @@ class TelegramMessagesMixin:
             from nanobot.utils.customer_profile import load_profile, profile_exists
             from nanobot.db.customer_db import get_db as _gen_count_db
             uid_brand = sender_id.split("|")[0].strip()
+            key_required_before_generation = (
+                getattr(self.config, "require_user_api_key", False)
+                and not self.keystore.get_key(sender_id)
+                and onboarding_status != "in_progress"
+                and (creative_request or self._api_key_required_now(sender_id))
+            )
             if (
                 creative_request
                 and onboarding_status not in ("in_progress",)
+                and not key_required_before_generation
             ):
                 profile_brand = load_profile(uid_brand) or {}
                 gen_count = _gen_count_db().get_generation_count(uid_brand)
@@ -913,6 +1192,7 @@ class TelegramMessagesMixin:
                     "media": list(media_paths),
                     "metadata": dict(metadata),
                     "session_key": session_key,
+                    "is_dm": is_dm,
                     "_max_flush_at": time.monotonic() + _TEXT_MEDIA_MAX_WAIT,
                 }
                 self._text_media_buffers = _tmb
@@ -924,14 +1204,19 @@ class TelegramMessagesMixin:
             return  # _flush_text_media_buffer will call _handle_message
 
         # Text-only or reply-with-media: forward directly without buffering.
-        await self._handle_message(
-            sender_id=sender_id,
-            chat_id=str_chat_id,
-            content=content,
-            media=media_paths,
-            metadata=metadata,
-            session_key=session_key,
-        )
+        try:
+            await self._handle_message(
+                sender_id=sender_id,
+                chat_id=str_chat_id,
+                content=content,
+                media=media_paths,
+                metadata=metadata,
+                session_key=session_key,
+                is_dm=is_dm,
+            )
+        except Exception:
+            self._stop_typing(str_chat_id)
+            raise
 
     async def _handle_message(
         self,
@@ -986,67 +1271,11 @@ class TelegramMessagesMixin:
             if media_to_save:
                 # Show typing while processing logo upload
                 self._start_typing(chat_id)
-                uid_save = sender_id.split("|")[0].strip()
-                key_save = self.keystore.get_key(sender_id)
-                # Guard: API key required to upload to Vidtory CDN
-                if not key_save:
-                    if self._app:
-                        with suppress(Exception):
-                            await self._app.bot.send_message(
-                                chat_id=chat_id,
-                                text=(
-                                    "🔐 *Để lưu logo vào hồ sơ thương hiệu, bạn cần kết nối tài khoản Vidtory.*\n\n"
-                                    "Sau khi kết nối, logo sẽ tự động xuất hiện trên mọi ảnh tạo ra.\n\n"
-                                    "*Thiết lập chỉ mất 1 phút:*\n"
-                                    "1️⃣ Vào https://app.vidtory.net/settings/api\n"
-                                    "2️⃣ Sao chép key\n"
-                                    "3️⃣ Gửi: `/apikey YOUR_KEY`\n\n"
-                                    "_Gửi lại logo ngay sau khi hoàn tất là xong._"
-                                ),
-                                parse_mode="Markdown",
-                                disable_web_page_preview=True,
-                            )
-                    self._stop_typing(chat_id)
-                    return
-                cdn_url_save = None
-                try:
-                    import mimetypes as _mimetypes
-                    logo_path = media_to_save[0]
-                    logo_bytes = Path(logo_path).read_bytes()
-                    logo_mime = _mimetypes.guess_type(logo_path)[0] or "image/jpeg"
-                    cdn_url_save = await self._upload_logo_bytes_to_cdn(
-                        logo_bytes,
-                        mime_type=logo_mime,
-                        api_key=key_save,
-                        user_id=uid_save,
-                    )
-                except Exception as _read_err:
-                    self.logger.warning("Logo save: failed to read/upload file {}: {}", media_to_save[0], _read_err)
-                if cdn_url_save:
-                    try:
-                        from nanobot.utils.customer_profile import set_logo_and_refresh_identity
-                        await set_logo_and_refresh_identity(uid_save, cdn_url_save)
-                    except Exception as _e:
-                        self.logger.warning("set_logo_and_refresh_identity failed: {}", _e)
-                    if self._app:
-                        with suppress(Exception):
-                            await self._app.bot.send_message(
-                                chat_id=chat_id,
-                                text="✅ *Logo đã được lưu thành công!*\nMọi ảnh tạo tiếp theo sẽ tự động chèn logo này.",
-                                parse_mode="Markdown",
-                            )
-                else:
-                    if self._app:
-                        with suppress(Exception):
-                            await self._app.bot.send_message(
-                                chat_id=chat_id,
-                                text=(
-                                    "⚠️ *Upload logo thất bại.*\n\n"
-                                    "Có thể do kết nối mạng hoặc API Key chưa đúng.\n"
-                                    "Vui lòng thử lại hoặc dùng lệnh `/setlogo` để kiểm tra."
-                                ),
-                                parse_mode="Markdown",
-                            )
+                await self._save_logo_from_media_path(
+                    chat_id=chat_id,
+                    sender_id=sender_id,
+                    media_path=media_to_save[0],
+                )
             self._stop_typing(chat_id)
             return
 
@@ -1133,10 +1362,9 @@ class TelegramMessagesMixin:
         # merchant key regardless of require_user_api_key setting.
         # user_workspace is also always set to a per-user directory.
         key = self.keystore.get_key(sender_id)
-        user_workspace = str(get_workspace_path() / "telegram_users" / chat_id)
+        user_workspace = self._ensure_telegram_user_workspace(chat_id)
         metadata["user_api_key"] = key or ""
         metadata["user_workspace"] = user_workspace
-        Path(user_workspace).mkdir(parents=True, exist_ok=True)
 
         # Load customer profile and inject into metadata for brand-aware context.
         # For new users (status='none'), silently create a minimal profile so they
@@ -1251,6 +1479,17 @@ class TelegramMessagesMixin:
                 metadata["customer_profile"] = customer_profile
         except Exception:
             pass  # Non-critical: never block the message if profile load fails
+
+        if self._is_open_multi_user_dm(is_dm=is_dm):
+            await self._publish_inbound(
+                sender_id=sender_id,
+                chat_id=chat_id,
+                content=content,
+                media=media,
+                metadata=metadata,
+                session_key=session_key,
+            )
+            return
 
         await super()._handle_message(
             sender_id=sender_id,

@@ -180,6 +180,7 @@ class TelegramMediaMixin:
                 content=content, media=all_media,
                 metadata=metadata,
                 session_key=buf.get("session_key"),
+                is_dm=bool(buf.get("is_dm")),
             )
         except _asyncio.CancelledError:
             raise
@@ -242,6 +243,7 @@ class TelegramMediaMixin:
                 media=all_media,
                 metadata=metadata,
                 session_key=buf["session_key"],
+                is_dm=bool(buf.get("is_dm")),
             )
         except _asyncio.CancelledError:
             # Task was cancelled because a new image arrived and the window

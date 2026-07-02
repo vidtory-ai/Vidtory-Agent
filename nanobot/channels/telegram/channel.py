@@ -12,7 +12,7 @@ from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import Application, CallbackQueryHandler, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-from nanobot.bus.events import OutboundMessage
+from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.channels.base import BaseChannel
 from nanobot.command.builtin import build_help_text
@@ -117,6 +117,39 @@ class TelegramChannel(
                 sender_id
             )
         return allowed
+
+    def _is_open_multi_user_dm(self, *, is_dm: bool) -> bool:
+        return bool(is_dm and getattr(self.config, "require_user_api_key", False))
+
+    def _is_allowed_for_telegram_chat(self, sender_id: str, *, is_dm: bool) -> bool:
+        if self._is_open_multi_user_dm(is_dm=is_dm):
+            return True
+        return self.is_allowed(sender_id)
+
+    async def _publish_inbound(
+        self,
+        *,
+        sender_id: str,
+        chat_id: str,
+        content: str,
+        media: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        session_key: str | None = None,
+    ) -> None:
+        meta = dict(metadata or {})
+        if self.supports_streaming:
+            meta["_wants_stream"] = True
+        await self.bus.publish_inbound(
+            InboundMessage(
+                channel=self.name,
+                sender_id=str(sender_id),
+                chat_id=str(chat_id),
+                content=content,
+                media=media or [],
+                metadata=meta,
+                session_key_override=session_key,
+            )
+        )
 
     async def start(self) -> None:
         """Start the Telegram bot with long polling."""
@@ -598,6 +631,14 @@ class TelegramChannel(
                 message_id=message_id,
                 reaction=[ReactionTypeEmoji(emoji=emoji)],
             )
+            if getattr(self.config, "remove_react_emoji", False):
+                asyncio.create_task(
+                    self._delayed_remove_reaction(
+                        chat_id,
+                        message_id,
+                        delay=getattr(self.config, "react_remove_delay", 5.0),
+                    )
+                )
         except Exception as e:
             self.logger.debug("reaction failed: {}", e)
 
@@ -649,6 +690,17 @@ class TelegramChannel(
 
     async def _on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Log polling / handler errors instead of silently swallowing them."""
+        chat_id = None
+        message = getattr(update, "message", None)
+        if message is not None:
+            chat_id = getattr(message, "chat_id", None)
+        if chat_id is None:
+            query = getattr(update, "callback_query", None)
+            query_message = getattr(query, "message", None) if query is not None else None
+            chat_id = getattr(query_message, "chat_id", None) if query_message is not None else None
+        if chat_id is not None:
+            self._stop_typing(str(chat_id))
+
         summary = format_telegram_error(context.error)
 
         if isinstance(context.error, (NetworkError, TimedOut)):

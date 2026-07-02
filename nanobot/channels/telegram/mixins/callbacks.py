@@ -51,7 +51,9 @@ class TelegramCallbacksMixin:
         if not chat_id:
             self.logger.warning("Callback query without chat_id")
             return
-        if not self.is_allowed(sender_id):
+        query_chat = getattr(query.message, "chat", None) if query.message else None
+        is_dm = getattr(query_chat, "type", None) == "private"
+        if not self._is_allowed_for_telegram_chat(sender_id, is_dm=is_dm):
             return
         button_label = query.data or ""
         plain_button = self._plain_user_text(button_label)
@@ -86,6 +88,8 @@ class TelegramCallbacksMixin:
             "dung website",
             "chua co logo",
             "khong co logo",
+            "ket noi api key",
+            "cau hinh api key",
         }
         if (
             self._api_key_required_now(sender_id)
@@ -114,4 +118,5 @@ class TelegramCallbacksMixin:
                 "first_name": user.first_name,
                 "is_callback": True,
             },
+            is_dm=is_dm,
         )
