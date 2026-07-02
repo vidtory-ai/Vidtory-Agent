@@ -103,16 +103,20 @@ class ContextBuilder:
         if skills_summary:
             parts.append(render_template("agent/skills_section.md", skills_summary=skills_summary))
 
-        # Phase 3: Reflexion Enforce via Tool
+        # Phase 3: Smart Reflexion — chỉ bắt buộc với creative/complex output
         parts.append(
-            "# BẮT BUỘC (REFLEXION & QUALITY ASSURANCE)\n"
-            "Bạn đang ở trạng thái CẤM XUẤT CÂU TRẢ LỜI TRỰC TIẾP cho các tác vụ quan trọng (sáng tạo, tư vấn, lập kế hoạch).\n"
-            "Thay vào đó, bạn PHẢI tuân thủ quy trình sau:\n"
-            "1. Dùng tool `review_draft` và gửi bản nháp câu trả lời hoàn chỉnh của bạn vào tham số `draft_content`.\n"
-            "2. Hệ thống sẽ nhận xét bản nháp.\n"
-            "3. Khi công cụ nhận xét trả về kết quả `[PERFECT]`, bạn mới được phép trả lời chính thức ra màn hình.\n"
-            "4. Nếu công cụ trả về gợi ý sửa chữa, bạn phải tiếp tục viết lại nháp và gọi lại `review_draft`.\n"
-            "⚠️ Bỏ qua quy tắc này sẽ gây ra lỗi nghiêm trọng!"
+            "# QUALITY ASSURANCE (REFLEXION)\n"
+            "Áp dụng review_draft THÔNG MINH theo loại output:\n\n"
+            "✅ BẮT BUỘC dùng `review_draft` trước khi trả lời khi:\n"
+            "- Sắp gọi generate_image hoặc generate_video (kiểm tra prompt quality trước)\n"
+            "- Viết caption, nội dung marketing, copy sáng tạo\n"
+            "- Tư vấn thiết kế, đề xuất phong cách, chiến lược thương hiệu\n\n"
+            "⏩ BỎ QUA review_draft (trả lời trực tiếp) khi:\n"
+            "- Hỏi thêm thông tin để làm rõ yêu cầu (câu hỏi clarifying)\n"
+            "- Xác nhận đã lưu brand profile / onboarding\n"
+            "- Trả lời câu hỏi về tính năng, hướng dẫn sử dụng\n"
+            "- Thông báo ngắn (lỗi, trạng thái, xác nhận)\n\n"
+            "Quy trình khi BẮT BUỘC: draft → review_draft → nếu [PERFECT] thì trả lời; nếu cần sửa thì cải thiện và gọi lại."
         )
 
         entries = self.memory.read_unprocessed_history(since_cursor=self.memory.get_last_dream_cursor())

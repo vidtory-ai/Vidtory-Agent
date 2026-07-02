@@ -779,7 +779,16 @@ class AgentLoop:
                 )
 
             gaps = get_profile_gaps(profile)
-            if gaps and (
+            # Xác định sớm xem đây có phải creative request không
+            # để tránh inject onboarding nhầm lúc
+            creative_markers = (
+                "ảnh", "hình", "poster", "banner", "story", "video", "thiết kế", "tạo"
+            )
+            has_creative_request = any(
+                marker in msg.content.lower() for marker in creative_markers
+            )
+
+            if gaps and not has_creative_request and (
                 onboarding_status == "in_progress"
                 or should_offer_onboarding(profile, msg.content)
             ):
@@ -792,12 +801,7 @@ class AgentLoop:
                     "Không chặn yêu cầu hiện tại nếu người dùng chưa muốn bổ sung."
                 )
 
-            creative_markers = (
-                "ảnh", "hình", "poster", "banner", "story", "video", "thiết kế", "tạo"
-            )
-            if not brand_update and any(
-                marker in msg.content.lower() for marker in creative_markers
-            ):
+            if not brand_update and has_creative_request:
                 industry = str((profile.get("business") or {}).get("industry") or "")
                 suggestions = build_creative_suggestions(msg.content, industry)
                 lines.append(
@@ -807,6 +811,7 @@ class AgentLoop:
                 )
         except Exception:
             pass
+
 
         return lines
 
